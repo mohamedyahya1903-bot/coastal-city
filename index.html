@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Coastal City</title>
+<style>
+  html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#0b1a2a;
+    touch-action:none; overscroll-behavior:none; font-family:Arial, Helvetica, sans-serif;
+    -webkit-user-select:none; user-select:none; }
+  #game { position:fixed; inset:0; display:block; }
+  .hud { position:fixed; z-index:10; color:#fff; text-shadow:0 1px 3px rgba(0,0,0,.8); pointer-events:none; }
+  #hud-fps { top:calc(8px + env(safe-area-inset-top)); left:50%; transform:translateX(-50%);
+    font-size:13px; opacity:.85; }
+  #toast { top:24%; left:50%; transform:translateX(-50%); font-size:17px; font-weight:bold;
+    background:rgba(0,0,0,.65); padding:8px 18px; border-radius:16px; opacity:0; transition:opacity .25s; }
+  #controls-root { position:fixed; inset:0; z-index:20; pointer-events:none; }
+  #phone-root { position:fixed; inset:0; z-index:30; pointer-events:none; }
+  #phone-root button, #phone-root .taxi-backdrop { pointer-events:auto; }
+  #loading { position:fixed; inset:0; z-index:100; background:#0b1a2a; display:flex;
+    flex-direction:column; align-items:center; justify-content:center; color:#fff; }
+  #loading .title { font-size:34px; font-weight:bold; color:#ffd23e; letter-spacing:1px; }
+  #loading .sub { margin-top:10px; font-size:14px; opacity:.8; }
+  #loading .bar { margin-top:22px; width:200px; height:8px; background:#223; border-radius:4px; overflow:hidden; }
+  #loading .bar i { display:block; height:100%; width:40%; background:#ffd23e; border-radius:4px;
+    animation:slide 1s infinite ease-in-out; }
+  @keyframes slide { 0%{margin-left:-40%} 100%{margin-left:100%} }
+</style>
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="hud-fps" class="hud"></div>
+<div id="toast" class="hud"></div>
+<div id="controls-root"></div>
+<div id="phone-root"></div>
+<div id="loading"><div class="title">COASTAL CITY</div><div class="sub">loading…</div><div class="bar"><i></i></div></div>
+<script type="module">
+import * as THREE from 'three';
+
+// ===== map.js =====
+// map.js — STUB city (coordinator placeholder, runs the trial). BUILDER 2 owns this file:
+// real coastal city, beach, downtown, highway, proper buildings. Keep this API exactly:
+//
+//   map.bounds {minX,maxX,minZ,maxZ}
+//   map.spawnPoints { player:{x,z,heading}, car:{x,z,heading} }
+//   map.groundAt(x,z) -> y
+//   map.isBlocked(x,z,r) -> bool      // circle radius r vs buildings/props/water
+//   map.isRoadAt(x,z) -> bool
+//   map.taxiStops -> [{x,z,name}]     // road-safe, >=20 m apart, original names
+//   map.update(dt)
+// Coordinates: Y-up meters, ground y=0, X east, -Z north. Heading 0 = north.
+
+function createMap({ THREE, scene }) {
+  const BLOCK = 44, ROAD = 12, PITCH = BLOCK + ROAD, GRID = 2;
+  // blocks centered at i*PITCH (-GRID..GRID); road center lines between and around them
+  const roadCenters = [];
+  for (let i = -GRID - 1; i <= GRID; i++) roadCenters.push((i + 0.5) * PITCH);
+  const HALF = (GRID + 0.5) * PITCH + ROAD / 2;
+
+  // ground
+  const ground = new THREE.Mesh(
+    new THREE.PlaneGeometry(HALF * 2 + 400, HALF * 2 + 400),
+    new THREE.MeshLambertMaterial({ color: 0x5d8a4f })
+  );
+  ground.rotation.x = -Math.PI / 2;
+  scene.add(ground);
+
+  // roads
+  const roadMat = new THREE.MeshLambertMaterial({ color: 0x33363c });
+  const lineMat = new THREE.MeshBasicMaterial({ color: 0xf5d54a });
+  const roadLen = HALF * 2;
+  for (const c of roadCenters) {
+    const north = new THREE.Mesh(new THREE.PlaneGeometry(ROAD, roadLen), roadMat);
+    north.rotation.x = -Math.PI / 2; north.position.set(c, 0.02, 0); scene.add(north);
+    const east = new THREE.Mesh(new THREE.PlaneGeometry(roadLen, ROAD), roadMat);
+    east.rotation.x = -Math.PI / 2; east.position.set(0, 0.02, c); scene.add(east);
+    // dashed center lines
+    for (let d = -HALF + 6; d < HALF - 4; d += 10) {
+      const dashN = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 3), lineMat);
+      dashN.rotation.x = -Math.PI / 2; dashN.position.set(c, 0.03, d); scene.add(dashN);
+      const dashE = new THREE.Mesh(new THREE.PlaneGeometry(3, 0.4), lineMat);
+      dashE.rotation.x = -Math.PI / 2; dashE.position.set(d, 0.03, c); scene.add(dashE);
+    }
+  }
+
+  // buildings: deterministic pseudo-random boxes per block
+  const blocks = [];
+  const palette = [0xd9c9a3, 0xb8c4d0, 0xc98f7a, 0x9fb4c9, 0xd6b88f, 0xa8c0a0];
+  let seed = 7;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for (let gx = -GRID; gx <= GRID; gx++) {
+    for (let gz = -GRID; gz <= GRID; gz++) {
+      const n = 2 + Math.floor(rnd() * 3);
+      for (let k = 0; k < n; k++) {
+        const w = 8 + rnd() * 10, d = 8 + rnd() * 10, hgt = 6 + rnd() * 22;
+        const x = gx * PITCH + (rnd() - 0.5) * (BLOCK - w - 6);
+        const z = gz * PITCH + (rnd() - 0.5) * (BLOCK - d - 6);
+        const m = new THREE.Mesh(
+          new THREE.BoxGeometry(w, hgt, d),
+          new THREE.MeshLambertMaterial({ color: palette[Math.floor(rnd() * palette.length)] })
+        );
+        m.position.set(x, hgt / 2, z);
+        scene.add(m);
+        blocks.push({ minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2 });
+      }
+    }
+  }
+
+  function groundAt(x, z) { return 0; }
+
+  function isBlocked(x, z, r) {
+    for (const b of blocks) {
+      if (x + r > b.minX && x - r < b.maxX && z + r > b.minZ && z - r < b.maxZ) return true;
+    }
+    if (x < -HALF || x > HALF || z < -HALF || z > HALF) return true;
+    return false;
+  }
+
+  function isRoadAt(x, z) {
+    for (const c of roadCenters) {
+      if (Math.abs(x - c) <= ROAD / 2 || Math.abs(z - c) <= ROAD / 2) return true;
+    }
+    return false;
+  }
+
+  // named, road-safe taxi stops (original names), >=20 m apart
+  const taxiStops = [
+    { x: roadCenters[1] + 3, z: roadCenters[2] + 3, name: 'Civic Square' },
+    { x: roadCenters[4] - 3, z: roadCenters[1] + 3, name: 'Beach Gate' },
+    { x: roadCenters[2] + 3, z: roadCenters[5] - 3, name: 'Harbour Road' },
+    { x: roadCenters[5] - 3, z: roadCenters[4] - 3, name: 'Old Town' },
+    { x: roadCenters[0] + 3, z: roadCenters[3] + 3, name: 'Palm Corner' },
+  ];
+
+  return {
+    bounds: { minX: -HALF, maxX: HALF, minZ: -HALF, maxZ: HALF },
+    spawnPoints: {
+      player: { x: roadCenters[2] + 3, z: roadCenters[3] + 3, heading: 0 },
+      car: { x: roadCenters[2] + 3, z: roadCenters[3] - 5, heading: 0 },
+    },
+    groundAt, isBlocked, isRoadAt, taxiStops,
+    update(dt) {},
+  };
+}
+
+
+// ===== controls.js =====
+function createControls({container=document.body,onInteract=()=>{}}={}) {
+ const state={steer:0,throttle:0,moveX:0,moveY:0,brake:false};
+ const held=new Set(), pointers=new Map();let joy=null,stick=null;
+ const root=document.createElement('div');root.className='city-controls';root.innerHTML=`<style>.city-controls{position:fixed;inset:0;pointer-events:none;z-index:50;touch-action:none;user-select:none;-webkit-user-select:none}.city-controls button{position:absolute;pointer-events:auto;border:1px solid #ffffff65;background:#132536bb;color:#fff;border-radius:18px;font:bold 15px system-ui;min-width:64px;min-height:58px;touch-action:none}.city-controls .city-stick{position:absolute;left:max(24px,env(safe-area-inset-left));bottom:24px;width:122px;height:122px;border-radius:50%;border:2px solid #ffffff65;background:#13253677;pointer-events:auto;touch-action:none}.city-controls .city-knob{position:absolute;left:38px;top:38px;width:46px;height:46px;border-radius:50%;background:#e8f1e5cc;pointer-events:none}.city-controls .city-action{right:max(26px,env(safe-area-inset-right));bottom:104px;padding:0 18px}.city-controls .city-brake{right:max(26px,env(safe-area-inset-right));bottom:28px;padding:0 18px}.city-controls .city-help{position:absolute;bottom:8px;left:170px;right:130px;text-align:center;color:#fff9;font:11px system-ui;pointer-events:none}@media(max-height:330px){.city-controls .city-stick{bottom:16px;transform:scale(.8);transform-origin:bottom left}.city-controls .city-action{bottom:86px}.city-controls .city-brake{bottom:18px}}</style><div class="city-stick" role="application" aria-label="Move or steer"><div class="city-knob"></div></div><button class="city-action" aria-label="Enter or exit car">ENTER CAR</button><button class="city-brake" aria-label="Brake">BRAKE</button><div class="city-help">Left stick: move / steer · E: enter / exit · Space: brake</div>`;
+ container.append(root);stick=root.querySelector('.city-stick');const knob=root.querySelector('.city-knob'),action=root.querySelector('.city-action'),brake=root.querySelector('.city-brake');let sx=0,sy=0;
+ function refresh(){const x=Math.max(-1,Math.min(1,sx+(held.has('KeyD')||held.has('ArrowRight')?1:0)-(held.has('KeyA')||held.has('ArrowLeft')?1:0))),y=Math.max(-1,Math.min(1,-sy+(held.has('KeyW')||held.has('ArrowUp')?1:0)-(held.has('KeyS')||held.has('ArrowDown')?1:0)));state.moveX=x;state.moveY=y;state.steer=x;state.throttle=y;state.brake=held.has('Space')||pointers.size>0;}
+ function drag(e){const r=stick.getBoundingClientRect(),dx=(e.clientX-r.left-r.width/2)/(r.width*.34),dy=(e.clientY-r.top-r.height/2)/(r.height*.34),n=Math.max(1,Math.hypot(dx,dy));sx=dx/n;sy=dy/n;if(Math.hypot(sx,sy)<.1)sx=sy=0;knob.style.transform=`translate(${sx*38}px,${sy*38}px)`;refresh();}
+ stick.addEventListener('pointerdown',e=>{if(joy!==null)return;joy=e.pointerId;stick.setPointerCapture(joy);drag(e);e.preventDefault();});stick.addEventListener('pointermove',e=>{if(e.pointerId===joy)drag(e);});function release(e){if(e.pointerId!==joy)return;joy=null;sx=sy=0;knob.style.transform='';refresh();}stick.addEventListener('pointerup',release);stick.addEventListener('pointercancel',release);stick.addEventListener('lostpointercapture',release);
+ brake.addEventListener('pointerdown',e=>{pointers.set(e.pointerId,true);brake.setPointerCapture(e.pointerId);refresh();});for(const ev of ['pointerup','pointercancel','lostpointercapture'])brake.addEventListener(ev,e=>{pointers.delete(e.pointerId);refresh();});action.addEventListener('click',onInteract);
+ const relevant=new Set(['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space','KeyE']);function keydown(e){if(/INPUT|TEXTAREA|SELECT/.test(e.target.tagName))return;if(relevant.has(e.code))e.preventDefault();if(e.code==='KeyE'&&!e.repeat)onInteract();held.add(e.code);refresh();}function keyup(e){held.delete(e.code);refresh();}function reset(){held.clear();pointers.clear();joy=null;sx=sy=0;knob.style.transform='';refresh();}addEventListener('keydown',keydown);addEventListener('keyup',keyup);addEventListener('blur',reset);document.addEventListener('visibilitychange',reset);
+ return{state,root,setMode(driving){action.textContent=driving?'EXIT CAR':'ENTER CAR';},setActionLabel(text){action.textContent=text;},reset,destroy(){removeEventListener('keydown',keydown);removeEventListener('keyup',keyup);removeEventListener('blur',reset);document.removeEventListener('visibilitychange',reset);root.remove();}};
+}
+
+
+// ===== actors.js =====
+// Original primitive geometry. No external models, names, textures or paid dependencies.
+function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onModeChange=()=>{}}){
+ const ground=(x,z)=>{const y=(map.groundAt||map.heightAt||(()=>0))(x,z);return Number.isFinite(y)?y:0;};
+ const blocked=(x,z,r)=>!!((map.isBlocked||map.blockedAt||(()=>false))(x,z,r));
+ const material=c=>new T.MeshLambertMaterial({color:c});const mats={skin:material('#c68b59'),shirt:material('#ecebdf'),pants:material('#26344c'),shoe:material('#152335'),body:material('#e6b32e'),dark:material('#243247'),glass:material('#71b7cb'),rubber:material('#202733'),lamp:material('#fff0b2'),rim:material('#b8c7c9'),tail:material('#ce594e')};
+ const geometries=[];
+ function mesh(parent,geo,mat,x=0,y=0,z=0){geometries.push(geo);const o=new T.Mesh(geo,mat);o.position.set(x,y,z);parent.add(o);return o;}
+ function sphere(parent,x,y,z,rx,ry,rz,mat){const o=mesh(parent,new T.SphereGeometry(1,12,8),mat,x,y,z);o.scale.set(rx,ry,rz);return o;}
+ function capsule(parent,x,y,z,r,len,mat){return mesh(parent,new T.CapsuleGeometry(r,len,4,8),mat,x,y,z);}
+ function rounded(parent,w,h,d,mat,x,y,z,r=Math.min(w,h,d)*.3){r=Math.min(r,w*.45,h*.45,d*.45);const a=w/2-r,b=h/2-r,s=new T.Shape();s.moveTo(-a-r,-b);s.lineTo(-a-r,b);s.quadraticCurveTo(-a-r,b+r,-a,b+r);s.lineTo(a,b+r);s.quadraticCurveTo(a+r,b+r,a+r,b);s.lineTo(a+r,-b);s.quadraticCurveTo(a+r,-b-r,a,-b-r);s.lineTo(-a,-b-r);s.quadraticCurveTo(-a-r,-b-r,-a-r,-b);const g=new T.ExtrudeGeometry(s,{depth:Math.max(.005,d-2*r),bevelEnabled:true,bevelSegments:2,steps:1,bevelSize:r*.45,bevelThickness:r,curveSegments:3});g.translate(0,0,-(d-2*r)/2);return mesh(parent,g,mat,x,y,z);}
+ function hull(parent,rings,mat){const vs=[],ix=[],N=12;for(const [z,w,cy,h]of rings)for(let i=0;i<N;i++){const a=i/N*Math.PI*2;vs.push(Math.cos(a)*w,cy+Math.sin(a)*h,z);}for(let j=0;j<rings.length-1;j++)for(let i=0;i<N;i++){const a=j*N+i,b=j*N+(i+1)%N,c=a+N,d=b+N;ix.push(a,b,c,b,d,c);}for(let i=1;i<N-1;i++){ix.push(0,i+1,i);const o=(rings.length-1)*N;ix.push(o,o+i,o+i+1);}const g=new T.BufferGeometry();g.setAttribute('position',new T.Float32BufferAttribute(vs,3));g.setIndex(ix);g.computeVertexNormals();return mesh(parent,g,mat);}
+ const pm=new T.Group();pm.name='Original rounded courier character';scene.add(pm);
+ sphere(pm,0,1.18,0,.29,.43,.2,mats.shirt);sphere(pm,0,.87,0,.27,.17,.19,mats.pants);capsule(pm,0,1.58,0,.09,.08,mats.skin);sphere(pm,0,1.82,0,.2,.25,.19,mats.skin);sphere(pm,0,1.99,.015,.205,.11,.19,mats.dark);sphere(pm,0,1.8,-.183,.065,.06,.055,mats.skin);
+ for(const x of[-.072,.072])sphere(pm,x,1.87,-.175,.024,.028,.02,mats.dark);
+ const legs=[],arms=[];for(const s of[-1,1]){const leg=new T.Group();leg.position.set(s*.145,.83,0);pm.add(leg);capsule(leg,0,-.23,0,.1,.31,mats.pants);capsule(leg,0,-.58,-.012,.085,.24,mats.pants);sphere(leg,0,-.76,-.07,.115,.09,.2,mats.shoe);legs.push(leg);const arm=new T.Group();arm.position.set(s*.31,1.43,0);pm.add(arm);capsule(arm,s*.025,-.14,0,.085,.18,mats.skin);capsule(arm,s*.04,-.39,0,.066,.19,mats.skin);sphere(arm,s*.045,-.56,0,.07,.095,.07,mats.skin);arms.push(arm);}
+ const cm=new T.Group();cm.name='Original curved compact taxi';scene.add(cm);
+ hull(cm,[[-1.98,.58,.69,.13],[-1.82,.83,.73,.26],[-1.22,.94,.79,.34],[.95,.94,.79,.34],[1.65,.83,.76,.28],[1.91,.62,.73,.16]],mats.body);
+ hull(cm,[[-1.12,.65,1.18,.1],[-.56,.77,1.4,.34],[.67,.74,1.4,.34],[1.11,.63,1.16,.09]],mats.glass);
+ hull(cm,[[-.57,.63,1.68,.06],[-.35,.69,1.73,.075],[.55,.65,1.73,.075],[.73,.57,1.65,.045]],mats.body);
+ for(const x of[-.77,.77]){rounded(cm,.055,.58,.095,mats.body,x,1.38,.12,.02);rounded(cm,.08,.09,1.65,mats.body,x,1.12,.07,.025);for(const z of[-.39,.55])rounded(cm,.06,.055,.24,mats.dark,x*1.17,1.03,z,.02);sphere(cm,x*1.25,1.24,-.65,.14,.07,.1,mats.body);}
+ const wheels=[];for(const x of[-.92,.92])for(const z of[-1.22,1.2]){const pivot=new T.Group();pivot.position.set(x,.4,z);cm.add(pivot);const tire=mesh(pivot,new T.TorusGeometry(.285,.105,6,12),mats.rubber);tire.rotation.y=Math.PI/2;const rim=mesh(pivot,new T.CylinderGeometry(.245,.245,.12,10),mats.rim);rim.rotation.z=Math.PI/2;const hub=sphere(pivot,Math.sign(x)*.09,0,0,.04,.11,.11,mats.dark);wheels.push({pivot,z});}
+ for(const x of[-.61,.61]){sphere(cm,x,.85,-1.82,.22,.12,.095,mats.lamp);sphere(cm,x,.85,1.78,.21,.1,.09,mats.tail);}
+ rounded(cm,1.15,.16,.12,mats.dark,0,.59,-1.92,.055);rounded(cm,1.42,.11,.12,mats.dark,0,.54,1.85,.045);rounded(cm,.52,.22,.37,mats.lamp,0,1.91,.03,.07);rounded(cm,.31,.1,.015,mats.dark,0,1.93,-.174,.02);
+ // Batch static root meshes by material, leaving limb/wheel groups movable.
+ function batchStatic(group){const buckets=new Map();for(const o of [...group.children])if(o.isMesh){o.updateMatrix();const g=o.geometry.index?o.geometry.toNonIndexed():o.geometry.clone();g.applyMatrix4(o.matrix);const a=buckets.get(o.material)||[];a.push({o,g});buckets.set(o.material,a);}for(const [mat,items]of buckets){if(items.length<2){items.forEach(i=>i.g.dispose());continue;}const positions=[],normals=[];for(const {o,g}of items){positions.push(...g.attributes.position.array);normals.push(...g.attributes.normal.array);group.remove(o);g.dispose();}const joined=new T.BufferGeometry();joined.setAttribute('position',new T.Float32BufferAttribute(positions,3));joined.setAttribute('normal',new T.Float32BufferAttribute(normals,3));mesh(group,joined,mat);}}
+ batchStatic(cm);batchStatic(pm);legs.forEach(batchStatic);arms.forEach(batchStatic);
+ const start=map.spawnPoints||{},ps=start.player||spawn,cs=start.car||{x:(spawn.x??0)+4,z:spawn.z??8,heading:0};
+ const player={x:ps.x??0,z:ps.z??8,y:0,yaw:ps.heading??0,mesh:pm,inCar:false};const car={x:cs.x??4,z:cs.z??8,y:0,yaw:cs.heading??0,speed:0,mesh:cm,occupied:false};let phase=0,driving=false,disposed=false,lastBlocked=false;
+ function carBlocked(x,z,yaw=car.yaw){for(const d of[-1.25,0,1.25])if(blocked(x+Math.sin(yaw)*d,z-Math.cos(yaw)*d,1.02))return true;return false;}
+ function move(entity,dx,dz,r){const n=Math.max(1,Math.ceil(Math.hypot(dx,dz)/.22));let hit=false;for(let i=0;i<n;i++){const x=entity.x+dx/n,z=entity.z+dz/n;if(!(entity===car?carBlocked(x,entity.z):blocked(x,entity.z,r)))entity.x=x;else hit=true;if(!(entity===car?carBlocked(entity.x,z):blocked(entity.x,z,r)))entity.z=z;else hit=true;}return hit;}
+ function sync(){player.y=ground(player.x,player.z);car.y=ground(car.x,car.z);pm.position.set(player.x,player.y,player.z);pm.rotation.y=-player.yaw;cm.position.set(car.x,car.y,car.z);cm.rotation.y=-car.yaw;pm.visible=!driving;player.inCar=driving?car:false;car.occupied=driving;}
+ function clearPath(ax,az,bx,bz,r=.3){const n=Math.max(1,Math.ceil(Math.hypot(bx-ax,bz-az)/.2));for(let i=1;i<=n;i++)if(blocked(ax+(bx-ax)*i/n,az+(bz-az)*i/n,r))return false;return true;}
+ function interact(){if(disposed)return false;if(!driving){if(Math.hypot(player.x-car.x,player.z-car.z)>4){notify('Walk closer to the yellow car');return false;}if(!clearPath(player.x,player.z,car.x,car.z)){notify('Go around to the car. A wall is in the way.');return false;}driving=true;car.speed=0;player.x=car.x;player.z=car.z;notify('Drive with the left stick. BRAKE slows the car.');}else{if(Math.abs(car.speed)>1){notify('Stop the car before getting out');return false;}let exit=null;for(const s of[1,-1]){const x=car.x+Math.cos(car.yaw)*s*1.7,z=car.z+Math.sin(car.yaw)*s*1.7;if(!blocked(x,z,.4)&&clearPath(car.x,car.z,x,z,.37)){exit={x,z};break;}}if(!exit){notify('Both sides are blocked. Move the car first.');return false;}driving=false;player.x=exit.x;player.z=exit.z;player.yaw=car.yaw;car.speed=0;}sync();onModeChange(driving);return true;}
+ function update(dt,input={}){if(disposed||!Number.isFinite(dt)||dt<=0)return;dt=Math.min(dt,.05);if(driving){const throttle=Math.max(-1,Math.min(1,Number(input.throttle)||0)),steer=Math.max(-1,Math.min(1,Number(input.steer)||0));if(input.brake){car.speed=Math.sign(car.speed)*Math.max(0,Math.abs(car.speed)-20*dt);}else if(throttle){car.speed+=throttle*9*dt;}else car.speed*=Math.exp(-1.2*dt);car.speed=Math.max(-6,Math.min(19,car.speed));const nextYaw=car.yaw+steer*Math.min(1,Math.abs(car.speed)/3)*1.55*dt*Math.sign(car.speed);if(!carBlocked(car.x,car.z,nextYaw))car.yaw=nextYaw;const hit=move(car,Math.sin(car.yaw)*car.speed*dt,-Math.cos(car.yaw)*car.speed*dt,1.12);if(hit){car.speed*=.2;if(!lastBlocked)notify('Road blocked');}lastBlocked=hit;player.x=car.x;player.z=car.z;}else{let x=Number.isFinite(input.moveX)?Math.max(-1,Math.min(1,input.moveX)):0,z=Number.isFinite(input.moveY)?-Math.max(-1,Math.min(1,input.moveY)):0,n=Math.max(1,Math.hypot(x,z));x/=n;z/=n;const moving=Math.hypot(x,z)>.05;if(moving){move(player,x*4.5*dt,z*4.5*dt,.37);player.yaw=Math.atan2(x,-z);phase+=dt*9;}else phase=0;for(let i=0;i<2;i++){legs[i].rotation.x=Math.sin(phase+i*Math.PI)*.5;arms[i].rotation.x=-Math.sin(phase+i*Math.PI)*.35;}}sync();}
+ function snapshot(){return{version:1,player:{x:player.x,z:player.z,yaw:player.yaw},car:{x:car.x,z:car.z,yaw:car.yaw},driving};}
+ function restore(data){if(!data||data.version!==1||typeof data.driving!=='boolean')return false;for(const key of['player','car'])if(!data[key]||!['x','z','yaw'].every(k=>Number.isFinite(data[key][k])&&Math.abs(data[key][k])<100000))return false;if(carBlocked(data.car.x,data.car.z,data.car.yaw)||(!data.driving&&blocked(data.player.x,data.player.z,.37)))return false;for(const k of['x','z','yaw']){player[k]=data.player[k];car[k]=data.car[k];}car.speed=0;driving=data.driving===true;sync();onModeChange(driving);return true;}
+ sync();return{player,car,update,interact,snapshot,restore,get driving(){return driving;},get cameraTarget(){return driving?car:player;},dispose(){disposed=true;scene.remove(pm,cm);geometries.forEach(g=>g.dispose());Object.values(mats).forEach(m=>m.dispose());}};
+}
+
+
+// ===== jobs.js =====
+// Original game logic. No external assets or runtime dependencies.
+function createTaxiJob({routes, getVehicle, onChange=()=>{}, initialState=null}) {
+  if (!Array.isArray(routes) || routes.length < 1) throw new Error('Taxi routes required');
+  const point = p => p && Number.isFinite(p.x) && Number.isFinite(p.z);
+  const validRoutes = routes.filter(r => r && typeof r.id==='string' && point(r.pickup) && point(r.dropoff) && Math.hypot(r.pickup.x-r.dropoff.x,r.pickup.z-r.dropoff.z)>=20);
+  if (validRoutes.length!==routes.length) throw new Error('Taxi routes need distinct, finite road-safe stops');
+  const money = n => Number.isSafeInteger(n) && n>=0 && n<=100000000;
+  const state = {version:1,balance:0,completed:0,routeIndex:0,phase:'idle',dwell:0,message:'Open Phone to find taxi work.',lastFare:0};
+  if (initialState && initialState.version===1) {
+    if(money(initialState.balance))state.balance=initialState.balance;
+    if(money(initialState.completed))state.completed=initialState.completed;
+    if(Number.isSafeInteger(initialState.routeIndex)&&initialState.routeIndex>=0)state.routeIndex=initialState.routeIndex%routes.length;
+  }
+  let changed=true,uiTimer=0,lastUiKey='';
+  const route = () => routes[state.routeIndex];
+  const fare = () => Math.max(30,Math.min(500,Math.round(25+Math.hypot(route().pickup.x-route().dropoff.x,route().pickup.z-route().dropoff.z)*.3)));
+  const snapshot = () => {
+    const target=state.phase==='pickup'?route().pickup:state.phase==='dropoff'?route().dropoff:null,v=getVehicle?.();
+    const distance=target&&v&&Number.isFinite(v.x)&&Number.isFinite(v.z)?Math.hypot(v.x-target.x,v.z-target.z):null;
+    const arrival=target?(v?.driving!==true?'enter-car':distance===null?'unavailable':distance>5?'travel':!Number.isFinite(v.speed)||Math.abs(v.speed)>.8?'stop':'boarding'):'idle';
+    return {...state,route:route(),fare:fare(),target,distance,arrival};
+  };
+  function emit(){changed=true;onChange(snapshot());}
+  function accept(){if(state.phase!=='idle')return false;state.phase='pickup';state.dwell=0;state.message='Drive to '+route().pickup.name+'. Stop in the marked zone.';emit();return true;}
+  function cancel(){if(state.phase==='idle')return false;state.phase='idle';state.dwell=0;state.message='Taxi job canceled. No money lost.';emit();return true;}
+  function update(dt){
+    if(state.phase==='idle')return;
+    const v=getVehicle?.(),target=state.phase==='pickup'?route().pickup:route().dropoff;
+    const ready=v && v.driving===true && Number.isFinite(v.x)&&Number.isFinite(v.z)&&Number.isFinite(v.speed) && Math.hypot(v.x-target.x,v.z-target.z)<=5 && Math.abs(v.speed)<=.8;
+    const step=Number.isFinite(dt)?Math.max(0,Math.min(.1,dt)):0;
+    // Refresh navigation at most four times a second while travelling. No save event for distance changes.
+    uiTimer+=step;if(uiTimer>=.25){uiTimer=0;const q=snapshot(),key=q.arrival+':'+Math.round(q.distance??-1);if(key!==lastUiKey){lastUiKey=key;changed=true;}}
+    if(!ready){if(state.dwell!==0){state.dwell=0;emit();}return;}
+    state.dwell+=step;changed=true;
+    if(state.dwell<1.5)return;
+    state.dwell=0;
+    if(state.phase==='pickup'){
+      state.phase='dropoff';state.message='Passenger aboard. Drive to '+route().dropoff.name+'.';
+    } else {
+      const paid=fare();state.balance=Math.min(100000000,state.balance+paid);state.completed=Math.min(100000000,state.completed+1);state.lastFare=paid;state.phase='idle';state.routeIndex=(state.routeIndex+1)%routes.length;state.message='Ride complete. Earned '+paid+' credits.';
+    }
+    emit();
+  }
+  return {accept,cancel,update,snapshot,consumeDirty(){const v=changed;changed=false;return v;},serialize(){return{version:1,balance:state.balance,completed:state.completed,routeIndex:state.routeIndex};}};
+}
+
+function mountTaxiPhone({host=document.body,job,onPause=()=>{},onSave=()=>{}}) {
+  const root=document.createElement('div');root.className='taxi-system';
+  root.innerHTML=`<style>
+  .taxi-system{font-family:system-ui,Arial,sans-serif;color:#f4f4ea;--gold:#ffd36a;--ink:#102329}
+  .taxi-system button{font:600 14px system-ui;min-height:44px;min-width:48px;touch-action:manipulation;border-radius:10px;border:1px solid #78928e;background:#17343b;color:#fff;padding:9px 14px;cursor:pointer}
+  .taxi-system button:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
+  .taxi-system .taxi-phone-open{position:absolute;right:16px;top:16px;z-index:20;background:#17343bee}
+  .taxi-system .taxi-hud{position:absolute;top:16px;left:16px;z-index:15;background:#102329eb;border:1px solid #68817d;border-radius:12px;padding:10px 14px;max-width:min(450px,65vw);pointer-events:none}
+  .taxi-system .taxi-money{font-weight:800;color:var(--gold);font-size:18px}.taxi-system .taxi-goal{font-size:13px;margin-top:3px}.taxi-system .taxi-progress{height:3px;border-radius:4px;margin-top:6px;background:#5f7774;overflow:hidden}.taxi-system .taxi-progress i{display:block;background:var(--gold);height:100%;width:0}
+  .taxi-system .taxi-backdrop{position:absolute;inset:0;background:#031419b8;z-index:70;display:grid;place-items:center;padding:10px;box-sizing:border-box}
+  .taxi-system [hidden]{display:none!important}.taxi-system .taxi-phone{box-sizing:border-box;width:min(480px,94vw);max-height:94dvh;overflow:auto;border:1px solid #82968b;background:#102329;border-radius:18px;padding:18px;box-shadow:0 18px 50px #0008}
+  .taxi-system .taxi-top{display:flex;align-items:center;justify-content:space-between;gap:10px}.taxi-system h2{font-size:20px;margin:0}.taxi-system .taxi-label{font-size:10px;letter-spacing:2px;color:#b8c5bc;margin-bottom:6px}.taxi-system .taxi-card{background:#1a353b;padding:14px;border:1px solid #49635f;border-radius:12px;margin:14px 0}.taxi-system h3{margin:0 0 8px;font-size:17px}.taxi-system p{font-size:13px;line-height:1.5;margin:7px 0}.taxi-system .taxi-buttons{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.taxi-system .taxi-accept{background:var(--gold);color:#102329;border-color:var(--gold)}.taxi-system .taxi-muted{color:#b8c5bc}.taxi-system .taxi-route{font-size:16px;font-weight:700}.taxi-system .taxi-live{font-size:13px;min-height:20px}
+  @media(max-height:440px){.taxi-system .taxi-phone{width:min(650px,94vw);padding:12px 16px}.taxi-system .taxi-card{margin:10px 0;padding:10px 14px}.taxi-system .taxi-top h2{font-size:18px}.taxi-system .taxi-hud{padding:7px 12px}.taxi-system .taxi-buttons{margin-top:8px}.taxi-system .taxi-phone p{margin:4px 0}}
+  </style><div class="taxi-hud"><div class="taxi-money"></div><div class="taxi-goal"></div><div class="taxi-guidance" style="font-size:12px;color:#c7d8cb;margin-top:3px"></div><div class="taxi-progress"><i></i></div></div>
+  <button class="taxi-phone-open" aria-label="Open in-game phone">Phone</button>
+  <div class="taxi-backdrop" hidden><section class="taxi-phone" role="dialog" aria-modal="true" aria-label="In-game phone"><div class="taxi-top"><div><div class="taxi-label">CITY / PHONE</div><h2>Your city. Your next ride.</h2></div><button class="taxi-close" aria-label="Close phone">Close</button></div><div class="taxi-card"><h3>Taxi work</h3><div class="taxi-route"></div><p class="taxi-reward"></p><p class="taxi-navigation"></p><p class="taxi-instructions">Drive the car into the marker. Slow to a stop for 1.5 seconds to pick up or drop off a passenger.</p><div class="taxi-buttons"><button class="taxi-accept">Accept taxi job</button><button class="taxi-cancel" hidden>Cancel job</button></div></div><div class="taxi-live" role="status" aria-live="polite"></div><p class="taxi-muted">Game credits only. No real purchases. First private trial: taxi work.</p></section></div>`;
+  host.append(root);
+  const $=s=>root.querySelector(s),open=$('.taxi-phone-open'),backdrop=$('.taxi-backdrop'),close=$('.taxi-close'),accept=$('.taxi-accept'),cancel=$('.taxi-cancel');let isOpen=false,lastMessage='';
+  function show(value){isOpen=value;backdrop.hidden=!value;onPause(value);if(value){render();close.focus();}else open.focus();}
+  open.onclick=()=>show(true);close.onclick=()=>show(false);accept.onclick=()=>{if(job.accept()){onSave(job.serialize());show(false);render();}};cancel.onclick=()=>{job.cancel();onSave(job.serialize());render();};
+  const key=e=>{if(isOpen){if(e.key==='Escape'){e.preventDefault();show(false);}if(e.key==='Tab'){const active=[close,...[accept,cancel].filter(b=>!b.hidden)];const n=active.indexOf(document.activeElement),next=(n+(e.shiftKey?-1:1)+active.length)%active.length;e.preventDefault();active[next].focus();}e.stopImmediatePropagation();}};window.addEventListener('keydown',key,true);
+  function render(){
+    const s=job.snapshot(),distance=Number.isFinite(s.distance)?(s.distance>=1000?(s.distance/1000).toFixed(1)+' km':Math.round(s.distance)+' m'):'',
+      guidance=s.arrival==='enter-car'?'Enter the car to continue.':s.arrival==='stop'?'Brake and stay stopped in the marker.':s.arrival==='boarding'?(s.phase==='pickup'?'Picking up passenger':'Dropping off passenger')+' · '+Math.round(Math.min(1,s.dwell/1.5)*100)+'%':s.arrival==='unavailable'?'Waiting for vehicle position.':distance?'Drive to the marker · '+distance:'Accept a ride. No time limit.';
+    $('.taxi-money').textContent=s.balance.toLocaleString()+' credits';
+    $('.taxi-goal').textContent=s.phase==='idle'?s.message:(s.phase==='pickup'?'PICK UP / ':'DROP OFF / ')+s.target.name+(distance?' · '+distance:'');
+    $('.taxi-progress').hidden=s.phase==='idle';$('.taxi-progress i').style.width=(s.dwell/1.5*100)+'%';
+    $('.taxi-route').textContent=s.route.pickup.name+' → '+s.route.dropoff.name;
+    $('.taxi-reward').textContent='Fare: '+s.fare+' credits · Completed rides: '+s.completed;
+    $('.taxi-navigation').textContent=guidance;$('.taxi-guidance').textContent=s.phase==='idle'?'':guidance;accept.hidden=s.phase!=='idle';cancel.hidden=s.phase==='idle';
+    if(s.message!==lastMessage){$('.taxi-live').textContent=s.message;lastMessage=s.message;}
+  }
+  render();return{root,render,get open(){return isOpen;},setOpen:show,destroy(){window.removeEventListener('keydown',key,true);root.remove();onPause(false);}};
+}
+
+
+// ===== save.js =====
+// save.js — save/load/autosave. Coordinator-owned. Contract v1.1.
+// Schema v1: { version:1, savedAt, actors: actors.snapshot(), jobs: taxiJob.serialize() }
+// actors.snapshot() = { version:1, player:{x,z,yaw}, car:{x,z,yaw}, driving }
+// jobs serialize()  = { version:1, balance, completed, routeIndex }
+// Reload intentionally cancels any active fare (builder 5's rule, avoids fake passengers).
+const KEY = 'coastalcity_save_v1';
+
+function createSave({ getActors, getJobs }) {
+  let lastLoaded = null;
+
+  function load() {
+    try {
+      const raw = localStorage.getItem(KEY);
+      if (!raw) return null;
+      const data = JSON.parse(raw);
+      if (!data || data.version !== 1) return null;
+      lastLoaded = data;
+      return data;
+    } catch (e) { return null; }
+  }
+
+  function collect() {
+    const actors = getActors();
+    const jobs = getJobs();
+    return {
+      version: 1,
+      savedAt: Date.now(),
+      actors: actors.snapshot(),
+      jobs: jobs ? jobs.serialize() : null,
+    };
+  }
+
+  function persist() {
+    try { localStorage.setItem(KEY, JSON.stringify(collect())); }
+    catch (e) { /* storage full/blocked: game keeps running */ }
+  }
+
+  function restore() {
+    if (!lastLoaded) return;
+    try {
+      if (lastLoaded.actors) getActors().restore(lastLoaded.actors);
+      // jobs state is restored through createTaxiJob initialState in main.js
+    } catch (e) { /* a bad save never blocks a fresh game */ }
+  }
+
+  let timer = 0;
+  function startAutosave() {
+    stopAutosave();
+    timer = setInterval(persist, 1000); // 1 s autosave, standing rule
+  }
+  function stopAutosave() { if (timer) clearInterval(timer); timer = 0; }
+
+  return { load, collect, persist, restore, startAutosave, stopAutosave };
+}
+
+
+// ===== main.js =====
+// main.js — game loop, camera, HUD glue, module wiring. Coordinator-owned. Contract v1.1.
+// Only this file imports THREE; every module receives it (or DOM hosts) via arguments.
+
+
+
+
+
+
+const canvas = document.getElementById('game');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5)); // Galaxy M02s guardrail
+renderer.setSize(window.innerWidth, window.innerHeight);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87b5e0);
+scene.fog = new THREE.Fog(0x87b5e0, 120, 420);
+
+const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 600);
+
+const hemi = new THREE.HemisphereLight(0xcfe8ff, 0x4a5d3a, 1.05);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xfff2d8, 1.4);
+sun.position.set(60, 100, 40);
+scene.add(sun);
+
+// ---- toast + fps -----------------------------------------------------------
+const elFps = document.getElementById('hud-fps');
+const elToast = document.getElementById('toast');
+let toastTimer = 0;
+function notify(msg) {
+  elToast.textContent = msg;
+  elToast.style.opacity = '1';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { elToast.style.opacity = '0'; }, 2200);
+}
+
+// ---- module wiring (order matters: map -> controls -> actors -> jobs) ------
+const map = createMap({ THREE, scene });
+
+let paused = false;
+
+const controls = createControls({
+  container: document.getElementById('controls-root'),
+  onInteract: () => { if (!paused) actors.interact(); },
+});
+
+const actors = createActors({
+  THREE, scene, map,
+  spawn: { x: map.spawnPoints.player.x, z: map.spawnPoints.player.z },
+  notify,
+  onModeChange: () => {},
+});
+
+// taxi routes: coordinator pairs map-provided road-safe stops into routes
+const stops = map.taxiStops;
+const routes = [];
+for (let i = 0; i < stops.length; i++) {
+  const a = stops[i], b = stops[(i + 2) % stops.length];
+  routes.push({
+    id: 'route-' + i,
+    pickup: { x: a.x, z: a.z, name: a.name },
+    dropoff: { x: b.x, z: b.z, name: b.name },
+  });
+}
+
+let taxiJob = null;
+const save = createSave({ getActors: () => actors, getJobs: () => taxiJob });
+const loaded = save.load();
+
+// world marker: coordinator renders it from job snapshots (builder 5 contract)
+let marker = null;
+function syncMarker(snap) {
+  const target = snap.target;
+  if (!target) {
+    if (marker) marker.visible = false;
+    return;
+  }
+  if (!marker) {
+    marker = new THREE.Mesh(
+      new THREE.CylinderGeometry(2.2, 2.2, 0.25, 24),
+      new THREE.MeshBasicMaterial({ color: 0xffd23e, transparent: true, opacity: 0.7 })
+    );
+    scene.add(marker);
+  }
+  marker.visible = true;
+  marker.material.color.set(snap.phase === 'pickup' ? 0xffd23e : 0x59d67a);
+  marker.position.set(target.x, 0.15, target.z);
+}
+
+taxiJob = createTaxiJob({
+  routes,
+  getVehicle: () => ({
+    x: actors.car.x, z: actors.car.z,
+    speed: actors.car.speed || 0,
+    driving: actors.driving === true,
+  }),
+  onChange: (snap) => { syncMarker(snap); save.persist(); },
+  initialState: loaded && loaded.jobs ? loaded.jobs : null,
+});
+
+const phone = mountTaxiPhone({
+  host: document.getElementById('phone-root'),
+  job: taxiJob,
+  onPause: (p) => { paused = !!p; },
+  onSave: () => { save.persist(); notify('Game saved'); },
+});
+
+save.restore();          // actors snapshot back in; jobs state went in via initialState
+save.startAutosave();    // every 1 s, his standing rule
+syncMarker(taxiJob.snapshot());
+phone.render();
+
+// ---- camera follow ----------------------------------------------------------
+const camPos = new THREE.Vector3();
+const camTarget = new THREE.Vector3();
+function followCamera(dt) {
+  const t = actors.cameraTarget; // {x, y, z, yaw}
+  const driving = actors.driving === true;
+  const dist = driving ? 11 : 7, height = driving ? 4.5 : 3.2;
+  const fx = Math.sin(t.yaw), fz = -Math.cos(t.yaw); // actors v002 heading convention
+  camPos.set(t.x - fx * dist, (t.y || 0) + height, t.z - fz * dist);
+  camera.position.lerp(camPos, Math.min(1, dt * 6));
+  camTarget.set(t.x + fx * 6, (t.y || 0) + 1.5, t.z + fz * 6);
+  camera.lookAt(camTarget);
+}
+
+// ---- loop -------------------------------------------------------------------
+let last = performance.now();
+let fpsAcc = 0, fpsN = 0, fpsShown = 0;
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  let dt = (now - last) / 1000;
+  last = now;
+  if (dt > 0.1) dt = 0.1; // clamp hitches
+  fpsAcc += dt; fpsN++;
+  if (fpsAcc >= 0.5) { fpsShown = Math.round(fpsN / fpsAcc); fpsAcc = 0; fpsN = 0; }
+  if (!paused) {
+    map.update(dt);
+    actors.update(dt, controls);
+    taxiJob.update(dt);
+    if (marker && marker.visible) marker.rotation.y += dt; // spin marker lightly
+    followCamera(dt);
+  }
+  if (taxiJob.consumeDirty()) phone.render();
+  const kmh = Math.round(Math.abs(actors.car.speed || 0) * 3.6);
+  elFps.textContent = fpsShown + ' FPS' + (actors.driving ? ' · ' + kmh + ' km/h' : '');
+  renderer.render(scene, camera);
+}
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+document.getElementById('loading').style.display = 'none';
+notify('Open the Phone (top right) to start taxi work');
+requestAnimationFrame(frame);
+
+</script>
+</body>
+</html>
