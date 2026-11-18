@@ -351,16 +351,17 @@ function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onMode
  function batchStatic(group){const buckets=new Map();for(const o of [...group.children])if(o.isMesh){o.updateMatrix();const g=o.geometry.index?o.geometry.toNonIndexed():o.geometry.clone();g.applyMatrix4(o.matrix);const a=buckets.get(o.material)||[];a.push({o,g});buckets.set(o.material,a);}for(const [mat,items]of buckets){if(items.length<2){items.forEach(i=>i.g.dispose());continue;}const positions=[],normals=[];for(const {o,g}of items){positions.push(...g.attributes.position.array);normals.push(...g.attributes.normal.array);group.remove(o);g.dispose();}const joined=new T.BufferGeometry();joined.setAttribute('position',new T.Float32BufferAttribute(positions,3));joined.setAttribute('normal',new T.Float32BufferAttribute(normals,3));mesh(group,joined,mat);}}
  batchStatic(cm);batchStatic(pm);legs.forEach(batchStatic);arms.forEach(batchStatic);
  const start=map.spawnPoints||{},ps=start.player||spawn,cs=start.car||{x:(spawn.x??0)+4,z:spawn.z??8,heading:0};
- const player={x:ps.x??0,z:ps.z??8,y:0,yaw:ps.heading??0,mesh:pm,inCar:false};const car={x:cs.x??4,z:cs.z??8,y:0,yaw:cs.heading??0,speed:0,mesh:cm,occupied:false};let phase=0,driving=false,disposed=false,lastBlocked=false;
+ const player={x:ps.x??0,z:ps.z??8,y:0,yaw:ps.heading??0,mesh:pm,inCar:false};const car={x:cs.x??4,z:cs.z??8,y:0,yaw:cs.heading??0,speed:0,mesh:cm,occupied:false};let phase=0,driving=false,disposed=false,lastBlocked=false,mixer=null,walkAction=null,idleAction=null,loadedModels=false;
  function carBlocked(x,z,yaw=car.yaw){for(const d of[-1.25,0,1.25])if(blocked(x+Math.sin(yaw)*d,z-Math.cos(yaw)*d,1.02))return true;return false;}
  function move(entity,dx,dz,r){const n=Math.max(1,Math.ceil(Math.hypot(dx,dz)/.22));let hit=false;for(let i=0;i<n;i++){const x=entity.x+dx/n,z=entity.z+dz/n;if(!(entity===car?carBlocked(x,entity.z):blocked(x,entity.z,r)))entity.x=x;else hit=true;if(!(entity===car?carBlocked(entity.x,z):blocked(entity.x,z,r)))entity.z=z;else hit=true;}return hit;}
  function sync(){player.y=ground(player.x,player.z);car.y=ground(car.x,car.z);pm.position.set(player.x,player.y,player.z);pm.rotation.y=-player.yaw;cm.position.set(car.x,car.y,car.z);cm.rotation.y=-car.yaw;pm.visible=!driving;player.inCar=driving?car:false;car.occupied=driving;}
  function clearPath(ax,az,bx,bz,r=.3){const n=Math.max(1,Math.ceil(Math.hypot(bx-ax,bz-az)/.2));for(let i=1;i<=n;i++)if(blocked(ax+(bx-ax)*i/n,az+(bz-az)*i/n,r))return false;return true;}
  function interact(){if(disposed)return false;if(!driving){if(Math.hypot(player.x-car.x,player.z-car.z)>4){notify('Walk closer to the yellow car');return false;}if(!clearPath(player.x,player.z,car.x,car.z)){notify('Go around to the car. A wall is in the way.');return false;}driving=true;car.speed=0;player.x=car.x;player.z=car.z;notify('Drive with the left stick. BRAKE slows the car.');}else{if(Math.abs(car.speed)>1){notify('Stop the car before getting out');return false;}let exit=null;for(const s of[1,-1]){const x=car.x+Math.cos(car.yaw)*s*1.7,z=car.z+Math.sin(car.yaw)*s*1.7;if(!blocked(x,z,.4)&&clearPath(car.x,car.z,x,z,.37)){exit={x,z};break;}}if(!exit){notify('Both sides are blocked. Move the car first.');return false;}driving=false;player.x=exit.x;player.z=exit.z;player.yaw=car.yaw;car.speed=0;}sync();onModeChange(driving);return true;}
- function update(dt,input={}){if(disposed||!Number.isFinite(dt)||dt<=0)return;dt=Math.min(dt,.05);if(driving){const throttle=Math.max(-1,Math.min(1,Number(input.throttle)||0)),steer=Math.max(-1,Math.min(1,Number(input.steer)||0));if(input.brake){car.speed=Math.sign(car.speed)*Math.max(0,Math.abs(car.speed)-20*dt);}else if(throttle){car.speed+=throttle*9*dt;}else car.speed*=Math.exp(-1.2*dt);car.speed=Math.max(-6,Math.min(19,car.speed));const nextYaw=car.yaw+steer*Math.min(1,Math.abs(car.speed)/3)*1.55*dt*Math.sign(car.speed);if(!carBlocked(car.x,car.z,nextYaw))car.yaw=nextYaw;const hit=move(car,Math.sin(car.yaw)*car.speed*dt,-Math.cos(car.yaw)*car.speed*dt,1.12);if(hit){car.speed*=.2;if(!lastBlocked)notify('Road blocked');}lastBlocked=hit;player.x=car.x;player.z=car.z;}else{let x=Number.isFinite(input.moveX)?Math.max(-1,Math.min(1,input.moveX)):0,z=Number.isFinite(input.moveY)?-Math.max(-1,Math.min(1,input.moveY)):0,n=Math.max(1,Math.hypot(x,z));x/=n;z/=n;const moving=Math.hypot(x,z)>.05;if(moving){move(player,x*4.5*dt,z*4.5*dt,.37);player.yaw=Math.atan2(x,-z);phase+=dt*9;}else phase=0;for(let i=0;i<2;i++){legs[i].rotation.x=Math.sin(phase+i*Math.PI)*.5;arms[i].rotation.x=-Math.sin(phase+i*Math.PI)*.35;}}sync();}
+ function update(dt,input={}){if(disposed||!Number.isFinite(dt)||dt<=0)return;dt=Math.min(dt,.05);if(driving){const throttle=Math.max(-1,Math.min(1,Number(input.throttle)||0)),steer=Math.max(-1,Math.min(1,Number(input.steer)||0));if(input.brake){car.speed=Math.sign(car.speed)*Math.max(0,Math.abs(car.speed)-20*dt);}else if(throttle){car.speed+=throttle*9*dt;}else car.speed*=Math.exp(-1.2*dt);car.speed=Math.max(-6,Math.min(19,car.speed));const nextYaw=car.yaw+steer*Math.min(1,Math.abs(car.speed)/3)*1.55*dt*Math.sign(car.speed);if(!carBlocked(car.x,car.z,nextYaw))car.yaw=nextYaw;const hit=move(car,Math.sin(car.yaw)*car.speed*dt,-Math.cos(car.yaw)*car.speed*dt,1.12);if(hit){car.speed*=.2;if(!lastBlocked)notify('Road blocked');}lastBlocked=hit;player.x=car.x;player.z=car.z;}else{let x=Number.isFinite(input.moveX)?Math.max(-1,Math.min(1,input.moveX)):0,z=Number.isFinite(input.moveY)?-Math.max(-1,Math.min(1,input.moveY)):0,n=Math.max(1,Math.hypot(x,z));x/=n;z/=n;const moving=Math.hypot(x,z)>.05;if(moving){move(player,x*4.5*dt,z*4.5*dt,.37);player.yaw=Math.atan2(x,-z);phase+=dt*9;}else phase=0;for(let i=0;i<2;i++){legs[i].rotation.x=Math.sin(phase+i*Math.PI)*.5;arms[i].rotation.x=-Math.sin(phase+i*Math.PI)*.35;}}if(mixer){const moving=!driving&&(Math.abs(input.moveX||0)+Math.abs(input.moveY||0)>.1);walkAction.enabled=moving;idleAction.enabled=!moving;mixer.update(dt);}sync();}
  function snapshot(){return{version:1,player:{x:player.x,z:player.z,yaw:player.yaw},car:{x:car.x,z:car.z,yaw:car.yaw},driving};}
  function restore(data){if(!data||data.version!==1||typeof data.driving!=='boolean')return false;for(const key of['player','car'])if(!data[key]||!['x','z','yaw'].every(k=>Number.isFinite(data[key][k])&&Math.abs(data[key][k])<100000))return false;if(carBlocked(data.car.x,data.car.z,data.car.yaw)||(!data.driving&&blocked(data.player.x,data.player.z,.37)))return false;for(const k of['x','z','yaw']){player[k]=data.player[k];car[k]=data.car[k];}car.speed=0;driving=data.driving===true;sync();onModeChange(driving);return true;}
- sync();return{player,car,update,interact,snapshot,restore,get driving(){return driving;},get cameraTarget(){return driving?car:player;},dispose(){disposed=true;scene.remove(pm,cm);geometries.forEach(g=>g.dispose());Object.values(mats).forEach(m=>m.dispose());}};
+ async function loadModels({GLTFLoader,baseURL='./models/'}={}){if(!GLTFLoader)throw new Error('GLTFLoader is required');const loader=new GLTFLoader();const [human,taxi]=await Promise.all([loader.loadAsync(baseURL+'player-vest-cc0.glb'),loader.loadAsync(baseURL+'taxi.glb')]);if(disposed)return false;for(const o of [...pm.children])pm.remove(o);for(const o of [...cm.children])cm.remove(o);const hb=new T.Box3().setFromObject(human.scene),hs=hb.getSize(new T.Vector3());human.scene.scale.setScalar(1.9/hs.y);human.scene.position.y=-hb.min.y*human.scene.scale.x;human.scene.rotation.y=Math.PI;pm.add(human.scene);const tb=new T.Box3().setFromObject(taxi.scene),ts=tb.getSize(new T.Vector3());const scale=3.8/ts.z;taxi.scene.scale.setScalar(scale);taxi.scene.rotation.y=Math.PI;taxi.scene.position.y=-tb.min.y*scale;cm.add(taxi.scene);human.scene.traverse(o=>{if(o.isMesh){o.frustumCulled=false;geometries.push(o.geometry);}});taxi.scene.traverse(o=>{if(o.isMesh)geometries.push(o.geometry);});mixer=new T.AnimationMixer(human.scene);walkAction=mixer.clipAction(human.animations.find(a=>a.name==='Walk'));idleAction=mixer.clipAction(human.animations.find(a=>a.name==='Idle'));walkAction.play();idleAction.play();walkAction.enabled=false;loadedModels=true;sync();return true;}
+ sync();return{player,car,update,interact,loadModels,get modelsLoaded(){return loadedModels;},snapshot,restore,get driving(){return driving;},get cameraTarget(){return driving?car:player;},dispose(){disposed=true;scene.remove(pm,cm);geometries.forEach(g=>g.dispose());Object.values(mats).forEach(m=>m.dispose());}};
 }
 
 
@@ -507,6 +508,7 @@ function createSave({ getActors, getJobs }) {
 // ===== main.js =====
 // main.js — game loop, camera, HUD glue, module wiring. Coordinator-owned. Contract v1.1.
 // Only this file imports THREE; every module receives it (or DOM hosts) via arguments.
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 const canvas = document.getElementById('game');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5)); // Galaxy M02s guardrail
@@ -602,7 +604,7 @@ taxiJob = createTaxiJob({
 const phone = mountTaxiPhone({
   host: document.getElementById('phone-root'),
   job: taxiJob,
-  onPause: (p) => { paused = !!p; },
+  onPause: (p) => { paused = !!p; if (paused) controls.reset(); },
   onSave: () => { save.persist(); notify('Game saved'); },
 });
 
@@ -654,6 +656,15 @@ window.addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
+
+// load the CC0 models before hiding the loader (builder 7 v007); report failures, don't fall back silently
+try {
+  await actors.loadModels({ GLTFLoader, baseURL: './models/' });
+} catch (err) {
+  const el = document.querySelector('#loading .sub');
+  if (el) el.textContent = '3D models failed to load (' + (err && err.message ? err.message : 'network') + ') - showing simple shapes';
+  await new Promise((r) => setTimeout(r, 2500));
+}
 
 document.getElementById('loading').style.display = 'none';
 notify('Open the Phone (top right) to start taxi work');
