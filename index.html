@@ -657,9 +657,38 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
+// GitHub's web UI can't process these binaries, so the GLBs are committed as .b64 text;
+// decode to blob URLs and hand builder 7's loader a subclass that maps the plain paths.
+async function glbURL(path) {
+  let r = await fetch(path + '.b64');
+  let b64 = '';
+  if (r.ok) {
+    b64 = await r.text();
+  } else {
+    // big files are committed as numbered parts (240 KB each, GitHub editor limit)
+    for (let i = 0; ; i++) {
+      const part = await fetch(path + '.b64.0' + i);
+      if (!part.ok) { if (i === 0) return path; break; } // a real GLB committed later wins automatically
+      b64 += await part.text();
+    }
+  }
+  b64 = b64.replace(/\s+/g, '');
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return URL.createObjectURL(new Blob([bytes], { type: 'model/gltf-binary' }));
+}
+const modelBlobs = {};
+for (const p of ['./models/player-vest-cc0.glb', './models/taxi.glb']) modelBlobs[p] = await glbURL(p);
+class RepoGLTFLoader extends GLTFLoader {
+  loadAsync(url, onProgress) {
+    return super.loadAsync(modelBlobs[url] || url, onProgress);
+  }
+}
+
 // load the CC0 models before hiding the loader (builder 7 v007); report failures, don't fall back silently
 try {
-  await actors.loadModels({ GLTFLoader, baseURL: './models/' });
+  await actors.loadModels({ GLTFLoader: RepoGLTFLoader, baseURL: './models/' });
 } catch (err) {
   const el = document.querySelector('#loading .sub');
   if (el) el.textContent = '3D models failed to load (' + (err && err.message ? err.message : 'network') + ') - showing simple shapes';
