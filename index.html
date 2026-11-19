@@ -714,7 +714,7 @@ function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onMode
    const nextYaw=v.yaw+steer*Math.min(1,Math.abs(v.speed)/3)*t.turn*dt*Math.sign(v.speed);
    if(!vehicleBlocked(v,v.x,v.z,nextYaw))v.yaw=nextYaw;
    const hit=move(v,Math.sin(v.yaw)*v.speed*dt,-Math.cos(v.yaw)*v.speed*dt,null,v);
-   if(hit){v.speed*=.2;if(!lastBlocked)notify('Road blocked');}
+   if(hit){if(!lastBlocked){v.speed*=.25;notify('Road blocked');}else v.speed*=Math.exp(-3*dt);}// v011: damp once per impact, gentle decay while scraping (per-frame x.2 pinned vehicles dead on walls)
    lastBlocked=hit;
    if(v.key==='bike'){const tgt=steer*Math.min(1,Math.abs(v.speed)/7)*(t.leanMax||0);v.lean+=(tgt-v.lean)*Math.min(1,dt*8);}
    player.x=v.x;player.z=v.z;}
@@ -840,7 +840,62 @@ function createDeliveryJob({depot, drops, getCourier, onChange=()=>{}, onPayout=
   return {accept,cancel,update,snapshot,consumeDirty(){const v=changed;changed=false;return v;},serialize(){return{version:1,completed:state.completed,dropIndex:state.dropIndex,earned:state.earned};}};
 }
 
-function mountTaxiPhone({host=document.body,job,delivery=null,onPause=()=>{},onSave=()=>{}}) {
+// Pizza delivery side job (v1): timed. Collect at the pizzeria, then beat the timer for
+// full pay; a late delivery still pays a share. Pays into the shared taxi wallet.
+function createPizzaJob({shop, drops, getCourier, onChange=()=>{}, onPayout=()=>{}, initialState=null}) {
+  const point = p => p && Number.isFinite(p.x) && Number.isFinite(p.z);
+  if (!point(shop) || typeof shop.name!=='string') throw new Error('Pizza shop required');
+  if (!Array.isArray(drops) || drops.length < 1) throw new Error('Pizza drops required');
+  const validDrops = drops.filter(d => d && typeof d.name==='string' && point(d) && Math.hypot(d.x-shop.x,d.z-shop.z)>=20);
+  if (validDrops.length!==drops.length) throw new Error('Pizza drops need distinct, finite road-safe stops');
+  const money = n => Number.isSafeInteger(n) && n>=0 && n<=100000000;
+  const state = {version:1,completed:0,onTime:0,dropIndex:0,earned:0,phase:'idle',dwell:0,timeLeft:0,limit:0,message:'Pizza delivery: beat the timer for full pay.',lastPayout:0};
+  if (initialState && initialState.version===1) {
+    if(money(initialState.completed))state.completed=initialState.completed;
+    if(money(initialState.onTime))state.onTime=initialState.onTime;
+    if(money(initialState.earned))state.earned=initialState.earned;
+    if(Number.isSafeInteger(initialState.dropIndex)&&initialState.dropIndex>=0)state.dropIndex=initialState.dropIndex%drops.length;
+  }
+  let changed=true,uiTimer=0,lastUiKey='';
+  const drop = () => drops[state.dropIndex];
+  const dist = () => Math.hypot(shop.x-drop().x,shop.z-drop().z);
+  const fullPay = () => Math.max(40,Math.min(600,Math.round(30+dist()*.35)));
+  const limitFor = () => Math.round(25+dist()/8); // seconds; generous for 19-24 m/s roads
+  const targetOf = () => state.phase==='collect'?shop:state.phase==='deliver'?drop():null;
+  const snapshot = () => {
+    const target=targetOf(),c=getCourier?.();
+    const distance=target&&c&&Number.isFinite(c.x)&&Number.isFinite(c.z)?Math.hypot(c.x-target.x,c.z-target.z):null;
+    const arrival=target?(distance===null?'unavailable':distance>5?'travel':!Number.isFinite(c.speed)||Math.abs(c.speed)>.8?'stop':'boarding'):'idle';
+    return {...state,shop,drop:drop(),fullPay:fullPay(),latePay:Math.round(fullPay()*.4),target,distance,arrival};
+  };
+  function emit(){changed=true;onChange(snapshot());}
+  function accept(){if(state.phase!=='idle')return false;state.phase='collect';state.dwell=0;state.message='Pick up the pizza at '+shop.name+'.';emit();return true;}
+  function cancel(){if(state.phase==='idle')return false;state.phase='idle';state.dwell=0;state.timeLeft=0;state.message='Pizza job canceled. No money lost.';emit();return true;}
+  function update(dt){
+    if(state.phase==='idle')return;
+    const c=getCourier?.(),target=targetOf();
+    const ready=c && Number.isFinite(c.x)&&Number.isFinite(c.z)&&Number.isFinite(c.speed) && Math.hypot(c.x-target.x,c.z-target.z)<=5 && Math.abs(c.speed)<=.8;
+    const step=Number.isFinite(dt)?Math.max(0,Math.min(.1,dt)):0;
+    if(state.phase==='deliver'&&state.timeLeft>0){state.timeLeft=Math.max(0,state.timeLeft-step);}
+    uiTimer+=step;if(uiTimer>=.25){uiTimer=0;const q=snapshot(),key=q.arrival+':'+Math.round(q.distance??-1)+':'+Math.ceil(q.timeLeft);if(key!==lastUiKey){lastUiKey=key;changed=true;}}
+    if(!ready){if(state.dwell!==0){state.dwell=0;emit();}return;}
+    state.dwell+=step;changed=true;
+    if(state.dwell<1.5)return;
+    state.dwell=0;
+    if(state.phase==='collect'){
+      state.phase='deliver';state.limit=limitFor();state.timeLeft=state.limit;state.message='Pizza is hot. Deliver to '+drop().name+' in '+state.limit+' s.';
+    } else {
+      const hot=state.timeLeft>0,paid=hot?fullPay():Math.round(fullPay()*.4);
+      onPayout(paid);state.earned=Math.min(100000000,state.earned+paid);state.completed=Math.min(100000000,state.completed+1);if(hot)state.onTime=Math.min(100000000,state.onTime+1);
+      state.lastPayout=paid;state.phase='idle';state.timeLeft=0;state.dropIndex=(state.dropIndex+1)%drops.length;
+      state.message=(hot?'Delivered hot. Earned ':'Late, still paid. Earned ')+paid+' credits.';
+    }
+    emit();
+  }
+  return {accept,cancel,update,snapshot,consumeDirty(){const v=changed;changed=false;return v;},serialize(){return{version:1,completed:state.completed,onTime:state.onTime,dropIndex:state.dropIndex,earned:state.earned};}};
+}
+
+function mountTaxiPhone({host=document.body,job,delivery=null,pizza=null,onPause=()=>{},onSave=()=>{}}) {
   const root=document.createElement('div');root.className='taxi-system';
   root.innerHTML=`<style>
   .taxi-system{font-family:system-ui,Arial,sans-serif;color:#f4f4ea;--gold:#ffd36a;--ink:#102329}
@@ -855,10 +910,11 @@ function mountTaxiPhone({host=document.body,job,delivery=null,onPause=()=>{},onS
   @media(max-height:440px){.taxi-system .taxi-phone{width:min(650px,94vw);padding:12px 16px}.taxi-system .taxi-card{margin:10px 0;padding:10px 14px}.taxi-system .taxi-top h2{font-size:18px}.taxi-system .taxi-hud{padding:7px 12px}.taxi-system .taxi-buttons{margin-top:8px}.taxi-system .taxi-phone p{margin:4px 0}}
   </style><div class="taxi-hud"><div class="taxi-money"></div><div class="taxi-goal"></div><div class="taxi-guidance" style="font-size:12px;color:#c7d8cb;margin-top:3px"></div><div class="taxi-progress"><i></i></div></div>
   <button class="taxi-phone-open" aria-label="Open in-game phone">Phone</button>
-  <div class="taxi-backdrop" hidden><section class="taxi-phone" role="dialog" aria-modal="true" aria-label="In-game phone"><div class="taxi-top"><div><div class="taxi-label">CITY / PHONE</div><h2>Your city. Your next job.</h2></div><button class="taxi-close" aria-label="Close phone">Close</button></div><div class="taxi-card"><h3>Taxi work</h3><div class="taxi-route"></div><p class="taxi-reward"></p><p class="taxi-navigation"></p><p class="taxi-instructions">Drive the car into the marker. Slow to a stop for 1.5 seconds to pick up or drop off a passenger.</p><div class="taxi-buttons"><button class="taxi-accept">Accept taxi job</button><button class="taxi-cancel" hidden>Cancel job</button></div></div><div class="taxi-card delivery-card" hidden><h3>Parcel delivery</h3><div class="delivery-route"></div><p class="delivery-reward"></p><p class="delivery-navigation"></p><p class="delivery-instructions">Collect the parcel at the depot marker, then stop inside the delivery marker. Walk up or drive any vehicle.</p><div class="taxi-buttons"><button class="delivery-accept taxi-accept">Accept delivery job</button><button class="delivery-cancel" hidden>Cancel job</button></div></div><div class="taxi-live" role="status" aria-live="polite"></div><p class="taxi-muted">Game credits only. No real purchases. Side jobs: taxi work and parcel delivery.</p></section></div>`;
+  <div class="taxi-backdrop" hidden><section class="taxi-phone" role="dialog" aria-modal="true" aria-label="In-game phone"><div class="taxi-top"><div><div class="taxi-label">CITY / PHONE</div><h2>Your city. Your next job.</h2></div><button class="taxi-close" aria-label="Close phone">Close</button></div><div class="taxi-card"><h3>Taxi work</h3><div class="taxi-route"></div><p class="taxi-reward"></p><p class="taxi-navigation"></p><p class="taxi-instructions">Drive the car into the marker. Slow to a stop for 1.5 seconds to pick up or drop off a passenger.</p><div class="taxi-buttons"><button class="taxi-accept">Accept taxi job</button><button class="taxi-cancel" hidden>Cancel job</button></div></div><div class="taxi-card delivery-card" hidden><h3>Parcel delivery</h3><div class="delivery-route"></div><p class="delivery-reward"></p><p class="delivery-navigation"></p><p class="delivery-instructions">Collect the parcel at the depot marker, then stop inside the delivery marker. Walk up or drive any vehicle.</p><div class="taxi-buttons"><button class="delivery-accept taxi-accept">Accept delivery job</button><button class="delivery-cancel" hidden>Cancel job</button></div></div><div class="taxi-card pizza-card" hidden><h3>Pizza delivery</h3><div class="pizza-route"></div><p class="pizza-reward"></p><p class="pizza-navigation"></p><p class="pizza-instructions">Pick up at the pizzeria, then deliver before the timer runs out for full pay. Late still pays a share. Walk up or drive any vehicle.</p><div class="taxi-buttons"><button class="pizza-accept taxi-accept">Accept pizza job</button><button class="pizza-cancel" hidden>Cancel job</button></div></div><div class="taxi-live" role="status" aria-live="polite"></div><p class="taxi-muted">Game credits only. No real purchases. Side jobs: taxi, parcel and pizza.</p></section></div>`;
   host.append(root);
   const $=s=>root.querySelector(s),open=$('.taxi-phone-open'),backdrop=$('.taxi-backdrop'),close=$('.taxi-close'),accept=$('.taxi-accept'),cancel=$('.taxi-cancel');
   const dCard=$('.delivery-card'),dAccept=$('.delivery-accept'),dCancel=$('.delivery-cancel');
+  const pCard=$('.pizza-card'),pAccept=$('.pizza-accept'),pCancel=$('.pizza-cancel');
   let isOpen=false,lastMessage='';
   function show(value){isOpen=value;backdrop.hidden=!value;onPause(value);if(value){render();close.focus();}else open.focus();}
   open.onclick=()=>show(true);close.onclick=()=>show(false);
@@ -869,28 +925,41 @@ function mountTaxiPhone({host=document.body,job,delivery=null,onPause=()=>{},onS
     dAccept.onclick=()=>{if(delivery.accept()){onSave(delivery.serialize());show(false);render();}};
     dCancel.onclick=()=>{delivery.cancel();onSave(delivery.serialize());render();};
   }
-  const key=e=>{if(isOpen){if(e.key==='Escape'){e.preventDefault();show(false);}if(e.key==='Tab'){const active=[close,...[accept,cancel,dAccept,dCancel].filter(b=>b&&!b.hidden)];const n=active.indexOf(document.activeElement),next=(n+(e.shiftKey?-1:1)+active.length)%active.length;e.preventDefault();active[next].focus();}e.stopImmediatePropagation();}};window.addEventListener('keydown',key,true);
+  if(pizza){
+    pCard.hidden=false;
+    pAccept.onclick=()=>{if(pizza.accept()){onSave(pizza.serialize());show(false);render();}};
+    pCancel.onclick=()=>{pizza.cancel();onSave(pizza.serialize());render();};
+  }
+  const key=e=>{if(isOpen){if(e.key==='Escape'){e.preventDefault();show(false);}if(e.key==='Tab'){const active=[close,...[accept,cancel,dAccept,dCancel,pAccept,pCancel].filter(b=>b&&!b.hidden)];const n=active.indexOf(document.activeElement),next=(n+(e.shiftKey?-1:1)+active.length)%active.length;e.preventDefault();active[next].focus();}e.stopImmediatePropagation();}};window.addEventListener('keydown',key,true);
   function render(){
-    const s=job.snapshot(),d=delivery?delivery.snapshot():null;
-    const taxiActive=s.phase!=='idle',delActive=d&&d.phase!=='idle';
-    const active=taxiActive?s:delActive?d:null;
+    const s=job.snapshot(),d=delivery?delivery.snapshot():null,p=pizza?pizza.snapshot():null;
+    const taxiActive=s.phase!=='idle',delActive=d&&d.phase!=='idle',pizzaActive=p&&p.phase!=='idle';
+    const anyActive=taxiActive||delActive||pizzaActive;
+    const active=taxiActive?s:pizzaActive?p:delActive?d:null;
     const distance=active&&Number.isFinite(active.distance)?(active.distance>=1000?(active.distance/1000).toFixed(1)+' km':Math.round(active.distance)+' m'):'';
-    const guidance=!active?'':active.arrival==='enter-car'?'Enter the car to continue.':active.arrival==='stop'?'Brake and stay stopped in the marker.':active.arrival==='boarding'?(taxiActive?(s.phase==='pickup'?'Picking up passenger':'Dropping off passenger'):(d.phase==='collect'?'Collecting parcel':'Handing over parcel'))+' · '+Math.round(Math.min(1,active.dwell/1.5)*100)+'%':active.arrival==='unavailable'?'Waiting for position.':distance?'Head to the marker · '+distance:'';
+    const timeNote=pizzaActive&&p.phase==='deliver'?' · '+Math.ceil(p.timeLeft)+'s left':'';
+    const guidance=!active?'':active.arrival==='enter-car'?'Enter the car to continue.':active.arrival==='stop'?'Brake and stay stopped in the marker.':active.arrival==='boarding'?(taxiActive?(s.phase==='pickup'?'Picking up passenger':'Dropping off passenger'):pizzaActive?(p.phase==='collect'?'Picking up pizza':'Handing over pizza'):(d.phase==='collect'?'Collecting parcel':'Handing over parcel'))+' · '+Math.round(Math.min(1,active.dwell/1.5)*100)+'%':active.arrival==='unavailable'?'Waiting for position.':distance?'Head to the marker · '+distance+timeNote:(timeNote?'Timer'+timeNote:'');
     $('.taxi-money').textContent=s.balance.toLocaleString()+' credits';
-    $('.taxi-goal').textContent=!active?'Free roam. Open Phone to find work.':(taxiActive?(s.phase==='pickup'?'PICK UP / ':'DROP OFF / '):(d.phase==='collect'?'COLLECT / ':'DELIVER / '))+active.target.name+(distance?' · '+distance:'');
-    $('.taxi-progress').hidden=!active;$('.taxi-progress i').style.width=active?(active.dwell/1.5*100)+'%':'0';
+    $('.taxi-goal').textContent=!active?'Free roam. Open Phone to find work.':(taxiActive?(s.phase==='pickup'?'PICK UP / ':'DROP OFF / '):pizzaActive?(p.phase==='collect'?'PICK UP / ':'DELIVER / '):(d.phase==='collect'?'COLLECT / ':'DELIVER / '))+active.target.name+(distance?' · '+distance:'')+timeNote;
+    $('.taxi-progress').hidden=!active;$('.taxi-progress i').style.width=active?(pizzaActive&&p.phase==='deliver'&&p.limit?(p.timeLeft/p.limit*100):(active.dwell/1.5*100))+'%':'0';
     $('.taxi-guidance').textContent=guidance;
     $('.taxi-route').textContent=s.route.pickup.name+' → '+s.route.dropoff.name;
     $('.taxi-reward').textContent='Fare: '+s.fare+' credits · Completed rides: '+s.completed;
     $('.taxi-navigation').textContent=taxiActive?guidance:'Accept a ride. No time limit.';
-    accept.hidden=taxiActive||delActive;cancel.hidden=!taxiActive;
+    accept.hidden=anyActive;cancel.hidden=!taxiActive;
     if(d){
       $('.delivery-route').textContent=d.depot.name+' → '+d.drop.name;
       $('.delivery-reward').textContent='Payout: '+d.payout+' credits · Delivered: '+d.completed+' · Earned: '+d.earned;
       $('.delivery-navigation').textContent=delActive?guidance:'Collect at the depot. On foot or any vehicle.';
-      dAccept.hidden=delActive||taxiActive;dCancel.hidden=!delActive;
+      dAccept.hidden=anyActive;dCancel.hidden=!delActive;
     }
-    const msg=taxiActive?s.message:delActive?d.message:(s.message||'');
+    if(p){
+      $('.pizza-route').textContent=p.shop.name+' → '+p.drop.name;
+      $('.pizza-reward').textContent='Pay: '+p.fullPay+' hot / '+p.latePay+' late · Delivered: '+p.completed+' · On time: '+p.onTime;
+      $('.pizza-navigation').textContent=pizzaActive?guidance:'Timed job. Full pay only if you beat the timer.';
+      pAccept.hidden=anyActive;pCancel.hidden=!pizzaActive;
+    }
+    const msg=taxiActive?s.message:pizzaActive?p.message:delActive?d.message:(s.message||'');
     if(msg!==lastMessage){$('.taxi-live').textContent=msg;lastMessage=msg;}
   }
   render();return{root,render,get open(){return isOpen;},setOpen:show,destroy(){window.removeEventListener('keydown',key,true);root.remove();onPause(false);}};
@@ -1052,26 +1121,45 @@ for (let i = 0; i < stops.length; i++) {
   });
 }
 
-let taxiJob = null, deliveryJob = null;
-// one saved balance: taxi owns the wallet, delivery pays into it via deposit()
+let taxiJob = null, deliveryJob = null, pizzaJob = null;
+// one saved balance: taxi owns the wallet, side jobs pay into it via deposit()
 const jobsFacade = {
   serialize() {
     const t = taxiJob.serialize();
-    return { version: 2, balance: t.balance, completed: t.completed, routeIndex: t.routeIndex,
-      delivery: deliveryJob ? deliveryJob.serialize() : null };
+    return { version: 3, balance: t.balance, completed: t.completed, routeIndex: t.routeIndex,
+      delivery: deliveryJob ? deliveryJob.serialize() : null,
+      pizza: pizzaJob ? pizzaJob.serialize() : null };
   },
 };
 const save = createSave({ getActors: () => actors, getJobs: () => jobsFacade });
 const loaded = save.load();
 const loadedJobs = loaded && loaded.jobs ? loaded.jobs : null;
-// v1 saves stored the taxi blob directly; v2 wraps both jobs
+// v1 saves stored the taxi blob directly; v2 added delivery; v3 adds pizza
 const taxiInit = !loadedJobs ? null
   : loadedJobs.version === 1 ? loadedJobs
   : { version: 1, balance: loadedJobs.balance, completed: loadedJobs.completed, routeIndex: loadedJobs.routeIndex };
-const deliveryInit = loadedJobs && loadedJobs.version === 2 && loadedJobs.delivery ? loadedJobs.delivery : null;
+const deliveryInit = loadedJobs && loadedJobs.version >= 2 && loadedJobs.delivery ? loadedJobs.delivery : null;
+const pizzaInit = loadedJobs && loadedJobs.version >= 3 && loadedJobs.pizza ? loadedJobs.pizza : null;
 
 // world marker: coordinator renders it from job snapshots (builder 5 contract)
-let marker = null, deliveryMarker = null;
+let marker = null, deliveryMarker = null, pizzaMarker = null;
+function syncPizzaMarker(snap) {
+  const target = snap.target;
+  if (!target) {
+    if (pizzaMarker) pizzaMarker.visible = false;
+    return;
+  }
+  if (!pizzaMarker) {
+    pizzaMarker = new THREE.Mesh(
+      new THREE.CylinderGeometry(2.2, 2.2, 0.25, 24),
+      new THREE.MeshBasicMaterial({ color: 0xd05ce3, transparent: true, opacity: 0.7 })
+    );
+    scene.add(pizzaMarker);
+  }
+  pizzaMarker.visible = true;
+  pizzaMarker.material.color.set(snap.phase === 'collect' ? 0xd05ce3 : 0xffe08a);
+  pizzaMarker.position.set(target.x, 0.15, target.z);
+}
 function syncDeliveryMarker(snap) {
   const target = snap.target;
   if (!target) {
@@ -1133,10 +1221,25 @@ const deliveryJobRef = createDeliveryJob({
 });
 deliveryJob = deliveryJobRef;
 
+// pizza delivery: the Palm Court stop doubles as the pizzeria; timed runs to the
+// other stops, full pay only before the timer. Same courier rules as parcel delivery
+const pizzaJobRef = createPizzaJob({
+  shop: { x: stops[2].x, z: stops[2].z, name: 'Palm Court Pizzeria' },
+  drops: stops.filter((s) => s !== stops[2]).map((s) => ({ x: s.x, z: s.z, name: s.name })),
+  getCourier: () => actors.driving
+    ? { x: actors.current.x, z: actors.current.z, speed: actors.current.speed || 0 }
+    : { x: actors.player.x, z: actors.player.z, speed: 0 },
+  onChange: (snap) => { syncPizzaMarker(snap); save.persist(); },
+  onPayout: (n) => { taxiJob.deposit(n); },
+  initialState: pizzaInit,
+});
+pizzaJob = pizzaJobRef;
+
 const phone = mountTaxiPhone({
   host: document.getElementById('phone-root'),
   job: taxiJob,
   delivery: deliveryJob,
+  pizza: pizzaJob,
   onPause: (p) => { paused = !!p; if (paused) controls.reset(); },
   onSave: () => { save.persist(); notify('Game saved'); },
 });
@@ -1145,6 +1248,7 @@ save.restore();          // actors snapshot back in; jobs state went in via init
 save.startAutosave();    // every 1 s, his standing rule
 syncMarker(taxiJob.snapshot());
 syncDeliveryMarker(deliveryJob.snapshot());
+syncPizzaMarker(pizzaJob.snapshot());
 phone.render();
 
 // ---- camera follow ----------------------------------------------------------
@@ -1177,11 +1281,13 @@ function frame(now) {
     actors.update(dt, controls.state);
     taxiJob.update(dt);
     deliveryJob.update(dt);
+    pizzaJob.update(dt);
     if (marker && marker.visible) marker.rotation.y += dt; // spin marker lightly
     if (deliveryMarker && deliveryMarker.visible) deliveryMarker.rotation.y += dt;
+    if (pizzaMarker && pizzaMarker.visible) pizzaMarker.rotation.y += dt;
     followCamera(dt);
   }
-  if (taxiJob.consumeDirty() | deliveryJob.consumeDirty()) phone.render();
+  if (taxiJob.consumeDirty() | deliveryJob.consumeDirty() | pizzaJob.consumeDirty()) phone.render();
   const kmh = Math.round(Math.abs(actors.current.speed || 0) * 3.6); // v009: speed of the vehicle being driven (taxi/sedan/bike)
   elFps.textContent = fpsShown + ' FPS' + (actors.driving ? ' · ' + kmh + ' km/h' : '');
   renderer.render(scene, camera);
