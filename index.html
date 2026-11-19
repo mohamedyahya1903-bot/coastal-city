@@ -742,6 +742,9 @@ function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onMode
 
 // ===== jobs.js =====
 // Original game logic. No external assets or runtime dependencies.
+// jobs.js v2: taxi work (unchanged behaviour, plus a wallet deposit for side jobs)
+// and the new parcel-delivery side job (on foot or any vehicle).
+
 function createTaxiJob({routes, getVehicle, onChange=()=>{}, initialState=null}) {
   if (!Array.isArray(routes) || routes.length < 1) throw new Error('Taxi routes required');
   const point = p => p && Number.isFinite(p.x) && Number.isFinite(p.z);
@@ -766,6 +769,8 @@ function createTaxiJob({routes, getVehicle, onChange=()=>{}, initialState=null})
   function emit(){changed=true;onChange(snapshot());}
   function accept(){if(state.phase!=='idle')return false;state.phase='pickup';state.dwell=0;state.message='Drive to '+route().pickup.name+'. Stop in the marked zone.';emit();return true;}
   function cancel(){if(state.phase==='idle')return false;state.phase='idle';state.dwell=0;state.message='Taxi job canceled. No money lost.';emit();return true;}
+  // Side jobs pay into this single wallet so the HUD and save keep one balance.
+  function deposit(n){if(!money(n))return state.balance;state.balance=Math.min(100000000,state.balance+n);state.lastFare=n;emit();return state.balance;}
   function update(dt){
     if(state.phase==='idle')return;
     const v=getVehicle?.(),target=state.phase==='pickup'?route().pickup:route().dropoff;
@@ -784,10 +789,58 @@ function createTaxiJob({routes, getVehicle, onChange=()=>{}, initialState=null})
     }
     emit();
   }
-  return {accept,cancel,update,snapshot,consumeDirty(){const v=changed;changed=false;return v;},serialize(){return{version:1,balance:state.balance,completed:state.completed,routeIndex:state.routeIndex};}};
+  return {accept,cancel,update,snapshot,deposit,consumeDirty(){const v=changed;changed=false;return v;},serialize(){return{version:1,balance:state.balance,completed:state.completed,routeIndex:state.routeIndex};}};
 }
 
-function mountTaxiPhone({host=document.body,job,onPause=()=>{},onSave=()=>{}}) {
+// Parcel delivery side job (v1). Walk up or drive any vehicle: collect the parcel at
+// the depot, then stop inside the delivery marker. Pays into the shared taxi wallet.
+function createDeliveryJob({depot, drops, getCourier, onChange=()=>{}, onPayout=()=>{}, initialState=null}) {
+  const point = p => p && Number.isFinite(p.x) && Number.isFinite(p.z);
+  if (!point(depot) || typeof depot.name!=='string') throw new Error('Delivery depot required');
+  if (!Array.isArray(drops) || drops.length < 1) throw new Error('Delivery drops required');
+  const validDrops = drops.filter(d => d && typeof d.name==='string' && point(d) && Math.hypot(d.x-depot.x,d.z-depot.z)>=20);
+  if (validDrops.length!==drops.length) throw new Error('Delivery drops need distinct, finite road-safe stops');
+  const money = n => Number.isSafeInteger(n) && n>=0 && n<=100000000;
+  const state = {version:1,completed:0,dropIndex:0,earned:0,phase:'idle',dwell:0,message:'Parcel delivery: collect at the depot, drop off across town.',lastPayout:0};
+  if (initialState && initialState.version===1) {
+    if(money(initialState.completed))state.completed=initialState.completed;
+    if(money(initialState.earned))state.earned=initialState.earned;
+    if(Number.isSafeInteger(initialState.dropIndex)&&initialState.dropIndex>=0)state.dropIndex=initialState.dropIndex%drops.length;
+  }
+  let changed=true,uiTimer=0,lastUiKey='';
+  const drop = () => drops[state.dropIndex];
+  const payout = () => Math.max(25,Math.min(400,Math.round(20+Math.hypot(depot.x-drop().x,depot.z-drop().z)*.25)));
+  const targetOf = () => state.phase==='collect'?depot:state.phase==='deliver'?drop():null;
+  const snapshot = () => {
+    const target=targetOf(),c=getCourier?.();
+    const distance=target&&c&&Number.isFinite(c.x)&&Number.isFinite(c.z)?Math.hypot(c.x-target.x,c.z-target.z):null;
+    const arrival=target?(distance===null?'unavailable':distance>5?'travel':!Number.isFinite(c.speed)||Math.abs(c.speed)>.8?'stop':'boarding'):'idle';
+    return {...state,depot,drop:drop(),payout:payout(),target,distance,arrival};
+  };
+  function emit(){changed=true;onChange(snapshot());}
+  function accept(){if(state.phase!=='idle')return false;state.phase='collect';state.dwell=0;state.message='Collect the parcel at '+depot.name+'.';emit();return true;}
+  function cancel(){if(state.phase==='idle')return false;state.phase='idle';state.dwell=0;state.message='Delivery canceled. No money lost.';emit();return true;}
+  function update(dt){
+    if(state.phase==='idle')return;
+    const c=getCourier?.(),target=targetOf();
+    const ready=c && Number.isFinite(c.x)&&Number.isFinite(c.z)&&Number.isFinite(c.speed) && Math.hypot(c.x-target.x,c.z-target.z)<=5 && Math.abs(c.speed)<=.8;
+    const step=Number.isFinite(dt)?Math.max(0,Math.min(.1,dt)):0;
+    uiTimer+=step;if(uiTimer>=.25){uiTimer=0;const q=snapshot(),key=q.arrival+':'+Math.round(q.distance??-1);if(key!==lastUiKey){lastUiKey=key;changed=true;}}
+    if(!ready){if(state.dwell!==0){state.dwell=0;emit();}return;}
+    state.dwell+=step;changed=true;
+    if(state.dwell<1.5)return;
+    state.dwell=0;
+    if(state.phase==='collect'){
+      state.phase='deliver';state.message='Parcel aboard. Deliver to '+drop().name+'.';
+    } else {
+      const paid=payout();onPayout(paid);state.earned=Math.min(100000000,state.earned+paid);state.completed=Math.min(100000000,state.completed+1);state.lastPayout=paid;state.phase='idle';state.dropIndex=(state.dropIndex+1)%drops.length;state.message='Parcel delivered. Earned '+paid+' credits.';
+    }
+    emit();
+  }
+  return {accept,cancel,update,snapshot,consumeDirty(){const v=changed;changed=false;return v;},serialize(){return{version:1,completed:state.completed,dropIndex:state.dropIndex,earned:state.earned};}};
+}
+
+function mountTaxiPhone({host=document.body,job,delivery=null,onPause=()=>{},onSave=()=>{}}) {
   const root=document.createElement('div');root.className='taxi-system';
   root.innerHTML=`<style>
   .taxi-system{font-family:system-ui,Arial,sans-serif;color:#f4f4ea;--gold:#ffd36a;--ink:#102329}
@@ -802,22 +855,43 @@ function mountTaxiPhone({host=document.body,job,onPause=()=>{},onSave=()=>{}}) {
   @media(max-height:440px){.taxi-system .taxi-phone{width:min(650px,94vw);padding:12px 16px}.taxi-system .taxi-card{margin:10px 0;padding:10px 14px}.taxi-system .taxi-top h2{font-size:18px}.taxi-system .taxi-hud{padding:7px 12px}.taxi-system .taxi-buttons{margin-top:8px}.taxi-system .taxi-phone p{margin:4px 0}}
   </style><div class="taxi-hud"><div class="taxi-money"></div><div class="taxi-goal"></div><div class="taxi-guidance" style="font-size:12px;color:#c7d8cb;margin-top:3px"></div><div class="taxi-progress"><i></i></div></div>
   <button class="taxi-phone-open" aria-label="Open in-game phone">Phone</button>
-  <div class="taxi-backdrop" hidden><section class="taxi-phone" role="dialog" aria-modal="true" aria-label="In-game phone"><div class="taxi-top"><div><div class="taxi-label">CITY / PHONE</div><h2>Your city. Your next ride.</h2></div><button class="taxi-close" aria-label="Close phone">Close</button></div><div class="taxi-card"><h3>Taxi work</h3><div class="taxi-route"></div><p class="taxi-reward"></p><p class="taxi-navigation"></p><p class="taxi-instructions">Drive the car into the marker. Slow to a stop for 1.5 seconds to pick up or drop off a passenger.</p><div class="taxi-buttons"><button class="taxi-accept">Accept taxi job</button><button class="taxi-cancel" hidden>Cancel job</button></div></div><div class="taxi-live" role="status" aria-live="polite"></div><p class="taxi-muted">Game credits only. No real purchases. First private trial: taxi work.</p></section></div>`;
+  <div class="taxi-backdrop" hidden><section class="taxi-phone" role="dialog" aria-modal="true" aria-label="In-game phone"><div class="taxi-top"><div><div class="taxi-label">CITY / PHONE</div><h2>Your city. Your next job.</h2></div><button class="taxi-close" aria-label="Close phone">Close</button></div><div class="taxi-card"><h3>Taxi work</h3><div class="taxi-route"></div><p class="taxi-reward"></p><p class="taxi-navigation"></p><p class="taxi-instructions">Drive the car into the marker. Slow to a stop for 1.5 seconds to pick up or drop off a passenger.</p><div class="taxi-buttons"><button class="taxi-accept">Accept taxi job</button><button class="taxi-cancel" hidden>Cancel job</button></div></div><div class="taxi-card delivery-card" hidden><h3>Parcel delivery</h3><div class="delivery-route"></div><p class="delivery-reward"></p><p class="delivery-navigation"></p><p class="delivery-instructions">Collect the parcel at the depot marker, then stop inside the delivery marker. Walk up or drive any vehicle.</p><div class="taxi-buttons"><button class="delivery-accept taxi-accept">Accept delivery job</button><button class="delivery-cancel" hidden>Cancel job</button></div></div><div class="taxi-live" role="status" aria-live="polite"></div><p class="taxi-muted">Game credits only. No real purchases. Side jobs: taxi work and parcel delivery.</p></section></div>`;
   host.append(root);
-  const $=s=>root.querySelector(s),open=$('.taxi-phone-open'),backdrop=$('.taxi-backdrop'),close=$('.taxi-close'),accept=$('.taxi-accept'),cancel=$('.taxi-cancel');let isOpen=false,lastMessage='';
+  const $=s=>root.querySelector(s),open=$('.taxi-phone-open'),backdrop=$('.taxi-backdrop'),close=$('.taxi-close'),accept=$('.taxi-accept'),cancel=$('.taxi-cancel');
+  const dCard=$('.delivery-card'),dAccept=$('.delivery-accept'),dCancel=$('.delivery-cancel');
+  let isOpen=false,lastMessage='';
   function show(value){isOpen=value;backdrop.hidden=!value;onPause(value);if(value){render();close.focus();}else open.focus();}
-  open.onclick=()=>show(true);close.onclick=()=>show(false);accept.onclick=()=>{if(job.accept()){onSave(job.serialize());show(false);render();}};cancel.onclick=()=>{job.cancel();onSave(job.serialize());render();};
-  const key=e=>{if(isOpen){if(e.key==='Escape'){e.preventDefault();show(false);}if(e.key==='Tab'){const active=[close,...[accept,cancel].filter(b=>!b.hidden)];const n=active.indexOf(document.activeElement),next=(n+(e.shiftKey?-1:1)+active.length)%active.length;e.preventDefault();active[next].focus();}e.stopImmediatePropagation();}};window.addEventListener('keydown',key,true);
+  open.onclick=()=>show(true);close.onclick=()=>show(false);
+  accept.onclick=()=>{if(job.accept()){onSave(job.serialize());show(false);render();}};
+  cancel.onclick=()=>{job.cancel();onSave(job.serialize());render();};
+  if(delivery){
+    dCard.hidden=false;
+    dAccept.onclick=()=>{if(delivery.accept()){onSave(delivery.serialize());show(false);render();}};
+    dCancel.onclick=()=>{delivery.cancel();onSave(delivery.serialize());render();};
+  }
+  const key=e=>{if(isOpen){if(e.key==='Escape'){e.preventDefault();show(false);}if(e.key==='Tab'){const active=[close,...[accept,cancel,dAccept,dCancel].filter(b=>b&&!b.hidden)];const n=active.indexOf(document.activeElement),next=(n+(e.shiftKey?-1:1)+active.length)%active.length;e.preventDefault();active[next].focus();}e.stopImmediatePropagation();}};window.addEventListener('keydown',key,true);
   function render(){
-    const s=job.snapshot(),distance=Number.isFinite(s.distance)?(s.distance>=1000?(s.distance/1000).toFixed(1)+' km':Math.round(s.distance)+' m'):'',
-      guidance=s.arrival==='enter-car'?'Enter the car to continue.':s.arrival==='stop'?'Brake and stay stopped in the marker.':s.arrival==='boarding'?(s.phase==='pickup'?'Picking up passenger':'Dropping off passenger')+' · '+Math.round(Math.min(1,s.dwell/1.5)*100)+'%':s.arrival==='unavailable'?'Waiting for vehicle position.':distance?'Drive to the marker · '+distance:'Accept a ride. No time limit.';
+    const s=job.snapshot(),d=delivery?delivery.snapshot():null;
+    const taxiActive=s.phase!=='idle',delActive=d&&d.phase!=='idle';
+    const active=taxiActive?s:delActive?d:null;
+    const distance=active&&Number.isFinite(active.distance)?(active.distance>=1000?(active.distance/1000).toFixed(1)+' km':Math.round(active.distance)+' m'):'';
+    const guidance=!active?'':active.arrival==='enter-car'?'Enter the car to continue.':active.arrival==='stop'?'Brake and stay stopped in the marker.':active.arrival==='boarding'?(taxiActive?(s.phase==='pickup'?'Picking up passenger':'Dropping off passenger'):(d.phase==='collect'?'Collecting parcel':'Handing over parcel'))+' · '+Math.round(Math.min(1,active.dwell/1.5)*100)+'%':active.arrival==='unavailable'?'Waiting for position.':distance?'Head to the marker · '+distance:'';
     $('.taxi-money').textContent=s.balance.toLocaleString()+' credits';
-    $('.taxi-goal').textContent=s.phase==='idle'?s.message:(s.phase==='pickup'?'PICK UP / ':'DROP OFF / ')+s.target.name+(distance?' · '+distance:'');
-    $('.taxi-progress').hidden=s.phase==='idle';$('.taxi-progress i').style.width=(s.dwell/1.5*100)+'%';
+    $('.taxi-goal').textContent=!active?'Free roam. Open Phone to find work.':(taxiActive?(s.phase==='pickup'?'PICK UP / ':'DROP OFF / '):(d.phase==='collect'?'COLLECT / ':'DELIVER / '))+active.target.name+(distance?' · '+distance:'');
+    $('.taxi-progress').hidden=!active;$('.taxi-progress i').style.width=active?(active.dwell/1.5*100)+'%':'0';
+    $('.taxi-guidance').textContent=guidance;
     $('.taxi-route').textContent=s.route.pickup.name+' → '+s.route.dropoff.name;
     $('.taxi-reward').textContent='Fare: '+s.fare+' credits · Completed rides: '+s.completed;
-    $('.taxi-navigation').textContent=guidance;$('.taxi-guidance').textContent=s.phase==='idle'?'':guidance;accept.hidden=s.phase!=='idle';cancel.hidden=s.phase==='idle';
-    if(s.message!==lastMessage){$('.taxi-live').textContent=s.message;lastMessage=s.message;}
+    $('.taxi-navigation').textContent=taxiActive?guidance:'Accept a ride. No time limit.';
+    accept.hidden=taxiActive||delActive;cancel.hidden=!taxiActive;
+    if(d){
+      $('.delivery-route').textContent=d.depot.name+' → '+d.drop.name;
+      $('.delivery-reward').textContent='Payout: '+d.payout+' credits · Delivered: '+d.completed+' · Earned: '+d.earned;
+      $('.delivery-navigation').textContent=delActive?guidance:'Collect at the depot. On foot or any vehicle.';
+      dAccept.hidden=delActive||taxiActive;dCancel.hidden=!delActive;
+    }
+    const msg=taxiActive?s.message:delActive?d.message:(s.message||'');
+    if(msg!==lastMessage){$('.taxi-live').textContent=msg;lastMessage=msg;}
   }
   render();return{root,render,get open(){return isOpen;},setOpen:show,destroy(){window.removeEventListener('keydown',key,true);root.remove();onPause(false);}};
 }
@@ -978,12 +1052,43 @@ for (let i = 0; i < stops.length; i++) {
   });
 }
 
-let taxiJob = null;
-const save = createSave({ getActors: () => actors, getJobs: () => taxiJob });
+let taxiJob = null, deliveryJob = null;
+// one saved balance: taxi owns the wallet, delivery pays into it via deposit()
+const jobsFacade = {
+  serialize() {
+    const t = taxiJob.serialize();
+    return { version: 2, balance: t.balance, completed: t.completed, routeIndex: t.routeIndex,
+      delivery: deliveryJob ? deliveryJob.serialize() : null };
+  },
+};
+const save = createSave({ getActors: () => actors, getJobs: () => jobsFacade });
 const loaded = save.load();
+const loadedJobs = loaded && loaded.jobs ? loaded.jobs : null;
+// v1 saves stored the taxi blob directly; v2 wraps both jobs
+const taxiInit = !loadedJobs ? null
+  : loadedJobs.version === 1 ? loadedJobs
+  : { version: 1, balance: loadedJobs.balance, completed: loadedJobs.completed, routeIndex: loadedJobs.routeIndex };
+const deliveryInit = loadedJobs && loadedJobs.version === 2 && loadedJobs.delivery ? loadedJobs.delivery : null;
 
 // world marker: coordinator renders it from job snapshots (builder 5 contract)
-let marker = null;
+let marker = null, deliveryMarker = null;
+function syncDeliveryMarker(snap) {
+  const target = snap.target;
+  if (!target) {
+    if (deliveryMarker) deliveryMarker.visible = false;
+    return;
+  }
+  if (!deliveryMarker) {
+    deliveryMarker = new THREE.Mesh(
+      new THREE.CylinderGeometry(2.2, 2.2, 0.25, 24),
+      new THREE.MeshBasicMaterial({ color: 0xff9f2e, transparent: true, opacity: 0.7 })
+    );
+    scene.add(deliveryMarker);
+  }
+  deliveryMarker.visible = true;
+  deliveryMarker.material.color.set(snap.phase === 'collect' ? 0xff9f2e : 0x4ec3e6);
+  deliveryMarker.position.set(target.x, 0.15, target.z);
+}
 function syncMarker(snap) {
   const target = snap.target;
   if (!target) {
@@ -1010,12 +1115,28 @@ taxiJob = createTaxiJob({
     driving: actors.driving === true,
   }),
   onChange: (snap) => { syncMarker(snap); save.persist(); },
-  initialState: loaded && loaded.jobs ? loaded.jobs : null,
+  initialState: taxiInit,
 });
+
+// parcel delivery: depot at the downtown stop, drops at the other road-safe stops.
+// on foot or any vehicle; pays into the shared taxi wallet
+const depotStop = stops[1]; // Downtown Solana
+const deliveryJobRef = createDeliveryJob({
+  depot: { x: depotStop.x, z: depotStop.z, name: 'Solana Depot' },
+  drops: stops.filter((s) => s !== depotStop).map((s) => ({ x: s.x, z: s.z, name: s.name })),
+  getCourier: () => actors.driving
+    ? { x: actors.current.x, z: actors.current.z, speed: actors.current.speed || 0 }
+    : { x: actors.player.x, z: actors.player.z, speed: 0 },
+  onChange: (snap) => { syncDeliveryMarker(snap); save.persist(); },
+  onPayout: (n) => { taxiJob.deposit(n); },
+  initialState: deliveryInit,
+});
+deliveryJob = deliveryJobRef;
 
 const phone = mountTaxiPhone({
   host: document.getElementById('phone-root'),
   job: taxiJob,
+  delivery: deliveryJob,
   onPause: (p) => { paused = !!p; if (paused) controls.reset(); },
   onSave: () => { save.persist(); notify('Game saved'); },
 });
@@ -1023,6 +1144,7 @@ const phone = mountTaxiPhone({
 save.restore();          // actors snapshot back in; jobs state went in via initialState
 save.startAutosave();    // every 1 s, his standing rule
 syncMarker(taxiJob.snapshot());
+syncDeliveryMarker(deliveryJob.snapshot());
 phone.render();
 
 // ---- camera follow ----------------------------------------------------------
@@ -1054,10 +1176,12 @@ function frame(now) {
     map.update(dt);
     actors.update(dt, controls.state);
     taxiJob.update(dt);
+    deliveryJob.update(dt);
     if (marker && marker.visible) marker.rotation.y += dt; // spin marker lightly
+    if (deliveryMarker && deliveryMarker.visible) deliveryMarker.rotation.y += dt;
     followCamera(dt);
   }
-  if (taxiJob.consumeDirty()) phone.render();
+  if (taxiJob.consumeDirty() | deliveryJob.consumeDirty()) phone.render();
   const kmh = Math.round(Math.abs(actors.current.speed || 0) * 3.6); // v009: speed of the vehicle being driven (taxi/sedan/bike)
   elFps.textContent = fpsShown + ' FPS' + (actors.driving ? ' · ' + kmh + ' km/h' : '');
   renderer.render(scene, camera);
@@ -1108,7 +1232,7 @@ try {
 }
 
 document.getElementById('loading').style.display = 'none';
-notify('Open the Phone (top right) to start taxi work');
+notify('Open the Phone (top right) to find work');
 requestAnimationFrame(frame);
 
 </script>
