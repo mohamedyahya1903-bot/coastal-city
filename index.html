@@ -113,7 +113,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
 
   // ground: one subdivided terrain-following mesh, vertex colors (sand / grass / park), one draw call
   {
-    const X0 = -218, X1 = 320, Z0 = -320, Z1 = 320, NX = 80, NZ = 96;
+    const X0 = -218, X1 = 320, Z0 = -320, Z1 = 320, NX = 60, NZ = 72; // ~8.6k tris (was 15.4k)
     const pos = [], col = [], idx = [];
     const cSand = new THREE.Color(0xe3d3a0), cGrass = new THREE.Color(0x6f9b52), cPark = new THREE.Color(0x7cb85e);
     for (let j = 0; j <= NZ; j++) for (let i = 0; i <= NX; i++) {
@@ -362,6 +362,13 @@ function createMap({ THREE, scene, GLTFLoader }) {
   function lodify(obj) { // glTF PBR -> cheap Lambert, static shadows off (M02s budget)
     obj.traverse((o) => {
       if (o.isMesh) {
+        if (o.geometry && !o.geometry.attributes.normal) o.geometry.computeVertexNormals(); // props ship no normals: some three versions light them black
+        const col = o.geometry && o.geometry.attributes.color;
+        if (col && col.itemSize === 4) { // VEC4 COLOR_0 -> vec3 (version-safe vertex colors)
+          const n = col.count, a = new Float32Array(n * 3);
+          for (let i = 0; i < n; i++) { a[i*3] = col.getX(i); a[i*3+1] = col.getY(i); a[i*3+2] = col.getZ(i); }
+          o.geometry.setAttribute('color', new THREE.BufferAttribute(a, 3));
+        }
         const m = o.material;
         o.material = new THREE.MeshLambertMaterial({
           map: m.map || null,
@@ -413,14 +420,14 @@ function createMap({ THREE, scene, GLTFLoader }) {
             if (o.isMesh && Array.isArray(o.material)) o.material = [farSide, farSide, o.material[2], o.material[3], farSide, farSide];
           });
           const lod = new THREE.LOD();
-          lod.addLevel(obj, 0); lod.addLevel(old, 100);
+          lod.addLevel(obj, 0); lod.addLevel(old, 70); // towers: far level past 70 m
           scene.add(lod);
         } else if (m.lod) {
           if (old) S.remove(old);
           loader.load(MODEL_BASE + m.lod + '.glb', (g2) => {
             const low = fitFootprint(lodify(g2.scene), ft, m.rot);
             const lod = new THREE.LOD();
-            lod.addLevel(obj, 0); lod.addLevel(low, 80);
+            lod.addLevel(obj, 0); lod.addLevel(low, 55); // shops/offices: low detail past 55 m
             scene.add(lod);
           }, undefined, () => scene.add(obj));
         } else {
@@ -736,13 +743,13 @@ function createSave({ getActors, getJobs }) {
 // Only this file imports THREE; every module receives it (or DOM hosts) via arguments.
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 const canvas = document.getElementById('game');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5)); // Galaxy M02s guardrail
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
+renderer.setPixelRatio(1); // Galaxy M02s guardrail: render at CSS pixels
 renderer.setSize(window.innerWidth, window.innerHeight);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87b5e0);
-scene.fog = new THREE.Fog(0x87b5e0, 120, 420);
+scene.fog = new THREE.Fog(0x87b5e0, 80, 260);
 
 const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 600);
 
