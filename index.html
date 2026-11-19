@@ -52,6 +52,8 @@ import * as THREE from 'three';
 // Still low-poly + one merged mesh for all roads/dashes for the Galaxy M02s budget.
 // v2: buildings/props swap to Kenney CC0 GLBs (assets/models/) when a GLTFLoader is
 // available (arg or importmap 'three/addons/'); primitive fallback stays otherwise.
+// v6 (owner via lead Nov 19): starter bungalow + garage on the Palm Court street (Forum-Drive
+// style), procedural original geometry, driveway the starter white car can park on.
 // v3 (owner via lead Nov 19): real elevation - analytic terrain, hills east, rise north,
 // roads + highway draped on it (grades verified <=9%, drivable at 19 m/s), building lots
 // flattened into pads, ground = one subdivided vertex-colored mesh. groundAt = real height.
@@ -70,6 +72,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
   const matLine  = new THREE.MeshBasicMaterial({ color: 0xe8e4d0 });
   const matHwyLn = new THREE.MeshBasicMaterial({ color: 0xf4c430 });
   const matPier  = new THREE.MeshLambertMaterial({ color: 0xa87f4f });
+  const matDrive = new THREE.MeshLambertMaterial({ color: 0x9d9a92 }); // bungalow driveway concrete
 
   const S = new THREE.Group(); S.name = 'fallbackBuildings'; scene.add(S); // primitive buildings until GLBs land
 
@@ -86,6 +89,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
     ['House 4',460,300,480,318,5],['House 5',530,300,550,318,5],
     ['House 6',460,380,480,398,5],['House 7',495,380,515,398,5],['House 8',530,380,550,398,5],
     ['Apartments 1',380,210,410,250,14],['Apartments 2',380,290,410,330,14],['Fuel Stop',520,100,556,130,5],
+    ['Starter Bungalow',494,300,516,318,5],
   ];
   const LOTS = LOTS_L.map((b) => ({ minX: lw(b[1]), maxX: lw(b[3]), minZ: lz(b[2]), maxZ: lz(b[4]) }));
   function baseH(x, z) { // gentle hills; max gradient ~7-8% anywhere (verified in test)
@@ -176,6 +180,8 @@ function createMap({ THREE, scene, GLTFLoader }) {
   }
   for (const r of ROADS) strip(r, matRoad, r.w / 2, 0.04, 8, 0);
   strip(HWY, matHwy, HWY.w / 2, 0.05, 8, 0);
+  const DRIVES = [{ kind: 'v', at: 497, from: 284, to: 304, w: 6 }]; // bungalow driveway (drivable, no dashes)
+  for (const d of DRIVES) strip(d, matDrive, d.w / 2, 0.045, 4, 0);
   for (const r of ROADS) strip(r, matLine, 0.2, 0.08, 12, 3);
   strip(HWY, matHwyLn, 0.2, 0.09, 16, 4);
   { // merge strip segments into one mesh per material
@@ -323,6 +329,60 @@ function createMap({ THREE, scene, GLTFLoader }) {
     }
   }
 
+
+  // ---- Starter Bungalow (v6): procedural original - walls, hip roof, garage, driveway ----
+  {
+    const HX0 = lw(500), HX1 = lw(512), HZ0 = lz(304), HZ1 = lz(312); // house 12x8
+    const GX0 = lw(494), GX1 = lw(500), GZ0 = lz(304), GZ1 = lz(310); // garage 6x6
+    const gcx = (HX0 + HX1) / 2, gcz = (HZ0 + HZ1) / 2;
+    const gy = terrainH(gcx, gcz);
+    const bg = new THREE.Group(); bg.name = 'bld:Starter Bungalow';
+    const stucco = new THREE.MeshLambertMaterial({ color: 0xe8dcc8 });
+    const roofB  = new THREE.MeshLambertMaterial({ color: 0x7a5c48 });
+    const glass  = new THREE.MeshLambertMaterial({ color: 0x2a3d52 });
+    const doorW  = new THREE.MeshLambertMaterial({ color: 0x6b4a2e });
+    // house walls + hip roof
+    const hw = new THREE.Mesh(new THREE.BoxGeometry(HX1 - HX0, 3, HZ1 - HZ0), stucco);
+    hw.position.set(gcx, gy + 1.5, gcz); bg.add(hw);
+    const hip = new THREE.Mesh(new THREE.ConeGeometry(Math.hypot(HX1 - HX0, HZ1 - HZ0) / 2 * 0.95, 2.4, 4, 1), roofB);
+    hip.rotation.y = Math.PI / 4;
+    hip.scale.set(1, 1, (HZ1 - HZ0) / (HX1 - HX0));
+    hip.position.set(gcx, gy + 3 + 1.2, gcz); bg.add(hip);
+    const eave = new THREE.Mesh(new THREE.BoxGeometry(HX1 - HX0 + 0.8, 0.25, HZ1 - HZ0 + 0.8), roofB);
+    eave.position.set(gcx, gy + 3, gcz); bg.add(eave);
+    // garage + flat roof + roll-up door on the street (north) face
+    const gw = new THREE.Mesh(new THREE.BoxGeometry(GX1 - GX0, 2.6, GZ1 - GZ0), stucco);
+    gw.position.set((GX0 + GX1) / 2, gy + 1.3, (GZ0 + GZ1) / 2); bg.add(gw);
+    const gtrim = new THREE.Mesh(new THREE.BoxGeometry(GX1 - GX0 + 0.6, 0.3, GZ1 - GZ0 + 0.6), roofB);
+    gtrim.position.set((GX0 + GX1) / 2, gy + 2.75, (GZ0 + GZ1) / 2); bg.add(gtrim);
+    { // garage door: canvas texture with horizontal slats (original art)
+      const cv = document.createElement('canvas'); cv.width = 128; cv.height = 64;
+      const g2 = cv.getContext('2d');
+      g2.fillStyle = '#c9cdd4'; g2.fillRect(0, 0, 128, 64);
+      g2.fillStyle = '#8d939e';
+      for (let y = 6; y < 64; y += 10) g2.fillRect(4, y, 120, 3);
+      g2.strokeStyle = '#5a606b'; g2.lineWidth = 5; g2.strokeRect(2, 2, 124, 60);
+      g2.fillStyle = '#5a606b'; g2.fillRect(58, 34, 12, 4); // handle
+      const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace;
+      const door = new THREE.Mesh(new THREE.BoxGeometry(5.2, 2.1, 0.15), new THREE.MeshLambertMaterial({ map: t }));
+      door.position.set((GX0 + GX1) / 2, gy + 1.05, GZ0 - 0.08); bg.add(door); // faces the street (north)
+    }
+    // front door + two windows on the street face
+    const fd = new THREE.Mesh(new THREE.BoxGeometry(1.1, 2.2, 0.15), doorW);
+    fd.position.set(HX0 + 2.2, gy + 1.1, HZ0 - 0.08); bg.add(fd);
+    for (const wx of [HX0 + 5.5, HX0 + 9]) {
+      const win = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.2, 0.12), glass);
+      win.position.set(wx, gy + 1.7, HZ0 - 0.07); bg.add(win);
+      const wf = new THREE.Mesh(new THREE.BoxGeometry(1.9, 1.5, 0.06), stucco);
+      wf.position.set(wx, gy + 1.7, HZ0 - 0.04); bg.add(wf);
+    }
+    // porch slab
+    const porch = new THREE.Mesh(new THREE.BoxGeometry(4, 0.18, 2.4), matDrive);
+    porch.position.set(HX0 + 2.2, gy + 0.09, HZ0 - 1.3); bg.add(porch);
+    scene.add(bg);
+    blocks.push({ minX: HX0, maxX: HX1, minZ: HZ0, maxZ: HZ1 });
+    blocks.push({ minX: GX0, maxX: GX1, minZ: GZ0, maxZ: GZ1 });
+  }
 
   // ---- Kenney CC0 model swap (owner 10:25 PM: real 3D models; coordinator: GLTFLoader in importmap) ----
   // Every building keeps its primitive fallback in group S until its GLB lands, then swaps.
@@ -515,6 +575,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
   }
   function isRoadAt(x, z) {
     for (const r of ROADS) if (roadHit(r, x, z)) return true;
+    for (const d of DRIVES) if (roadHit(d, x, z)) return true;
     return roadHit(HWY, x, z);
   }
 
@@ -531,11 +592,12 @@ function createMap({ THREE, scene, GLTFLoader }) {
     bounds: { minX: -C, maxX: C, minZ: -C, maxZ: C },
     spawnPoints: {
       player: { x: lw(145), z: lz(320), heading: Math.PI / 2 }, // boardwalk, facing the shops (east)
-      car:    { x: lw(150), z: lz(300), heading: 0 },           // taxi stand by the pier, facing north
+      car:    { x: lw(497), z: lz(294), heading: 0 },           // v6: starter car on the bungalow driveway, facing the street
     },
     groundAt, heightAt: groundAt,
     isBlocked, blockedAt: isBlocked,
     isRoadAt, taxiStops,
+    starterHome: { x: lw(505), z: lz(309), name: 'Palm Court Bungalow' },
     update(dt) {},
   };
 }
