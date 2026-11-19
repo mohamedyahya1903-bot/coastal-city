@@ -752,13 +752,14 @@ const assetBlobs = await loadAssetPack();
 const assetManager = new THREE.LoadingManager();
 assetManager.setURLModifier((u) => assetBlobs[u] || u);
 class RepoMapGLTFLoader extends GLTFLoader {
+  constructor(manager) { super(manager || assetManager); } // map v3 does `new GL()` with no args
   load(url, onLoad, onProgress, onError) {
     const l = new GLTFLoader(this.manager); // per-load instance: resourcePath differs per kit folder
     l.setResourcePath(url.slice(0, url.lastIndexOf('/') + 1));
     l.load(url, onLoad, onProgress, onError);
   }
 }
-const map = createMap({ THREE, scene, GLTFLoader: new RepoMapGLTFLoader(assetManager) });
+const map = createMap({ THREE, scene, GLTFLoader: RepoMapGLTFLoader }); // class, not instance: swapToModels news it up
 
 let paused = false;
 
