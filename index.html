@@ -50,56 +50,89 @@ import * as THREE from 'three';
 // Owner 10:13 PM: no plain box look - every building gets structure: textured facades with
 // window grids + door, roof trim, and rounded roof pieces (domes, pyramids, cylinders).
 // Still low-poly + one merged mesh for all roads/dashes for the Galaxy M02s budget.
-// Coordinates: Y-up meters, ground y=0, X east, -Z north. Layout (600x600, y south)
+// v2: buildings/props swap to Kenney CC0 GLBs (assets/models/) when a GLTFLoader is
+// available (arg or importmap 'three/addons/'); primitive fallback stays otherwise.
+// v3 (owner via lead Nov 19): real elevation - analytic terrain, hills east, rise north,
+// roads + highway draped on it (grades verified <=9%, drivable at 19 m/s), building lots
+// flattened into pads, ground = one subdivided vertex-colored mesh. groundAt = real height.
+// Coordinates: Y-up meters, y=0 at sea level, X east, -Z north. Layout (600x600, y south)
 // converts as world.x = layout.x - 300, world.z = layout.y - 300. Heading 0 = north.
 
-function createMap({ THREE, scene }) {
+function createMap({ THREE, scene, GLTFLoader }) {
   const C = 300; // layout -> world offset
   const lw = (lx) => lx - C;
   const lz = (ly) => ly - C;
 
   // ---- merged flat quads: ALL ground planes, roads and dashes in a handful of draws ----
-  const quads = []; // {mat, pts:[x0,z0,x1,z1], y}
-  const matGrass = new THREE.MeshLambertMaterial({ color: 0x6f9b52 });
-  const matSand  = new THREE.MeshLambertMaterial({ color: 0xe3d3a0 });
   const matWater = new THREE.MeshLambertMaterial({ color: 0x2e6f9e });
   const matRoad  = new THREE.MeshLambertMaterial({ color: 0x3a3e44 });
   const matHwy   = new THREE.MeshLambertMaterial({ color: 0x33373d });
   const matLine  = new THREE.MeshBasicMaterial({ color: 0xe8e4d0 });
   const matHwyLn = new THREE.MeshBasicMaterial({ color: 0xf4c430 });
-  const matPark  = new THREE.MeshLambertMaterial({ color: 0x7cb85e });
   const matPier  = new THREE.MeshLambertMaterial({ color: 0xa87f4f });
 
-  const quad = (mat, x0, z0, x1, z1, y) => quads.push({ mat, x0, z0, x1, z1, y });
-  function buildQuads() {
-    const byMat = new Map();
-    for (const q of quads) {
-      if (!byMat.has(q.mat)) byMat.set(q.mat, []);
-      byMat.get(q.mat).push(q);
+  const S = new THREE.Group(); S.name = 'fallbackBuildings'; scene.add(S); // primitive buildings until GLBs land
+
+  // ---- terrain (owner via lead Nov 19: real elevation - hills, sloped districts, sloped highway) ----
+  const smooth = (t) => { t = t < 0 ? 0 : t > 1 ? 1 : t; return t * t * (3 - 2 * t); };
+  const BEACH_X = lw(122); // west of here land fades to flat sand
+  const LOTS_L = [ // building pads [name, x0,y0,x1,y1, heightCap] (layout coords)
+    ['Tower 1',212,212,244,244,40],['Tower 2',252,212,276,240,30],['Tower 3',212,252,240,276,46],
+    ['Tower 4',252,252,276,276,24],['Tower 5',292,212,324,244,34],['Tower 6',292,252,324,276,27],
+    ['Office 1',212,292,244,324,20],['Office 2',252,292,276,324,17],['Office 3',292,292,324,324,20],
+    ['Shop 1',160,210,186,232,8],['Shop 2',160,240,186,262,8],['Cafe',160,270,186,292,8],
+    ['Shop 3',160,330,186,352,8],['Shop 4',160,360,186,382,8],
+    ['House 1',460,220,480,238,5],['House 2',495,220,515,238,5],['House 3',530,220,550,238,5],
+    ['House 4',460,300,480,318,5],['House 5',530,300,550,318,5],
+    ['House 6',460,380,480,398,5],['House 7',495,380,515,398,5],['House 8',530,380,550,398,5],
+    ['Apartments 1',380,210,410,250,14],['Apartments 2',380,290,410,330,14],['Fuel Stop',520,100,556,130,5],
+  ];
+  const LOTS = LOTS_L.map((b) => ({ minX: lw(b[1]), maxX: lw(b[3]), minZ: lz(b[2]), maxZ: lz(b[4]) }));
+  function baseH(x, z) { // gentle hills; max gradient ~7-8% anywhere (verified in test)
+    const h = 3.0 * Math.sin(x * 0.009 + 1.7) * Math.cos(z * 0.008)
+            + 1.8 * Math.cos(x * 0.014 - 0.6) * Math.sin(z * 0.011 + 0.9)
+            + 8 * smooth((x - 140) / 240)   // Palm Court hillside, east
+            + 4 * smooth((-z - 160) / 160); // rise toward Bayshore Highway, north
+    return h * smooth((x - (BEACH_X - 30)) / 30); // flat sand at the waterline
+  }
+  for (const L of LOTS) L.padY = baseH((L.minX + L.maxX) / 2, (L.minZ + L.maxZ) / 2);
+  function terrainH(x, z) { // building pads flatten inside each lot (blended inward): roads keep natural slope
+    let h = baseH(x, z);
+    for (const L of LOTS) {
+      const d = Math.min(x - L.minX, L.maxX - x, z - L.minZ, L.maxZ - z);
+      if (d <= 0) continue;
+      const w = smooth(d / 6); // pad blend inward only: roads always keep the natural slope
+      h = h * (1 - w) + L.padY * w;
     }
-    for (const [mat, list] of byMat) {
-      const pos = [], norm = [], uv = [], idx = [];
-      list.forEach((q, i) => {
-        const b = i * 4;
-        pos.push(q.x0, q.y, q.z0, q.x1, q.y, q.z0, q.x1, q.y, q.z1, q.x0, q.y, q.z1);
-        for (let k = 0; k < 4; k++) norm.push(0, 1, 0);
-        uv.push(0, 0, 1, 0, 1, 1, 0, 1);
-        idx.push(b, b + 2, b + 1, b, b + 3, b + 2); // CCW from +y so faces point up
-      });
-      const g = new THREE.BufferGeometry();
-      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-      g.setAttribute('normal', new THREE.Float32BufferAttribute(norm, 3));
-      g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-      g.setIndex(idx);
-      scene.add(new THREE.Mesh(g, mat));
-    }
+    return h;
   }
 
-  // ---- ground zones ----
-  quad(matWater, lw(-160), -C - 20, lw(80), C + 20, -0.25);      // ocean (below land)
-  quad(matSand, lw(80), -C - 20, lw(122), C + 20, 0.01);         // Sunset Strand beach
-  quad(matGrass, lw(122), -C - 20, C + 40, C + 20, 0);           // city land
-  quad(matPark, lw(210), lz(368), lw(350), lz(432), 0.015);      // Seaside Park
+  // ocean: flat plane west of the beach
+  const ocean = new THREE.Mesh(new THREE.PlaneGeometry(300, 680), matWater);
+  ocean.rotation.x = -Math.PI / 2; ocean.position.set(-368, -0.25, 0); scene.add(ocean);
+
+  // ground: one subdivided terrain-following mesh, vertex colors (sand / grass / park), one draw call
+  {
+    const X0 = -218, X1 = 320, Z0 = -320, Z1 = 320, NX = 80, NZ = 96;
+    const pos = [], col = [], idx = [];
+    const cSand = new THREE.Color(0xe3d3a0), cGrass = new THREE.Color(0x6f9b52), cPark = new THREE.Color(0x7cb85e);
+    for (let j = 0; j <= NZ; j++) for (let i = 0; i <= NX; i++) {
+      const x = X0 + (X1 - X0) * i / NX, z = Z0 + (Z1 - Z0) * j / NZ;
+      pos.push(x, terrainH(x, z), z);
+      const c = x < BEACH_X ? cSand
+        : (x >= lw(210) && x <= lw(350) && z >= lz(368) && z <= lz(432) ? cPark : cGrass);
+      col.push(c.r, c.g, c.b);
+    }
+    for (let j = 0; j < NZ; j++) for (let i = 0; i < NX; i++) {
+      const a = j * (NX + 1) + i, b = a + 1, c2 = a + NX + 1, d2 = c2 + 1;
+      idx.push(a, c2, b, b, c2, d2);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    g.setIndex(idx); g.computeVertexNormals();
+    scene.add(new THREE.Mesh(g, new THREE.MeshLambertMaterial({ vertexColors: true })));
+  }
 
   // Pelican Pier: walkable deck out over the water
   const pier = new THREE.Mesh(new THREE.BoxGeometry(102, 0.4, 16), matPier);
@@ -126,23 +159,50 @@ function createMap({ THREE, scene }) {
   ];
   const HWY = { kind: 'h', at: 80, from: 126, to: 600, w: 14 }; // Bayshore Highway
 
-  for (const r of ROADS) {
-    const h = r.w / 2;
-    if (r.kind === 'v') quad(matRoad, lw(r.at) - h, lz(r.from), lw(r.at) + h, lz(r.to), 0.02);
-    else quad(matRoad, lw(r.from), lz(r.at) - h, lw(r.to), lz(r.at) + h, 0.02);
-  }
-  quad(matHwy, lw(HWY.from), lz(HWY.at) - HWY.w / 2, lw(HWY.to), lz(HWY.at) + HWY.w / 2, 0.025);
-
-  const dashes = (r, mat) => {
-    const step = r.w > 10 ? 16 : 12, len = r.w > 10 ? 4 : 3;
-    for (let d = r.from + 6; d < r.to - len - 4; d += step) {
-      if (r.kind === 'v') quad(mat, lw(r.at) - 0.2, lz(d), lw(r.at) + 0.2, lz(d + len), 0.035);
-      else quad(mat, lw(d), lz(r.at) - 0.2, lw(d + len), lz(r.at) + 0.2, 0.035);
+  // roads + highway drape the terrain: segmented strips sampling terrainH, so every
+  // street and the highway follows the hills (grades verified <=9%, drivable at 19 m/s)
+  const strips = [];
+  function strip(r, mat, halfW, off, step, len) {
+    const qs = [];
+    for (let d0 = r.from + (len ? 6 : 0); d0 < r.to - (len ? len + 4 : 0); d0 += step) {
+      const d1 = len ? Math.min(d0 + len, r.to) : Math.min(d0 + step, r.to);
+      let p;
+      if (r.kind === 'v') p = [lw(r.at) - halfW, lz(d0), lw(r.at) + halfW, lz(d0), lw(r.at) + halfW, lz(d1), lw(r.at) - halfW, lz(d1)];
+      else p = [lw(d0), lz(r.at) - halfW, lw(d1), lz(r.at) - halfW, lw(d1), lz(r.at) + halfW, lw(d0), lz(r.at) + halfW];
+      qs.push([p[0], terrainH(p[0], p[1]) + off, p[1], p[2], terrainH(p[2], p[3]) + off, p[3],
+               p[4], terrainH(p[4], p[5]) + off, p[5], p[6], terrainH(p[6], p[7]) + off, p[7]]);
     }
-  };
-  for (const r of ROADS) dashes(r, matLine);
-  dashes(HWY, matHwyLn);
-  buildQuads();
+    strips.push({ mat, qs });
+  }
+  for (const r of ROADS) strip(r, matRoad, r.w / 2, 0.04, 8, 0);
+  strip(HWY, matHwy, HWY.w / 2, 0.05, 8, 0);
+  for (const r of ROADS) strip(r, matLine, 0.2, 0.08, 12, 3);
+  strip(HWY, matHwyLn, 0.2, 0.09, 16, 4);
+  { // merge strip segments into one mesh per material
+    const byMat = new Map();
+    for (const s of strips) {
+      if (!byMat.has(s.mat)) byMat.set(s.mat, []);
+      byMat.get(s.mat).push(...s.qs);
+    }
+    for (const [mat, qs] of byMat) {
+      const pos = [], norm = [], idx = [];
+      qs.forEach((q, i) => {
+        const b = i * 4;
+        pos.push(...q);
+        const ux = q[3] - q[0], uy = q[4] - q[1], uz = q[5] - q[2];
+        const vx = q[6] - q[0], vy = q[7] - q[1], vz = q[8] - q[2];
+        let nx = vy * uz - vz * uy, ny = vz * ux - vx * uz, nz = vx * uy - vy * ux;
+        const nl = Math.hypot(nx, ny, nz) || 1; nx /= nl; ny /= nl; nz /= nl;
+        for (let k = 0; k < 4; k++) norm.push(nx, ny, nz);
+        idx.push(b, b + 2, b + 1, b, b + 3, b + 2);
+      });
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      g.setAttribute('normal', new THREE.Float32BufferAttribute(norm, 3));
+      g.setIndex(idx);
+      scene.add(new THREE.Mesh(g, mat));
+    }
+  }
 
   // ---- facade textures: drawn once on canvas, window grid + entrance (original art) ----
   function facadeTex(w, h, kind) {
@@ -186,36 +246,39 @@ function createMap({ THREE, scene }) {
   function building(name, x0, y0, x1, y1, floors, kind, face, roof) {
     const w = x1 - x0, d = y1 - y0, h = floors * 3;
     const cx = lw((x0 + x1) / 2), cz = lz((y0 + y1) / 2);
+    const gy = terrainH(cx, cz) - 0.6; // lot pad height, sunk 0.6 as a foundation
+    const g = new THREE.Group(); g.name = 'bld:' + name;
     const side = new THREE.MeshLambertMaterial({ map: facadeTex(Math.max(w, d), h, kind) });
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), [side, side, roofMat, roofMat, side, side]);
-    m.position.set(cx, h / 2, cz); scene.add(m);
+    m.position.set(cx, gy + h / 2, cz); g.add(m);
     // roof trim slab (cornice)
     const trim = new THREE.Mesh(new THREE.BoxGeometry(w + 0.8, 0.6, d + 0.8), trimMat);
-    trim.position.set(cx, h + 0.3, cz); scene.add(trim);
+    trim.position.set(cx, gy + h + 0.3, cz); g.add(trim);
     // entrance door (proud of the facade)
     const dw2 = Math.min(2.2, w * 0.25);
     const door = new THREE.Mesh(new THREE.BoxGeometry(face === 'w' ? 0.35 : dw2, 2.4, face === 'w' ? dw2 : 0.35), doorMat);
-    door.position.set(face === 'w' ? lw(x0) - 0.15 : cx, 1.2, face === 'w' ? cz : lz(y0) - 0.15);
-    scene.add(door);
+    door.position.set(face === 'w' ? lw(x0) - 0.15 : cx, gy + 1.2, face === 'w' ? cz : lz(y0) - 0.15);
+    g.add(door);
     // roof structure (rounded, low-poly)
     if (roof === 'dome') {
       const dome = new THREE.Mesh(new THREE.SphereGeometry(Math.min(w, d) * 0.38, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2), domeMat);
-      dome.position.set(cx, h + 0.6, cz); scene.add(dome);
+      dome.position.set(cx, gy + h + 0.6, cz); g.add(dome);
     } else if (roof === 'pent') {
       const p = new THREE.Mesh(new THREE.CylinderGeometry(Math.min(w, d) * 0.26, Math.min(w, d) * 0.3, 3, 10), pentMat);
-      p.position.set(cx, h + 2.1, cz); scene.add(p);
+      p.position.set(cx, gy + h + 2.1, cz); g.add(p);
     } else if (roof === 'hip') { // house hip roof: 4-sided cone, rounded silhouette
       const r = new THREE.Mesh(new THREE.ConeGeometry(Math.hypot(w, d) / 2 * 0.92, 2.6, 4, 1), awnMat);
       r.rotation.y = Math.PI / 4 + Math.atan2(d, w) - Math.PI / 4;
       r.scale.set(1, 1, d / w);
-      r.position.set(cx, h + 1.3, cz); scene.add(r);
+      r.position.set(cx, gy + h + 1.3, cz); g.add(r);
     } else if (roof === 'awning') { // shop awning angled over the entrance
       const a = new THREE.Mesh(new THREE.BoxGeometry(face === 'w' ? 2.4 : w * 0.7, 0.18, face === 'w' ? d * 0.7 : 2.4), awnMat);
-      a.position.set(face === 'w' ? lw(x0) - 1.2 : cx, 2.9, face === 'w' ? cz : lz(y0) - 1.2);
+      a.position.set(face === 'w' ? lw(x0) - 1.2 : cx, gy + 2.9, face === 'w' ? cz : lz(y0) - 1.2);
       a.rotation[face === 'w' ? 'z' : 'x'] = face === 'w' ? 0.35 : -0.35;
-      scene.add(a);
+      g.add(a);
     }
-    blocks.push({ minX: lw(x0), maxX: lw(x1), minZ: lz(y0), maxZ: lz(y1) });
+        S.add(g);
+  blocks.push({ minX: lw(x0), maxX: lw(x1), minZ: lz(y0), maxZ: lz(y1) });
   }
 
   const blocks = [];
@@ -251,12 +314,137 @@ function createMap({ THREE, scene }) {
   building('Fuel Stop', 520, 100, 556, 130, 1, 'gas', 'n', null);
   {
     const cx = lw(538), cz = lz(97);
+    const gy = terrainH(cx, cz);
     const can = new THREE.Mesh(new THREE.CylinderGeometry(14, 14, 0.5, 16), trimMat);
-    can.position.set(cx, 5.2, cz); scene.add(can);
+    can.position.set(cx, gy + 5.2, cz); scene.add(can);
     for (const dx of [-9, 9]) {
       const post = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 5, 8), pentMat);
-      post.position.set(cx + dx, 2.5, cz); scene.add(post);
+      post.position.set(cx + dx, gy + 2.5, cz); scene.add(post);
     }
+  }
+
+
+  // ---- Kenney CC0 model swap (owner 10:25 PM: real 3D models; coordinator: GLTFLoader in importmap) ----
+  // Every building keeps its primitive fallback in group S until its GLB lands, then swaps.
+  // Assets: assets/models/{commercial,suburban,roads}/*.glb (+ Textures/colormap.png), all Kenney CC0 1.0.
+  const MODEL_BASE = 'assets/models/';
+  // key = building() name; f = glb under MODEL_BASE; rot = rotY; lod = low-detail partner
+  const MODELS = [
+    { k: 'Tower 1', f: 'commercial/building-skyscraper-a', rot: Math.PI },
+    { k: 'Tower 2', f: 'commercial/building-skyscraper-b', rot: Math.PI },
+    { k: 'Tower 3', f: 'commercial/building-skyscraper-c', rot: Math.PI },
+    { k: 'Tower 4', f: 'commercial/building-skyscraper-d', rot: Math.PI },
+    { k: 'Tower 5', f: 'commercial/building-skyscraper-e', rot: Math.PI },
+    { k: 'Tower 6', f: 'commercial/building-skyscraper-a', rot: 0 },
+    { k: 'Office 1', f: 'commercial/building-a', rot: Math.PI, lod: 'commercial/low-detail-building-a' },
+    { k: 'Office 2', f: 'commercial/building-b', rot: Math.PI, lod: 'commercial/low-detail-building-b' },
+    { k: 'Office 3', f: 'commercial/building-c', rot: Math.PI, lod: 'commercial/low-detail-building-c' },
+    { k: 'Shop 1', f: 'commercial/building-d', rot: -Math.PI / 2, lod: 'commercial/low-detail-building-d' },
+    { k: 'Shop 2', f: 'commercial/building-e', rot: -Math.PI / 2, lod: 'commercial/low-detail-building-e' },
+    { k: 'Cafe',    f: 'commercial/building-f', rot: -Math.PI / 2, lod: 'commercial/low-detail-building-f' },
+    { k: 'Shop 3', f: 'commercial/building-g', rot: -Math.PI / 2, lod: 'commercial/low-detail-building-g' },
+    { k: 'Shop 4', f: 'commercial/building-h', rot: -Math.PI / 2, lod: 'commercial/low-detail-building-h' },
+    { k: 'House 1', f: 'suburban/building-type-a', rot: Math.PI },
+    { k: 'House 2', f: 'suburban/building-type-b', rot: Math.PI },
+    { k: 'House 3', f: 'suburban/building-type-c', rot: Math.PI },
+    { k: 'House 4', f: 'suburban/building-type-d', rot: Math.PI },
+    { k: 'House 5', f: 'suburban/building-type-e', rot: Math.PI },
+    { k: 'House 6', f: 'suburban/building-type-f', rot: Math.PI },
+    { k: 'House 7', f: 'suburban/building-type-b', rot: Math.PI },
+    { k: 'House 8', f: 'suburban/building-type-c', rot: Math.PI },
+    { k: 'Apartments 1', f: 'commercial/building-j', rot: Math.PI, lod: 'commercial/low-detail-building-j' },
+    { k: 'Apartments 2', f: 'commercial/building-k', rot: Math.PI, lod: 'commercial/low-detail-building-k' },
+    { k: 'Fuel Stop', f: 'commercial/building-i', rot: Math.PI, lod: 'commercial/low-detail-building-i' },
+  ];
+  const FOOT = {}; // name -> layout footprint (pad list lives up top with the terrain)
+  for (const b of LOTS_L) FOOT[b[0]] = { x0: b[1], y0: b[2], x1: b[3], y1: b[4], h: b[5] };
+
+  function lodify(obj) { // glTF PBR -> cheap Lambert, static shadows off (M02s budget)
+    obj.traverse((o) => {
+      if (o.isMesh) {
+        const m = o.material;
+        o.material = new THREE.MeshLambertMaterial({
+          map: m.map || null,
+          color: (m.color && m.color.clone) ? m.color.clone() : new THREE.Color(0xffffff),
+          transparent: m.transparent === true, opacity: m.opacity, side: m.side,
+        });
+        o.castShadow = false; o.receiveShadow = false;
+      }
+    });
+    return obj;
+  }
+  function fitFootprint(obj, ft, rot) { // rotate, scale uniformly into the footprint, sit on ground
+    obj.rotation.y = rot;
+    let box = new THREE.Box3().setFromObject(obj);
+    const size = box.getSize(new THREE.Vector3());
+    const sx = (ft.x1 - ft.x0) / size.x, sz = (ft.y1 - ft.y0) / size.z;
+    const sy = Math.min((sx + sz) / 2, (ft.h || 60) / size.y); // fill the lot, cap height
+    obj.scale.set(sx, sy, sz);
+    box.setFromObject(obj);
+    const c = box.getCenter(new THREE.Vector3());
+    const gx = lw((ft.x0 + ft.x1) / 2), gz = lz((ft.y0 + ft.y1) / 2);
+    obj.position.set(gx - c.x, terrainH(gx, gz) - 0.6 - box.min.y, gz - c.z); // on its pad, sunk 0.6 foundation
+    return obj;
+  }
+  function fitHeight(obj, x, z, rot, h) { // props: scale to a target height, sit at (x,z)
+    obj.rotation.y = rot;
+    let box = new THREE.Box3().setFromObject(obj);
+    const size = box.getSize(new THREE.Vector3());
+    obj.scale.setScalar(h / size.y);
+    box.setFromObject(obj);
+    const c = box.getCenter(new THREE.Vector3());
+    obj.position.set(x - c.x, terrainH(x, z) - 0.15 - box.min.y, z - c.z); // prop sits on the terrain
+    return obj;
+  }
+
+  function swapToModels(GL) {
+    const loader = new GL();
+    for (const m of MODELS) {
+      const ft = FOOT[m.k];
+      loader.load(MODEL_BASE + m.f + '.glb', (g) => {
+        const obj = fitFootprint(lodify(g.scene), ft, m.rot);
+        const old = S.getObjectByName('bld:' + m.k);
+        if (old) S.remove(old);
+        if (m.lod) {
+          loader.load(MODEL_BASE + m.lod + '.glb', (g2) => {
+            const low = fitFootprint(lodify(g2.scene), ft, m.rot);
+            const lod = new THREE.LOD();
+            lod.addLevel(obj, 0); lod.addLevel(low, 140);
+            scene.add(lod);
+          }, undefined, () => scene.add(obj));
+        } else scene.add(obj);
+      }, undefined, () => {}); // load failed: primitive fallback stays
+    }
+    // street props (no fallback; small and cheap)
+    const PROPS = [];
+    for (const x of [-100, -20, 60, 140]) for (const z of [-100, -20, 60, 140])
+      PROPS.push(['roads/light-curved', x + 5.5, z + 5.5, Math.PI, 6]);
+    PROPS.push(
+      ['roads/traffic-light', -14, -26, 0, 4.2], ['roads/traffic-light', 66, 54, Math.PI / 2, 4.2],
+      ['roads/road-sign-stop', -94, -26, Math.PI, 2.6], ['roads/road-sign-stop', 66, 146, Math.PI / 2, 2.6],
+      ['roads/sign-highway', 100, -208, Math.PI, 4],
+      ['roads/dumpster', -137, -30, Math.PI / 2, 1.6], ['roads/dumpster', -137, 50, Math.PI / 2, 1.6],
+      ['suburban/planter', -160, -40, 0, 0.9], ['suburban/planter', -160, -10, 0, 0.9],
+      ['suburban/planter', -160, 20, 0, 0.9], ['suburban/planter', -160, 50, 0, 0.9],
+      // Seaside Park trees + Palm Court greenery (no palm model in the kits - gap noted)
+      ['suburban/tree-large', -70, 80, 0, 6], ['suburban/tree-small', -40, 75, 1, 4],
+      ['suburban/tree-large', -10, 85, 2, 6.5], ['suburban/tree-small', 20, 78, 0, 4],
+      ['suburban/tree-large', 35, 100, 1, 6], ['suburban/tree-small', -55, 110, 2, 4.5],
+      ['suburban/tree-large', -20, 120, 0, 6], ['suburban/tree-small', 10, 115, 1, 4],
+      ['suburban/tree-small', 160, -55, 0, 4.5], ['suburban/tree-large', 215, -55, 1, 6],
+      ['suburban/tree-small', 160, 100, 2, 4.5], ['suburban/tree-large', 215, 100, 0, 6],
+    );
+    for (const [f, x, z, rot, h] of PROPS) {
+      loader.load(MODEL_BASE + f + '.glb', (g) => {
+        scene.add(fitHeight(lodify(g.scene), x, z, rot, h));
+      }, undefined, () => {});
+    }
+  }
+  if (GLTFLoader) swapToModels(GLTFLoader);
+  else {
+    import('three/addons/loaders/GLTFLoader.js')
+      .then((m) => swapToModels(m.GLTFLoader))
+      .catch(() => {}); // no loader wired: stay on primitives
   }
 
   // ---- API ----
@@ -264,7 +452,7 @@ function createMap({ THREE, scene }) {
   const PIER = { minX: lw(20), maxX: lw(122), minZ: lz(292), maxZ: lz(308) };
   const onPier = (x, z) => x >= PIER.minX && x <= PIER.maxX && z >= PIER.minZ && z <= PIER.maxZ;
 
-  function groundAt(x, z) { return onPier(x, z) ? 0.4 : 0; }
+  function groundAt(x, z) { return onPier(x, z) ? 0.4 : terrainH(x, z); } // real elevation
 
   function isBlocked(x, z, r) {
     for (const b of blocks) {
@@ -538,7 +726,39 @@ function notify(msg) {
 }
 
 // ---- module wiring (order matters: map -> controls -> actors -> jobs) ------
-const map = createMap({ THREE, scene });
+// map v3 Kenney assets ride as ONE pack of .b64 chunks (GitHub's web UI rejects binary
+// uploads, and 46 separate chunk-sets would mean 50 editor commits; the pack is 20).
+async function loadAssetPack() {
+  const parts = [];
+  for (let i = 0; ; i++) {
+    const part = await fetch('assets/models-pack.b64.' + String(i).padStart(2, '0'));
+    if (!part.ok) break;
+    parts.push(await part.text());
+  }
+  if (!parts.length) return {};
+  const bin = atob(parts.join('').replace(/\s+/g, ''));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const mlen = new DataView(bytes.buffer).getUint32(0, true);
+  const manifest = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + mlen)));
+  const start = 4 + mlen, blobs = {};
+  for (const [path, [off, len]] of Object.entries(manifest)) {
+    blobs[path] = URL.createObjectURL(new Blob([bytes.subarray(start + off, start + off + len)],
+      { type: path.endsWith('.png') ? 'image/png' : 'model/gltf-binary' }));
+  }
+  return blobs;
+}
+const assetBlobs = await loadAssetPack();
+const assetManager = new THREE.LoadingManager();
+assetManager.setURLModifier((u) => assetBlobs[u] || u);
+class RepoMapGLTFLoader extends GLTFLoader {
+  load(url, onLoad, onProgress, onError) {
+    const l = new GLTFLoader(this.manager); // per-load instance: resourcePath differs per kit folder
+    l.setResourcePath(url.slice(0, url.lastIndexOf('/') + 1));
+    l.load(url, onLoad, onProgress, onError);
+  }
+}
+const map = createMap({ THREE, scene, GLTFLoader: new RepoMapGLTFLoader(assetManager) });
 
 let paused = false;
 
