@@ -80,7 +80,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
     ['Tower 1',212,212,244,244,40],['Tower 2',252,212,276,240,30],['Tower 3',212,252,240,276,46],
     ['Tower 4',252,252,276,276,24],['Tower 5',292,212,324,244,34],['Tower 6',292,252,324,276,27],
     ['Office 1',212,292,244,324,20],['Office 2',252,292,276,324,17],['Office 3',292,292,324,324,20],
-    ['Shop 1',160,210,186,232,8],['Shop 2',160,240,186,262,8],['Cafe',160,270,186,292,8],
+    ['Shop 1',160,210,186,232,8],['Shop 2',160,240,186,262,8],['Cafe',160,296,186,318,8],
     ['Shop 3',160,330,186,352,8],['Shop 4',160,360,186,382,8],
     ['House 1',460,220,480,238,5],['House 2',495,220,515,238,5],['House 3',530,220,550,238,5],
     ['House 4',460,300,480,318,5],['House 5',530,300,550,318,5],
@@ -211,7 +211,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
     const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
     const g = cv.getContext('2d');
     const wall = { tower: '#66788f', office: '#8395a9', apartment: '#a4b0bd',
-                   shop: '#cfa871', house: '#de9873', gas: '#d46a6a' }[kind] || '#999999';
+                   shop: '#cfa871', house: '#de9873', gas: '#d46a6a', far: '#a9b8c7' }[kind] || '#999999';
     g.fillStyle = wall; g.fillRect(0, 0, cw, ch);
     const floors = Math.max(1, Math.round(h / 3));
     const cols = Math.max(1, Math.floor(w / 3.4));
@@ -219,7 +219,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
     for (let f = 0; f < floors; f++) {
       for (let c = 0; c < cols; c++) {
         const x0 = c * wx + wx * 0.22, y0 = f * wy + wy * 0.2, ww = wx * 0.56, wh = wy * 0.52;
-        g.fillStyle = 'rgba(20,34,52,0.9)';                       // window glass
+        g.fillStyle = kind === 'far' ? 'rgba(74,94,116,0.55)' : 'rgba(20,34,52,0.9)'; // window glass
         g.beginPath(); g.roundRect(x0, y0, ww, wh, 2); g.fill();
         g.fillStyle = 'rgba(160,210,235,0.55)';                   // sky glint
         g.beginPath(); g.roundRect(x0, y0, ww, wh * 0.35, 2); g.fill();
@@ -295,7 +295,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
   // Boardwalk shops (entrances face west to the boardwalk), red awnings
   building('Shop 1', 160, 210, 186, 232, 2, 'shop', 'w', 'awning');
   building('Shop 2', 160, 240, 186, 262, 2, 'shop', 'w', 'awning');
-  building('Cafe',   160, 270, 186, 292, 2, 'shop', 'w', 'awning');
+  building('Cafe',   160, 296, 186, 318, 2, 'shop', 'w', 'awning'); // nudged south of H280 (v4)
   building('Shop 3', 160, 330, 186, 352, 2, 'shop', 'w', 'awning');
   building('Shop 4', 160, 360, 186, 382, 2, 'shop', 'w', 'awning');
   // Palm Court houses (hip roofs)
@@ -330,12 +330,12 @@ function createMap({ THREE, scene, GLTFLoader }) {
   const MODEL_BASE = 'assets/models/';
   // key = building() name; f = glb under MODEL_BASE; rot = rotY; lod = low-detail partner
   const MODELS = [
-    { k: 'Tower 1', f: 'commercial/building-skyscraper-a', rot: Math.PI },
-    { k: 'Tower 2', f: 'commercial/building-skyscraper-b', rot: Math.PI },
-    { k: 'Tower 3', f: 'commercial/building-skyscraper-c', rot: Math.PI },
-    { k: 'Tower 4', f: 'commercial/building-skyscraper-d', rot: Math.PI },
-    { k: 'Tower 5', f: 'commercial/building-skyscraper-e', rot: Math.PI },
-    { k: 'Tower 6', f: 'commercial/building-skyscraper-a', rot: 0 },
+    { k: 'Tower 1', f: 'commercial/building-skyscraper-a', rot: Math.PI, lod: 'primitive' },
+    { k: 'Tower 2', f: 'commercial/building-skyscraper-b', rot: Math.PI, lod: 'primitive' },
+    { k: 'Tower 3', f: 'commercial/building-skyscraper-c', rot: Math.PI, lod: 'primitive' },
+    { k: 'Tower 4', f: 'commercial/building-skyscraper-d', rot: Math.PI, lod: 'primitive' },
+    { k: 'Tower 5', f: 'commercial/building-skyscraper-e', rot: Math.PI, lod: 'primitive' },
+    { k: 'Tower 6', f: 'commercial/building-skyscraper-a', rot: 0, lod: 'primitive' },
     { k: 'Office 1', f: 'commercial/building-a', rot: Math.PI, lod: 'commercial/low-detail-building-a' },
     { k: 'Office 2', f: 'commercial/building-b', rot: Math.PI, lod: 'commercial/low-detail-building-b' },
     { k: 'Office 3', f: 'commercial/building-c', rot: Math.PI, lod: 'commercial/low-detail-building-c' },
@@ -367,6 +367,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
           map: m.map || null,
           color: (m.color && m.color.clone) ? m.color.clone() : new THREE.Color(0xffffff),
           transparent: m.transparent === true, opacity: m.opacity, side: m.side,
+          vertexColors: m.vertexColors === true, // Mohamed's props carry vertex colors, no textures
         });
         o.castShadow = false; o.receiveShadow = false;
       }
@@ -404,15 +405,28 @@ function createMap({ THREE, scene, GLTFLoader }) {
       loader.load(MODEL_BASE + m.f + '.glb', (g) => {
         const obj = fitFootprint(lodify(g.scene), ft, m.rot);
         const old = S.getObjectByName('bld:' + m.k);
-        if (old) S.remove(old);
-        if (m.lod) {
+        if (m.lod === 'primitive' && old) { // towers: detailed GLB near, lightened primitive far
+          S.remove(old);
+          const farSide = new THREE.MeshLambertMaterial({
+            map: facadeTex(Math.max(ft.x1 - ft.x0, ft.y1 - ft.y0), ft.h || 30, 'far') });
+          old.traverse((o) => { // swap the dark near facade for the light far one
+            if (o.isMesh && Array.isArray(o.material)) o.material = [farSide, farSide, o.material[2], o.material[3], farSide, farSide];
+          });
+          const lod = new THREE.LOD();
+          lod.addLevel(obj, 0); lod.addLevel(old, 100);
+          scene.add(lod);
+        } else if (m.lod) {
+          if (old) S.remove(old);
           loader.load(MODEL_BASE + m.lod + '.glb', (g2) => {
             const low = fitFootprint(lodify(g2.scene), ft, m.rot);
             const lod = new THREE.LOD();
-            lod.addLevel(obj, 0); lod.addLevel(low, 140);
+            lod.addLevel(obj, 0); lod.addLevel(low, 80);
             scene.add(lod);
           }, undefined, () => scene.add(obj));
-        } else scene.add(obj);
+        } else {
+          if (old) S.remove(old);
+          scene.add(obj);
+        }
       }, undefined, () => {}); // load failed: primitive fallback stays
     }
     // street props (no fallback; small and cheap)
@@ -438,6 +452,30 @@ function createMap({ THREE, scene, GLTFLoader }) {
       loader.load(MODEL_BASE + f + '.glb', (g) => {
         scene.add(fitHeight(lodify(g.scene), x, z, rot, h));
       }, undefined, () => {});
+    }
+    // Mohamed's six props (palm, streetlight, bench, bin, hydrant, traffic light) - GLB zip pending;
+    // each load silently skips until assets/models/props/<name>.glb exists (v4 pre-wiring)
+    const PROPS2 = [
+      // palms along the boardwalk west side (fills the no-palm gap in the Kenney kits)
+      ['props/palm', -178, -180, 0, 7], ['props/palm', -178, -140, 1.2, 6.5], ['props/palm', -178, -100, 2.1, 7],
+      ['props/palm', -178, -60, 0.6, 6], ['props/palm', -178, 20, 1.7, 7], ['props/palm', -178, 60, 2.9, 6.5],
+      ['props/palm', -178, 100, 0.4, 7], ['props/palm', -178, 140, 1.1, 6], ['props/palm', -178, 180, 2.4, 7],
+      // benches: pier entrance, Seaside Park, Palm Court
+      ['props/bench', -150, -12, Math.PI / 2, 1], ['props/bench', -40, 95, 0, 1], ['props/bench', 15, 90, Math.PI, 1],
+      ['props/bench', 190, 30, Math.PI / 2, 1],
+      // bins by the shops and downtown corners
+      ['props/bin', -146, 26, 0, 1], ['props/bin', -146, 66, 0, 1], ['props/bin', -66, -26, 0, 1],
+      // hydrants downtown
+      ['props/hydrant', -66, 14, 0, 0.8], ['props/hydrant', 14, -26, 0, 0.8],
+      // streetlights on the downtown corners not covered by the roads kit
+      ['props/streetlight', -24, 54, Math.PI, 5.5], ['props/streetlight', 66, -26, 0, 5.5],
+      // traffic light at the H280 x V280 junction (the roads-kit lights cover two other junctions)
+      ['props/traffic_light', -24, -104, Math.PI / 2, 4.2],
+    ];
+    for (const [f, x, z, rot, h] of PROPS2) {
+      loader.load(MODEL_BASE + f + '.glb', (g) => {
+        scene.add(fitHeight(lodify(g.scene), x, z, rot, h));
+      }, undefined, () => {}); // zip not here yet: skip silently
     }
   }
   if (GLTFLoader) swapToModels(GLTFLoader);
@@ -728,10 +766,10 @@ function notify(msg) {
 // ---- module wiring (order matters: map -> controls -> actors -> jobs) ------
 // map v3 Kenney assets ride as ONE pack of .b64 chunks (GitHub's web UI rejects binary
 // uploads, and 46 separate chunk-sets would mean 50 editor commits; the pack is 20).
-async function loadAssetPack() {
+async function loadAssetPack(prefix) {
   const parts = [];
   for (let i = 0; ; i++) {
-    const part = await fetch('assets/models-pack.b64.' + String(i).padStart(2, '0'));
+    const part = await fetch(prefix + '.' + String(i).padStart(2, '0'));
     if (!part.ok) break;
     parts.push(await part.text());
   }
@@ -748,7 +786,11 @@ async function loadAssetPack() {
   }
   return blobs;
 }
-const assetBlobs = await loadAssetPack();
+// two packs: the big Kenney set (20 chunks) and Mohamed's props (1 chunk), kept
+// separate so adding props did not mean re-uploading the whole 4.8 MB Kenney pack
+const assetBlobs = Object.assign({},
+  await loadAssetPack('assets/models-pack.b64'),
+  await loadAssetPack('assets/props-pack.b64'));
 const assetManager = new THREE.LoadingManager();
 assetManager.setURLModifier((u) => assetBlobs[u] || u);
 class RepoMapGLTFLoader extends GLTFLoader {
