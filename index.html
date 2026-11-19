@@ -725,7 +725,7 @@ function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onMode
  function restore(data){if(!data||typeof data.driving!=='boolean')return false;
   let vehs=null,vehKey=null;
   if(data.version===2&&data.vehicles){vehs=data.vehicles;vehKey=data.driving?data.vehicle:null;if(data.driving&&!vehicles.some(v=>v.key===vehKey))return false;}
-  else if(data.car){vehs={taxi:data.car};vehKey=data.driving?'taxi':null;}
+  else if(data.car){vehs={sedan:data.car};vehKey=data.driving?'sedan':null;}// v1 legacy 'car' slot = driveway car = sedan in v009+ (taxi has its own spawn)
   else return false;
   const chk=o=>o&&['x','z','yaw'].every(k=>Number.isFinite(o[k])&&Math.abs(o[k])<100000);
   if(!chk(data.player))return false;
