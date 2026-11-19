@@ -620,16 +620,21 @@ function createControls({container=document.body,onInteract=()=>{}}={}) {
 
 // ===== actors.js =====
 // Original primitive geometry. No external models, names, textures or paid dependencies.
+// v009: adds original white sport sedan (starter car, ~4.6 m) and green cruiser bike (~2.2 m,
+// lean-in riding). sedan parks at map.spawnPoints.car (map v6 driveway); taxi keeps actors.car.
 function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onModeChange=()=>{}}){
  const ground=(x,z)=>{const y=(map.groundAt||map.heightAt||(()=>0))(x,z);return Number.isFinite(y)?y:0;};
  const blocked=(x,z,r)=>!!((map.isBlocked||map.blockedAt||(()=>false))(x,z,r));
- const material=c=>new T.MeshLambertMaterial({color:c});const mats={skin:material('#c68b59'),shirt:material('#ecebdf'),pants:material('#26344c'),shoe:material('#152335'),body:material('#e6b32e'),dark:material('#243247'),glass:material('#71b7cb'),rubber:material('#202733'),lamp:material('#fff0b2'),rim:material('#b8c7c9'),tail:material('#ce594e')};
+ const material=c=>new T.MeshLambertMaterial({color:c});const mats={skin:material('#c68b59'),shirt:material('#ecebdf'),pants:material('#26344c'),shoe:material('#152335'),body:material('#e6b32e'),dark:material('#243247'),glass:material('#71b7cb'),rubber:material('#202733'),lamp:material('#fff0b2'),rim:material('#b8c7c9'),tail:material('#ce594e'),white:material('#f2f1ea'),glass2:material('#2b3a47'),red:material('#c0392b'),green:material('#2e7d4f'),chrome:material('#c3cdcf'),black:material('#1c242e')};
  const geometries=[];
  function mesh(parent,geo,mat,x=0,y=0,z=0){geometries.push(geo);const o=new T.Mesh(geo,mat);o.position.set(x,y,z);parent.add(o);return o;}
  function sphere(parent,x,y,z,rx,ry,rz,mat){const o=mesh(parent,new T.SphereGeometry(1,12,8),mat,x,y,z);o.scale.set(rx,ry,rz);return o;}
  function capsule(parent,x,y,z,r,len,mat){return mesh(parent,new T.CapsuleGeometry(r,len,4,8),mat,x,y,z);}
  function rounded(parent,w,h,d,mat,x,y,z,r=Math.min(w,h,d)*.3){r=Math.min(r,w*.45,h*.45,d*.45);const a=w/2-r,b=h/2-r,s=new T.Shape();s.moveTo(-a-r,-b);s.lineTo(-a-r,b);s.quadraticCurveTo(-a-r,b+r,-a,b+r);s.lineTo(a,b+r);s.quadraticCurveTo(a+r,b+r,a+r,b);s.lineTo(a+r,-b);s.quadraticCurveTo(a+r,-b-r,a,-b-r);s.lineTo(-a,-b-r);s.quadraticCurveTo(-a-r,-b-r,-a-r,-b);const g=new T.ExtrudeGeometry(s,{depth:Math.max(.005,d-2*r),bevelEnabled:true,bevelSegments:2,steps:1,bevelSize:r*.45,bevelThickness:r,curveSegments:3});g.translate(0,0,-(d-2*r)/2);return mesh(parent,g,mat,x,y,z);}
  function hull(parent,rings,mat){const vs=[],ix=[],N=12;for(const [z,w,cy,h]of rings)for(let i=0;i<N;i++){const a=i/N*Math.PI*2;vs.push(Math.cos(a)*w,cy+Math.sin(a)*h,z);}for(let j=0;j<rings.length-1;j++)for(let i=0;i<N;i++){const a=j*N+i,b=j*N+(i+1)%N,c=a+N,d=b+N;ix.push(a,b,c,b,d,c);}for(let i=1;i<N-1;i++){ix.push(0,i+1,i);const o=(rings.length-1)*N;ix.push(o,o+i,o+i+1);}const g=new T.BufferGeometry();g.setAttribute('position',new T.Float32BufferAttribute(vs,3));g.setIndex(ix);g.computeVertexNormals();return mesh(parent,g,mat);}
+ // Batch static root meshes by material, leaving limb/wheel groups movable.
+ function batchStatic(group){const buckets=new Map();for(const o of [...group.children])if(o.isMesh){o.updateMatrix();const g=o.geometry.index?o.geometry.toNonIndexed():o.geometry.clone();g.applyMatrix4(o.matrix);const a=buckets.get(o.material)||[];a.push({o,g});buckets.set(o.material,a);}for(const [mat,items]of buckets){if(items.length<2){items.forEach(i=>i.g.dispose());continue;}const positions=[],normals=[];for(const {o,g}of items){positions.push(...g.attributes.position.array);normals.push(...g.attributes.normal.array);group.remove(o);g.dispose();}const joined=new T.BufferGeometry();joined.setAttribute('position',new T.Float32BufferAttribute(positions,3));joined.setAttribute('normal',new T.Float32BufferAttribute(normals,3));mesh(group,joined,mat);}}
+ function normalize(group,len){group.updateMatrixWorld(true);const b=new T.Box3().setFromObject(group,true),s=b.getSize(new T.Vector3());const k=len/s.z;group.scale.setScalar(k);group.position.y=-b.min.y*k;return k;}
  const pm=new T.Group();pm.name='Original rounded courier character';scene.add(pm);
  sphere(pm,0,1.18,0,.29,.43,.2,mats.shirt);sphere(pm,0,.87,0,.27,.17,.19,mats.pants);capsule(pm,0,1.58,0,.09,.08,mats.skin);sphere(pm,0,1.82,0,.2,.25,.19,mats.skin);sphere(pm,0,1.99,.015,.205,.11,.19,mats.dark);sphere(pm,0,1.8,-.183,.065,.06,.055,mats.skin);
  for(const x of[-.072,.072])sphere(pm,x,1.87,-.175,.024,.028,.02,mats.dark);
@@ -639,24 +644,99 @@ function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onMode
  hull(cm,[[-1.12,.65,1.18,.1],[-.56,.77,1.4,.34],[.67,.74,1.4,.34],[1.11,.63,1.16,.09]],mats.glass);
  hull(cm,[[-.57,.63,1.68,.06],[-.35,.69,1.73,.075],[.55,.65,1.73,.075],[.73,.57,1.65,.045]],mats.body);
  for(const x of[-.77,.77]){rounded(cm,.055,.58,.095,mats.body,x,1.38,.12,.02);rounded(cm,.08,.09,1.65,mats.body,x,1.12,.07,.025);for(const z of[-.39,.55])rounded(cm,.06,.055,.24,mats.dark,x*1.17,1.03,z,.02);sphere(cm,x*1.25,1.24,-.65,.14,.07,.1,mats.body);}
- const wheels=[];for(const x of[-.92,.92])for(const z of[-1.22,1.2]){const pivot=new T.Group();pivot.position.set(x,.4,z);cm.add(pivot);const tire=mesh(pivot,new T.TorusGeometry(.285,.105,6,12),mats.rubber);tire.rotation.y=Math.PI/2;const rim=mesh(pivot,new T.CylinderGeometry(.245,.245,.12,10),mats.rim);rim.rotation.z=Math.PI/2;const hub=sphere(pivot,Math.sign(x)*.09,0,0,.04,.11,.11,mats.dark);wheels.push({pivot,z});}
+ for(const x of[-.92,.92])for(const z of[-1.22,1.2]){const pivot=new T.Group();pivot.position.set(x,.4,z);cm.add(pivot);const tire=mesh(pivot,new T.TorusGeometry(.285,.105,6,12),mats.rubber);tire.rotation.y=Math.PI/2;const rim=mesh(pivot,new T.CylinderGeometry(.245,.245,.12,10),mats.rim);rim.rotation.z=Math.PI/2;sphere(pivot,Math.sign(x)*.09,0,0,.04,.11,.11,mats.dark);}
  for(const x of[-.61,.61]){sphere(cm,x,.85,-1.82,.22,.12,.095,mats.lamp);sphere(cm,x,.85,1.78,.21,.1,.09,mats.tail);}
  rounded(cm,1.15,.16,.12,mats.dark,0,.59,-1.92,.055);rounded(cm,1.42,.11,.12,mats.dark,0,.54,1.85,.045);rounded(cm,.52,.22,.37,mats.lamp,0,1.91,.03,.07);rounded(cm,.31,.1,.015,mats.dark,0,1.93,-.174,.02);
- // Batch static root meshes by material, leaving limb/wheel groups movable.
- function batchStatic(group){const buckets=new Map();for(const o of [...group.children])if(o.isMesh){o.updateMatrix();const g=o.geometry.index?o.geometry.toNonIndexed():o.geometry.clone();g.applyMatrix4(o.matrix);const a=buckets.get(o.material)||[];a.push({o,g});buckets.set(o.material,a);}for(const [mat,items]of buckets){if(items.length<2){items.forEach(i=>i.g.dispose());continue;}const positions=[],normals=[];for(const {o,g}of items){positions.push(...g.attributes.position.array);normals.push(...g.attributes.normal.array);group.remove(o);g.dispose();}const joined=new T.BufferGeometry();joined.setAttribute('position',new T.Float32BufferAttribute(positions,3));joined.setAttribute('normal',new T.Float32BufferAttribute(normals,3));mesh(group,joined,mat);}}
- batchStatic(cm);batchStatic(pm);legs.forEach(batchStatic);arms.forEach(batchStatic);
- const start=map.spawnPoints||{},ps=start.player||spawn,cs=start.car||{x:(spawn.x??0)+4,z:spawn.z??8,heading:0};
- const player={x:ps.x??0,z:ps.z??8,y:0,yaw:ps.heading??0,mesh:pm,inCar:false};const car={x:cs.x??4,z:cs.z??8,y:0,yaw:cs.heading??0,speed:0,mesh:cm,occupied:false};let phase=0,driving=false,disposed=false,lastBlocked=false,mixer=null,walkAction=null,idleAction=null,loadedModels=false;
- function carBlocked(x,z,yaw=car.yaw){for(const d of[-1.25,0,1.25])if(blocked(x+Math.sin(yaw)*d,z-Math.cos(yaw)*d,1.02))return true;return false;}
- function move(entity,dx,dz,r){const n=Math.max(1,Math.ceil(Math.hypot(dx,dz)/.22));let hit=false;for(let i=0;i<n;i++){const x=entity.x+dx/n,z=entity.z+dz/n;if(!(entity===car?carBlocked(x,entity.z):blocked(x,entity.z,r)))entity.x=x;else hit=true;if(!(entity===car?carBlocked(entity.x,z):blocked(entity.x,z,r)))entity.z=z;else hit=true;}return hit;}
- function sync(){player.y=ground(player.x,player.z);car.y=ground(car.x,car.z);pm.position.set(player.x,player.y,player.z);pm.rotation.y=-player.yaw;cm.position.set(car.x,car.y,car.z);cm.rotation.y=-car.yaw;pm.visible=!driving;player.inCar=driving?car:false;car.occupied=driving;}
- function clearPath(ax,az,bx,bz,r=.3){const n=Math.max(1,Math.ceil(Math.hypot(bx-ax,bz-az)/.2));for(let i=1;i<=n;i++)if(blocked(ax+(bx-ax)*i/n,az+(bz-az)*i/n,r))return false;return true;}
- function interact(){if(disposed)return false;if(!driving){if(Math.hypot(player.x-car.x,player.z-car.z)>4){notify('Walk closer to the yellow car');return false;}if(!clearPath(player.x,player.z,car.x,car.z)){notify('Go around to the car. A wall is in the way.');return false;}driving=true;car.speed=0;player.x=car.x;player.z=car.z;notify('Drive with the left stick. BRAKE slows the car.');}else{if(Math.abs(car.speed)>1){notify('Stop the car before getting out');return false;}let exit=null;for(const s of[1,-1]){const x=car.x+Math.cos(car.yaw)*s*1.7,z=car.z+Math.sin(car.yaw)*s*1.7;if(!blocked(x,z,.4)&&clearPath(car.x,car.z,x,z,.37)){exit={x,z};break;}}if(!exit){notify('Both sides are blocked. Move the car first.');return false;}driving=false;player.x=exit.x;player.z=exit.z;player.yaw=car.yaw;car.speed=0;}sync();onModeChange(driving);return true;}
- function update(dt,input={}){if(disposed||!Number.isFinite(dt)||dt<=0)return;dt=Math.min(dt,.05);if(driving){const throttle=Math.max(-1,Math.min(1,Number(input.throttle)||0)),steer=Math.max(-1,Math.min(1,Number(input.steer)||0));if(input.brake){car.speed=Math.sign(car.speed)*Math.max(0,Math.abs(car.speed)-20*dt);}else if(throttle){car.speed+=throttle*9*dt;}else car.speed*=Math.exp(-1.2*dt);car.speed=Math.max(-6,Math.min(19,car.speed));const nextYaw=car.yaw+steer*Math.min(1,Math.abs(car.speed)/3)*1.55*dt*Math.sign(car.speed);if(!carBlocked(car.x,car.z,nextYaw))car.yaw=nextYaw;const hit=move(car,Math.sin(car.yaw)*car.speed*dt,-Math.cos(car.yaw)*car.speed*dt,1.12);if(hit){car.speed*=.2;if(!lastBlocked)notify('Road blocked');}lastBlocked=hit;player.x=car.x;player.z=car.z;}else{let x=Number.isFinite(input.moveX)?Math.max(-1,Math.min(1,input.moveX)):0,z=Number.isFinite(input.moveY)?-Math.max(-1,Math.min(1,input.moveY)):0,n=Math.max(1,Math.hypot(x,z));x/=n;z/=n;const moving=Math.hypot(x,z)>.05;if(moving){move(player,x*4.5*dt,z*4.5*dt,.37);player.yaw=Math.atan2(x,-z);phase+=dt*9;}else phase=0;for(let i=0;i<2;i++){legs[i].rotation.x=Math.sin(phase+i*Math.PI)*.5;arms[i].rotation.x=-Math.sin(phase+i*Math.PI)*.35;}}if(mixer){const moving=!driving&&(Math.abs(input.moveX||0)+Math.abs(input.moveY||0)>.1);walkAction.enabled=moving;idleAction.enabled=!moving;mixer.update(dt);}sync();}
- function snapshot(){return{version:1,player:{x:player.x,z:player.z,yaw:player.yaw},car:{x:car.x,z:car.z,yaw:car.yaw},driving};}
- function restore(data){if(!data||data.version!==1||typeof data.driving!=='boolean')return false;for(const key of['player','car'])if(!data[key]||!['x','z','yaw'].every(k=>Number.isFinite(data[key][k])&&Math.abs(data[key][k])<100000))return false;if(carBlocked(data.car.x,data.car.z,data.car.yaw)||(!data.driving&&blocked(data.player.x,data.player.z,.37)))return false;for(const k of['x','z','yaw']){player[k]=data.player[k];car[k]=data.car[k];}car.speed=0;driving=data.driving===true;sync();onModeChange(driving);return true;}
- async function loadModels({GLTFLoader,baseURL='./models/'}={}){if(!GLTFLoader)throw new Error('GLTFLoader is required');const loader=new GLTFLoader();const [human,taxi]=await Promise.all([loader.loadAsync(baseURL+'player-vest-cc0.glb'),loader.loadAsync(baseURL+'taxi.glb')]);if(disposed)return false;for(const o of [...pm.children])pm.remove(o);for(const o of [...cm.children])cm.remove(o);human.scene.updateMatrixWorld(true);human.scene.traverse(o=>{if(o.isSkinnedMesh)o.skeleton.update();});const hb=new T.Box3().setFromObject(human.scene,true),hs=hb.getSize(new T.Vector3());human.scene.scale.setScalar(1.8/hs.y);/* owner 2026-11-19: real-world adult height ~1.8 m, consistent for all cast */human.scene.position.y=-hb.min.y*human.scene.scale.x;human.scene.rotation.y=Math.PI;pm.add(human.scene);const tb=new T.Box3().setFromObject(taxi.scene),ts=tb.getSize(new T.Vector3());const scale=3.8/ts.z;taxi.scene.scale.setScalar(scale);taxi.scene.rotation.y=Math.PI;taxi.scene.position.y=-tb.min.y*scale;cm.add(taxi.scene);human.scene.traverse(o=>{if(o.isMesh){o.frustumCulled=false;geometries.push(o.geometry);}});taxi.scene.traverse(o=>{if(o.isMesh)geometries.push(o.geometry);});mixer=new T.AnimationMixer(human.scene);walkAction=mixer.clipAction(human.animations.find(a=>a.name==='Walk'));idleAction=mixer.clipAction(human.animations.find(a=>a.name==='Idle'));walkAction.play();idleAction.play();walkAction.enabled=false;loadedModels=true;sync();return true;}
- sync();return{player,car,update,interact,loadModels,get modelsLoaded(){return loadedModels;},snapshot,restore,get driving(){return driving;},get cameraTarget(){return driving?car:player;},dispose(){disposed=true;scene.remove(pm,cm);geometries.forEach(g=>g.dispose());Object.values(mats).forEach(m=>m.dispose());}};
+ batchStatic(cm);
+ // Original white sport sedan (starter car, own design, ~4.6 m long). Not a copy of any game car.
+ const sm=new T.Group();sm.name='Original white sport sedan';
+ hull(sm,[[-2.3,.5,.58,.1],[-2.14,.74,.62,.2],[-1.45,.86,.68,.26],[1.5,.86,.68,.26],[2.08,.76,.64,.2],[2.3,.56,.6,.11]],mats.white);
+ hull(sm,[[-1.02,.54,.92,.06],[-.5,.64,1.14,.24],[.7,.63,1.14,.24],[1.2,.53,.95,.05]],mats.glass2);
+ hull(sm,[[-.5,.52,1.4,.045],[-.28,.57,1.45,.05],[.56,.56,1.45,.05],[.74,.5,1.38,.04]],mats.white);
+ for(const x of[-.82,.82]){rounded(sm,.06,.34,.08,mats.white,x,1.18,.5,.02);rounded(sm,.14,.06,.08,mats.white,x*1.12,1.06,-.35,.02);}
+ for(const x of[-.85,.85])for(const z of[-1.42,1.45]){const pivot=new T.Group();pivot.position.set(x,.42,z);sm.add(pivot);const tire=mesh(pivot,new T.TorusGeometry(.3,.11,6,12),mats.rubber);tire.rotation.y=Math.PI/2;const rim=mesh(pivot,new T.CylinderGeometry(.25,.25,.12,10),mats.rim);rim.rotation.z=Math.PI/2;}
+ for(const x of[-.58,.58]){sphere(sm,x,.7,-2.22,.18,.09,.07,mats.lamp);sphere(sm,x,.68,2.24,.17,.08,.06,mats.red);}
+ rounded(sm,1,.12,.06,mats.black,0,.62,-2.27,.03);rounded(sm,1.5,.1,.06,mats.black,0,.56,2.28,.03);
+ rounded(sm,1.1,.045,.26,mats.white,0,1.04,2.16,.02);for(const x of[-.4,.4])rounded(sm,.04,.1,.05,mats.black,x,.97,2.16,.015);
+ batchStatic(sm);normalize(sm,4.6);scene.add(sm);
+ // Original green cruiser bike (own design, ~2.2 m long). Whole visual sits in a lean group.
+ const bm=new T.Group();bm.name='Original green cruiser bike';const lean=new T.Group();bm.add(lean);
+ for(const z of[-.78,.74]){const pivot=new T.Group();pivot.position.set(0,.45,z);lean.add(pivot);const tire=mesh(pivot,new T.TorusGeometry(.33,.12,6,14),mats.rubber);tire.rotation.y=Math.PI/2;const rim=mesh(pivot,new T.CylinderGeometry(.26,.26,.1,10),mats.black);rim.rotation.z=Math.PI/2;for(const a of[0,1,2]){const spoke=mesh(pivot,new T.BoxGeometry(.03,.5,.05),mats.chrome);spoke.rotation.x=a*Math.PI/3;}}
+ for(const x of[-.07,.07]){const f=mesh(lean,new T.CylinderGeometry(.035,.035,.78,8),mats.chrome,x,.82,-.88);f.rotation.x=.42;}
+ const bar=mesh(lean,new T.CylinderGeometry(.03,.03,.62,8),mats.chrome,0,1.05,-.98);bar.rotation.z=Math.PI/2;
+ for(const x of[-.29,.29])sphere(lean,x,1.05,-.98,.05,.05,.09,mats.black);
+ sphere(lean,0,.88,-1.02,.13,.13,.13,mats.lamp);
+ rounded(lean,.26,.32,.6,mats.black,0,.5,-.02,.08);
+ sphere(lean,0,.8,-.3,.24,.18,.4,mats.green);
+ rounded(lean,.3,.12,.6,mats.black,0,.74,.38,.05);
+ const ff=mesh(lean,new T.TorusGeometry(.46,.07,6,10,Math.PI),mats.green,0,.45,-.78);ff.rotation.y=Math.PI/2;
+ const rf=mesh(lean,new T.TorusGeometry(.44,.09,6,10,Math.PI),mats.green,0,.45,.74);rf.rotation.y=Math.PI/2;
+ for(const x of[-.3,.3])rounded(lean,.2,.3,.44,mats.green,x,.52,.86,.05);
+ const ex=mesh(lean,new T.CylinderGeometry(.06,.07,1.3,8),mats.chrome,.22,.3,.3);ex.rotation.x=Math.PI/2-.06;
+ sphere(lean,0,.6,1.06,.05,.1,.1,mats.tail);
+ batchStatic(lean);const bikeK=normalize(bm,2.2);scene.add(bm);
+ const start=map.spawnPoints||{},ps=start.player||spawn;
+ const mkV=(key,root,leanG,cfg,def)=>{const v={key,mesh:root,leanGroup:leanG,...def,x:cfg.x??def.x,z:cfg.z??def.z,y:0,yaw:cfg.heading??def.heading??0,speed:0,lean:0};delete v.heading;return v;};
+ const car=mkV('taxi',cm,null,start.taxi||{},{x:(spawn.x??0)+4,z:spawn.z??8,heading:0,label:'yellow car',foot:[-1.25,0,1.25],circleR:1.02,exitR:1.7,seatY:.8,tune:{accel:9,maxF:19,maxR:6,turn:1.55}});
+ const sedan=mkV('sedan',sm,null,start.sedan||start.car||{},{x:(spawn.x??0)-4,z:(spawn.z??8)+2,heading:0,label:'white sedan',foot:[-1.5,0,1.5],circleR:1.05,exitR:1.75,seatY:.6,tune:{accel:12,maxF:24,maxR:6,turn:1.7}});
+ const bike=mkV('bike',bm,lean,start.bike||{},{x:(spawn.x??0)+7,z:(spawn.z??8)+2,heading:0,label:'green bike',foot:[-.7,0,.7],circleR:.5,exitR:1.1,seatY:.74*bikeK,tune:{accel:13,maxF:22,maxR:5,turn:2.3,leanMax:.42}});
+ const vehicles=[car,sedan,bike];
+ const player={x:ps.x??0,z:ps.z??8,y:0,yaw:ps.heading??0,mesh:pm,inCar:false};
+ let phase=0,driving=false,driveV=null,disposed=false,lastBlocked=false,mixer=null,walkAction=null,idleAction=null,loadedModels=false,hipY=.83,seated=false,boneRest=null,boneMap=null;
+ function vehicleBlocked(v,x,z,yaw=v.yaw){for(const d of v.foot)if(blocked(x+Math.sin(yaw)*d,z-Math.cos(yaw)*d,v.circleR))return true;return false;}
+ function move(entity,dx,dz,r,veh){const n=Math.max(1,Math.ceil(Math.hypot(dx,dz)/.22));let hit=false;for(let i=0;i<n;i++){const x=entity.x+dx/n,z=entity.z+dz/n;if(!(veh?vehicleBlocked(veh,x,entity.z):blocked(x,entity.z,r)))entity.x=x;else hit=true;if(!(veh?vehicleBlocked(veh,entity.x,z):blocked(entity.x,z,r)))entity.z=z;else hit=true;}return hit;}
+ function captureBones(){boneMap={};boneRest={};pm.traverse(o=>{if(o.isBone&&/^(UpperLeg|LowerLeg|UpperArm|LowerArm)\.?[LR]$/.test(o.name)){boneMap[o.name]=o;boneRest[o.name]=o.quaternion.clone();}});const hips=pm.getObjectByName('Hips');if(hips){const p=new T.Vector3();hips.getWorldPosition(p);const h=p.y-pm.position.y;if(h>.5&&h<1.5)hipY=h;}}
+ function poseSeat(on,bikePose){
+  if(boneMap){if(!on){if(seated){for(const n in boneRest)boneMap[n].quaternion.copy(boneRest[n]);seated=false;}return;}seated=true;for(const n in boneRest)boneMap[n].quaternion.copy(boneRest[n]);const leg=bikePose?1.05:.9,knee=bikePose?.8:.7,arm=bikePose?.55:.4,fore=bikePose?.35:.25,K=n=>boneMap[n]||boneMap[n.replace('.','')];K('UpperLeg.L').rotateX(leg);K('UpperLeg.R').rotateX(leg);K('LowerLeg.L').rotateX(-knee);K('LowerLeg.R').rotateX(-knee);K('UpperArm.L').rotateZ(-arm);K('UpperArm.R').rotateZ(arm);K('LowerArm.L').rotateZ(-fore);K('LowerArm.R').rotateZ(fore);return;}
+  if(on){if(!seated){seated=true;legs.forEach(l=>l.rotation.x=1.05);arms.forEach(a=>a.rotation.x=.7);}}
+  else if(seated){seated=false;legs.forEach(l=>l.rotation.x=0);arms.forEach(a=>a.rotation.x=0);}}
+ function sync(){player.y=ground(player.x,player.z);
+  for(const v of vehicles){v.y=ground(v.x,v.z);v.mesh.position.set(v.x,v.y,v.z);v.mesh.rotation.y=-v.yaw;if(v.leanGroup)v.leanGroup.rotation.z=v.lean||0;}
+  if(driving&&driveV){const v=driveV,back=v.key==='bike'?.22:0;pm.position.set(v.x-Math.sin(v.yaw)*back,v.y+v.seatY-hipY,v.z+Math.cos(v.yaw)*back);pm.rotation.set(0,-v.yaw,0);if(v.key==='bike')pm.rotateZ(v.lean);poseSeat(true,v.key==='bike');}
+  else{pm.position.set(player.x,player.y,player.z);pm.rotation.set(0,-player.yaw,0);poseSeat(false);}}
+ function clearPath(x1,z1,x2,z2,r=.3){const n=Math.max(1,Math.ceil(Math.hypot(x2-x1,z2-z1)/.2));for(let i=1;i<=n;i++)if(blocked(x1+(x2-x1)*i/n,z1+(z2-z1)*i/n,r))return false;return true;}
+ function interact(){if(disposed)return false;
+  if(!driving){let best=null,bd=1e9;for(const v of vehicles){const d=Math.hypot(player.x-v.x,player.z-v.z);if(d<bd){bd=d;best=v;}}
+   if(!best||bd>4){notify('Walk closer to a vehicle');return false;}
+   if(!clearPath(player.x,player.z,best.x,best.z)){notify('Go around to the '+best.label+'. A wall is in the way.');return false;}
+   driving=true;driveV=best;best.speed=0;best.lean=0;player.x=best.x;player.z=best.z;
+   notify(best.key==='bike'?'Ride with the left stick. BRAKE slows the bike.':'Drive with the left stick. BRAKE slows the car.');}
+  else{const v=driveV;
+   if(Math.abs(v.speed)>1){notify('Stop the '+(v.key==='bike'?'bike':'car')+' before getting out');return false;}
+   let exit=null;for(const s of[1,-1]){const x=v.x+Math.cos(v.yaw)*s*v.exitR,z=v.z+Math.sin(v.yaw)*s*v.exitR;if(!blocked(x,z,.4)&&clearPath(v.x,v.z,x,z,.37)){exit={x,z};break;}}
+   if(!exit){notify('Both sides are blocked. Move first.');return false;}
+   driving=false;driveV=null;player.x=exit.x;player.z=exit.z;player.yaw=v.yaw;v.speed=0;v.lean=0;}
+  sync();onModeChange(driving);return true;}
+ function update(dt,input={}){if(disposed||!Number.isFinite(dt)||dt<=0)return;dt=Math.min(dt,.05);
+  if(driving&&driveV){const v=driveV,t=v.tune,throttle=Math.max(-1,Math.min(1,Number(input.throttle)||0)),steer=Math.max(-1,Math.min(1,Number(input.steer)||0));
+   if(input.brake){v.speed=Math.sign(v.speed)*Math.max(0,Math.abs(v.speed)-20*dt);}else if(throttle){v.speed+=throttle*t.accel*dt;}else v.speed*=Math.exp(-1.2*dt);
+   v.speed=Math.max(-t.maxR,Math.min(t.maxF,v.speed));
+   const nextYaw=v.yaw+steer*Math.min(1,Math.abs(v.speed)/3)*t.turn*dt*Math.sign(v.speed);
+   if(!vehicleBlocked(v,v.x,v.z,nextYaw))v.yaw=nextYaw;
+   const hit=move(v,Math.sin(v.yaw)*v.speed*dt,-Math.cos(v.yaw)*v.speed*dt,null,v);
+   if(hit){v.speed*=.2;if(!lastBlocked)notify('Road blocked');}
+   lastBlocked=hit;
+   if(v.key==='bike'){const tgt=steer*Math.min(1,Math.abs(v.speed)/7)*(t.leanMax||0);v.lean+=(tgt-v.lean)*Math.min(1,dt*8);}
+   player.x=v.x;player.z=v.z;}
+  else{let x=Number.isFinite(input.moveX)?Math.max(-1,Math.min(1,input.moveX)):0,z=Number.isFinite(input.moveY)?-Math.max(-1,Math.min(1,input.moveY)):0,n=Math.max(1,Math.hypot(x,z));x/=n;z/=n;const moving=Math.hypot(x,z)>.05;if(moving){move(player,x*4.5*dt,z*4.5*dt,.37);player.yaw=Math.atan2(x,-z);phase+=dt*9;}else phase=0;for(let i=0;i<2;i++){legs[i].rotation.x=Math.sin(phase+i*Math.PI)*.5;arms[i].rotation.x=-Math.sin(phase+i*Math.PI)*.35;}}
+  if(mixer){const moving=!driving&&(Math.abs(input.moveX||0)+Math.abs(input.moveY||0)>.1);walkAction.enabled=moving;idleAction.enabled=!moving&&!driving;mixer.update(dt);}
+  sync();}
+ function snapshot(){const vs={};for(const v of vehicles)vs[v.key]={x:v.x,z:v.z,yaw:v.yaw};return{version:2,player:{x:player.x,z:player.z,yaw:player.yaw},car:{x:car.x,z:car.z,yaw:car.yaw},vehicles:vs,driving,vehicle:driving&&driveV?driveV.key:null};}
+ function restore(data){if(!data||typeof data.driving!=='boolean')return false;
+  let vehs=null,vehKey=null;
+  if(data.version===2&&data.vehicles){vehs=data.vehicles;vehKey=data.driving?data.vehicle:null;if(data.driving&&!vehicles.some(v=>v.key===vehKey))return false;}
+  else if(data.car){vehs={taxi:data.car};vehKey=data.driving?'taxi':null;}
+  else return false;
+  const chk=o=>o&&['x','z','yaw'].every(k=>Number.isFinite(o[k])&&Math.abs(o[k])<100000);
+  if(!chk(data.player))return false;
+  for(const v of vehicles){const s=vehs[v.key];if(!s)continue;if(!chk(s))return false;if(vehicleBlocked(v,s.x,s.z,s.yaw))return false;}
+  if(!data.driving&&blocked(data.player.x,data.player.z,.37))return false;
+  for(const k of['x','z','yaw'])player[k]=data.player[k];
+  for(const v of vehicles){const s=vehs[v.key];if(s)for(const k of['x','z','yaw'])v[k]=s[k];v.speed=0;v.lean=0;}
+  driving=data.driving===true;driveV=driving?vehicles.find(v=>v.key===vehKey):null;
+  sync();onModeChange(driving);return true;}
+ async function loadModels({GLTFLoader,baseURL='./models/'}={}){if(!GLTFLoader)throw new Error('GLTFLoader is required');const loader=new GLTFLoader();const [human,taxi]=await Promise.all([loader.loadAsync(baseURL+'player-vest-cc0.glb'),loader.loadAsync(baseURL+'taxi.glb')]);if(disposed)return false;for(const o of [...pm.children])pm.remove(o);for(const o of [...cm.children])cm.remove(o);human.scene.updateMatrixWorld(true);human.scene.traverse(o=>{if(o.isSkinnedMesh)o.skeleton.update();});const hb=new T.Box3().setFromObject(human.scene,true),hs=hb.getSize(new T.Vector3());human.scene.scale.setScalar(1.9/hs.y);human.scene.position.y=-hb.min.y*human.scene.scale.x;human.scene.rotation.y=Math.PI;pm.add(human.scene);const tb=new T.Box3().setFromObject(taxi.scene),ts=tb.getSize(new T.Vector3());const scale=3.8/ts.z;taxi.scene.scale.setScalar(scale);taxi.scene.rotation.y=Math.PI;taxi.scene.position.y=-tb.min.y*scale;cm.add(taxi.scene);human.scene.traverse(o=>{if(o.isMesh){o.frustumCulled=false;geometries.push(o.geometry);}});taxi.scene.traverse(o=>{if(o.isMesh)geometries.push(o.geometry);});mixer=new T.AnimationMixer(human.scene);walkAction=mixer.clipAction(human.animations.find(a=>a.name==='Walk'));idleAction=mixer.clipAction(human.animations.find(a=>a.name==='Idle'));walkAction.play();idleAction.play();walkAction.enabled=false;idleAction.enabled=false;loadedModels=true;captureBones();sync();return true;}
+ sync();return{player,car,sedan,bike,vehicles,update,interact,loadModels,get modelsLoaded(){return loadedModels;},snapshot,restore,get driving(){return driving;},get drivingVehicle(){return driveV?driveV.key:null;},get current(){return driveV||car;},get cameraTarget(){return driving&&driveV?driveV:player;},dispose(){disposed=true;scene.remove(pm,cm,sm,bm);geometries.forEach(g=>g.dispose());Object.values(mats).forEach(m=>m.dispose());}};
 }
 
 
@@ -978,7 +1058,7 @@ function frame(now) {
     followCamera(dt);
   }
   if (taxiJob.consumeDirty()) phone.render();
-  const kmh = Math.round(Math.abs(actors.car.speed || 0) * 3.6);
+  const kmh = Math.round(Math.abs(actors.current.speed || 0) * 3.6); // v009: speed of the vehicle being driven (taxi/sedan/bike)
   elFps.textContent = fpsShown + ' FPS' + (actors.driving ? ' · ' + kmh + ' km/h' : '');
   renderer.render(scene, camera);
 }
