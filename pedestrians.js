@@ -114,6 +114,12 @@ export function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots =
 
   const PED_COUNT = 23; // coordinator dial (parent Nov 20): 28->20->22 (round 10: +2 Hillcrest switchback walkers) -> 23 (round 13: +1 north-end promenade walker)
   const ANIM_NEAR = 60, HIDE_FAR = 140, SIDEWALK = 2.0;
+  // PED_BAND_TUNE (gfxfps round 15, approved): display-only band tune for road peds
+  // (roles wander/stroll). Animated band 60 -> 35 m (a 1.8 m ped is ~37 px tall at
+  // 35 m on the 720p phone; limb swing ~2 px) and at most ANIM_CAP peds show the 5
+  // animated parts; every other visible road ped shows its 1-draw shell. Population,
+  // roles, positions and behavior logic are untouched; false restores the 60 m band.
+  const PED_BAND_TUNE = true, ANIM_CAP = 6, ANIM_EFF = PED_BAND_TUNE ? 35 : ANIM_NEAR;
 
   // ---- world-space road polylines (layout - 300) with cumulative lengths ----
   const roads = (map.roadPaths || []).map((r) => {
@@ -1076,6 +1082,17 @@ export function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots =
     if (!Number.isFinite(dt) || dt <= 0) return;
     dt = Math.min(dt, 0.05);
     const pp = (getPlayerPos && getPlayerPos()) || { x: 0, z: 0 }; // once per frame
+    let animSet = null; // PED_BAND_TUNE: nearest-first animated-parts cap (road roles only)
+    if (PED_BAND_TUNE) {
+      const near = [];
+      for (const p of peds) {
+        if (p.role !== 'wander' && p.role !== 'stroll') continue;
+        const d = Math.hypot(p.x - pp.x, p.z - pp.z);
+        if (d <= ANIM_EFF) near.push([d, p]);
+      }
+      near.sort((a, b) => a[0] - b[0]);
+      animSet = new Set(near.slice(0, ANIM_CAP).map((e) => e[1]));
+    }
     for (const p of peds) {
       if (p.role === 'tourist') { // round 9: viewpoint tourists skip all road logic (incl. respawn)
         const dP = Math.hypot(p.x - pp.x, p.z - pp.z);
@@ -1119,8 +1136,9 @@ export function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots =
         continue;
       }
       p.root.visible = true;
+      p._anim = dPlayer <= ANIM_EFF && (!animSet || animSet.has(p)); // PED_BAND_TUNE (flag off: 60 m, no cap - identical to before)
       if (p.shell) { // PED-2: mid band shows the 1-draw shell instead of the 5 parts
-        const far = dPlayer > ANIM_NEAR;
+        const far = !p._anim;
         p.shell.visible = far;
         p.body.visible = !far;
       }
@@ -1136,7 +1154,7 @@ export function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots =
         else { p.x += dx / d * step; p.z += dz / d * step; }
         p.root.position.set(p.x, ground(p.x, p.z), p.z);
         p.root.rotation.y = -Math.atan2(dx, -dz);
-        if (dPlayer < ANIM_NEAR) {
+        if (p._anim) {
           p.phase += dt * p.speed * 1.5 * 3.6;
           const sw = Math.sin(p.phase);
           p.legL.rotation.x = sw * 0.55; p.legR.rotation.x = -sw * 0.55;
@@ -1150,7 +1168,7 @@ export function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots =
         if (p.idleT <= 0) {
           p.mode = 'walk';
           p.idleCd = 15 + Math.random() * 40;
-        } else if (dPlayer < ANIM_NEAR) { // pose writes only when visible up close
+        } else if (p._anim) { // pose writes only when animated parts are shown
           if (p.pose === 'sit') {
             p.legL.rotation.x = 1.25; p.legR.rotation.x = 1.25;
             p.armL.rotation.x = 0.45; p.armR.rotation.x = 0.45;
@@ -1263,7 +1281,7 @@ export function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots =
       p.x = q.x; p.z = q.z;
       p.root.position.set(p.x, ground(p.x, p.z), p.z);
       p.root.rotation.y = -Math.atan2(q.ux * p.dir, -q.uz * p.dir); // actors heading convention
-      if (dPlayer < ANIM_NEAR) { // full cheap walk cycle
+      if (p._anim) { // full cheap walk cycle
         p.phase += dt * v * 3.6;
         const sw = Math.sin(p.phase);
         p.legL.rotation.x = sw * 0.55;
