@@ -54,6 +54,10 @@ import * as THREE from 'three';
 // available (arg or importmap 'three/addons/'); primitive fallback stays otherwise.
 // v6 (owner via lead Nov 19): starter bungalow + garage on the Palm Court street (Forum-Drive
 // style), procedural original geometry, driveway the starter white car can park on.
+// v7 (coordinator, Nov 20, standing work 1 - closest-version Los Santos layout): roads are
+// centerline paths, so curved/winding/diagonal streets are possible. First new layout: winding
+// Hillcrest Road climb (Palm Court -> Bayshore Highway) + denser Southside residential streets.
+// Taxi stops, spawns and gameplay anchors unchanged and still road-safe.
 // v3 (owner via lead Nov 19): real elevation - analytic terrain, hills east, rise north,
 // roads + highway draped on it (grades verified <=9%, drivable at 19 m/s), building lots
 // flattened into pads, ground = one subdivided vertex-colored mesh. groundAt = real height.
@@ -148,42 +152,67 @@ function createMap({ THREE, scene, GLTFLoader }) {
     }
   }
 
-  // ---- roads ----
+  // ---- roads (v7: centerline paths - curved/winding/diagonal streets now possible) ----
+  // Every street is a path of layout-coord points [[x,y],...]; straight streets use 2 points.
   const ROADS = [
-    { kind: 'v', at: 130, from: 80,  to: 520, w: 8  },  // Boardwalk
-    { kind: 'v', at: 200, from: 80,  to: 480, w: 8  },
-    { kind: 'v', at: 280, from: 80,  to: 480, w: 8  },
-    { kind: 'v', at: 360, from: 80,  to: 480, w: 8  },
-    { kind: 'v', at: 440, from: 80,  to: 480, w: 8  },
-    { kind: 'v', at: 500, from: 80,  to: 200, w: 10 },  // highway ramp
-    { kind: 'h', at: 200, from: 130, to: 560, w: 8  },
-    { kind: 'h', at: 280, from: 130, to: 560, w: 8  },
-    { kind: 'h', at: 360, from: 130, to: 560, w: 8  },
-    { kind: 'h', at: 440, from: 130, to: 560, w: 8  },
+    { pts: [[130,80],[130,520]], w: 8 },  // Boardwalk
+    { pts: [[200,80],[200,480]], w: 8 },
+    { pts: [[280,80],[280,480]], w: 8 },
+    { pts: [[360,80],[360,480]], w: 8 },
+    { pts: [[440,80],[440,480]], w: 8 },
+    { pts: [[500,80],[500,200]], w: 10 }, // highway ramp
+    { pts: [[130,200],[560,200]], w: 8 },
+    { pts: [[130,280],[560,280]], w: 8 },
+    { pts: [[130,360],[560,360]], w: 8 },
+    { pts: [[130,440],[560,440]], w: 8 },
+    // v7 (Phase A, standing work 1): Southside - denser South-Los-Santos-style residential blocks
+    { pts: [[245,440],[245,520]], w: 7 },
+    { pts: [[375,440],[375,520]], w: 7 },
+    { pts: [[130,500],[440,500]], w: 7 },
+    // v7 (Phase A): Hillcrest Road - winding Vinewood-Hills-style climb, Palm Court -> highway
+    { pts: [[500,200],[545,175],[580,140],[588,100],[580,84]], w: 7 },
   ];
-  const HWY = { kind: 'h', at: 80, from: 126, to: 600, w: 14 }; // Bayshore Highway
+  const HWY = { pts: [[126,80],[600,80]], w: 14 }; // Bayshore Highway
+  const DRIVES = [{ pts: [[497,284],[497,304]], w: 6 }]; // bungalow driveway (drivable, no dashes)
 
-  // roads + highway drape the terrain: segmented strips sampling terrainH, so every
-  // street and the highway follows the hills (grades verified <=9%, drivable at 19 m/s)
+  // roads + highway drape the terrain: path pieces subdivided to <=step m, offset by halfW,
+  // sampling terrainH, so every street follows the hills (grades verified <=9%)
   const strips = [];
-  function strip(r, mat, halfW, off, step, len) {
+  function strip(r, mat, halfW, off, step, dashLen, dashPitch) {
     const qs = [];
-    for (let d0 = r.from + (len ? 6 : 0); d0 < r.to - (len ? len + 4 : 0); d0 += step) {
-      const d1 = len ? Math.min(d0 + len, r.to) : Math.min(d0 + step, r.to);
-      let p;
-      if (r.kind === 'v') p = [lw(r.at) - halfW, lz(d0), lw(r.at) + halfW, lz(d0), lw(r.at) + halfW, lz(d1), lw(r.at) - halfW, lz(d1)];
-      else p = [lw(d0), lz(r.at) - halfW, lw(d1), lz(r.at) - halfW, lw(d1), lz(r.at) + halfW, lw(d0), lz(r.at) + halfW];
-      qs.push([p[0], terrainH(p[0], p[1]) + off, p[1], p[2], terrainH(p[2], p[3]) + off, p[3],
-               p[4], terrainH(p[4], p[5]) + off, p[5], p[6], terrainH(p[6], p[7]) + off, p[7]]);
+    for (let i = 0; i < r.pts.length - 1; i++) {
+      const ax = r.pts[i][0], ay = r.pts[i][1], bx = r.pts[i + 1][0], by = r.pts[i + 1][1];
+      const segLen = Math.hypot(bx - ax, by - ay);
+      const ux = (bx - ax) / segLen, uy = (by - ay) / segLen;
+      const nx = -uy * halfW, ny = ux * halfW;
+      if (dashLen) { // dashed centerline: dashLen metres every dashPitch metres
+        for (let d0 = 6; d0 + dashLen <= segLen - 2; d0 += dashPitch) {
+          qs.push(quad(lw(ax + ux * d0) + uy * halfW, lz(ay + uy * d0) - ux * halfW,
+                       lw(ax + ux * (d0 + dashLen)) + uy * halfW, lz(ay + uy * (d0 + dashLen)) - ux * halfW,
+                       lw(ax + ux * (d0 + dashLen)) - uy * halfW, lz(ay + uy * (d0 + dashLen)) + ux * halfW,
+                       lw(ax + ux * d0) - uy * halfW, lz(ay + uy * d0) + ux * halfW, off));
+        }
+      } else {
+        for (let d0 = 0; d0 < segLen; d0 += step) {
+          const d1 = Math.min(d0 + step, segLen);
+          qs.push(quad(lw(ax + ux * d0) + nx, lz(ay + uy * d0) + ny,
+                       lw(ax + ux * d1) + nx, lz(ay + uy * d1) + ny,
+                       lw(ax + ux * d1) - nx, lz(ay + uy * d1) - ny,
+                       lw(ax + ux * d0) - nx, lz(ay + uy * d0) - ny, off));
+        }
+      }
     }
     strips.push({ mat, qs });
   }
-  for (const r of ROADS) strip(r, matRoad, r.w / 2, 0.04, 8, 0);
-  strip(HWY, matHwy, HWY.w / 2, 0.05, 8, 0);
-  const DRIVES = [{ kind: 'v', at: 497, from: 284, to: 304, w: 6 }]; // bungalow driveway (drivable, no dashes)
-  for (const d of DRIVES) strip(d, matDrive, d.w / 2, 0.045, 4, 0);
-  for (const r of ROADS) strip(r, matLine, 0.2, 0.08, 12, 3);
-  strip(HWY, matHwyLn, 0.2, 0.09, 16, 4);
+  function quad(x0, z0, x1, z1, x2, z2, x3, z3, off) {
+    return [x0, terrainH(x0, z0) + off, z0, x1, terrainH(x1, z1) + off, z1,
+            x2, terrainH(x2, z2) + off, z2, x3, terrainH(x3, z3) + off, z3];
+  }
+  for (const r of ROADS) strip(r, matRoad, r.w / 2, 0.04, 8, 0, 0);
+  strip(HWY, matHwy, HWY.w / 2, 0.05, 8, 0, 0);
+  for (const d of DRIVES) strip(d, matDrive, d.w / 2, 0.045, 4, 0, 0);
+  for (const r of ROADS) strip(r, matLine, 0.2, 0.08, 8, 3, 12);
+  strip(HWY, matHwyLn, 0.2, 0.09, 8, 4, 16);
   { // merge strip segments into one mesh per material
     const byMat = new Map();
     for (const s of strips) {
@@ -568,10 +597,18 @@ function createMap({ THREE, scene, GLTFLoader }) {
     return false;
   }
 
+  // v7: point-to-segment distance against every path piece (works for straight + curved)
   function roadHit(r, x, z) {
     const h = r.w / 2;
-    if (r.kind === 'v') return Math.abs(x - lw(r.at)) <= h && z >= lz(r.from) && z <= lz(r.to);
-    return Math.abs(z - lz(r.at)) <= h && x >= lw(r.from) && x <= lw(r.to);
+    for (let i = 0; i < r.pts.length - 1; i++) {
+      const ax = lw(r.pts[i][0]), az = lz(r.pts[i][1]), bx = lw(r.pts[i + 1][0]), bz = lz(r.pts[i + 1][1]);
+      const dx = bx - ax, dz = bz - az, L2 = dx * dx + dz * dz;
+      let t = L2 ? ((x - ax) * dx + (z - az) * dz) / L2 : 0;
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const px = ax + t * dx - x, pz = az + t * dz - z;
+      if (px * px + pz * pz <= h * h) return true;
+    }
+    return false;
   }
   function isRoadAt(x, z) {
     for (const r of ROADS) if (roadHit(r, x, z)) return true;
