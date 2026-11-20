@@ -130,6 +130,57 @@ function buildInstancedProps(THREE, proto, list, groundFn, scene) {
   }
   return made;
 }
+const FOAM_SWELL = false;
+function buildSwell(THREE, { shoreX = -218, zMin = -320, zMax = 320 } = {}) {
+  const SEG = 63; // along-shore segments (matches foam cadence)
+  const W = 6;    // band width (m), seaward of the foam strip
+  const X0 = shoreX - 14 - W / 2; // band centre ~14 m into the water
+  const pos = [], uv = [], idx = [];
+  for (let j = 0; j <= SEG; j++) {
+    const z = zMin + (zMax - zMin) * (j / SEG);
+    pos.push(X0, -0.18, z, X0 + W, -0.18, z); // just above the water plane (y=-0.25)
+    uv.push(0, j / SEG, 1, j / SEG); // u: 0 = seaward edge, 1 = shoreward edge
+  }
+  for (let j = 0; j < SEG; j++) {
+    const a = j * 2, b = a + 1, c = a + 2, d = a + 3;
+    idx.push(a, c, b, b, c, d);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geo.setIndex(idx);
+  geo.computeBoundingBox();
+  geo.computeBoundingSphere();
+  const uTime = { value: 0 };
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xf4fbff, transparent: true, opacity: 0.55, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+  });
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = uTime;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nuniform float uTime;\nvarying float vU;\nvarying float vZ;')
+      .replace('#include <begin_vertex>', [
+        '#include <begin_vertex>',
+        'vU = uv.x; vZ = uv.y;',
+        'float ph = fract(uTime * 0.10 - uv.x * 0.9 - sin(uv.y * 40.0) * 0.03);',
+        'transformed.y += 0.22 * sin(ph * 3.14159);',
+      ].join('\n'));
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform float uTime;\nvarying float vU;\nvarying float vZ;')
+      .replace('#include <color_fragment>', [
+        '#include <color_fragment>',
+        'float ph2 = fract(uTime * 0.10 - vU * 0.9 - sin(vZ * 40.0) * 0.03);',
+        'float crest = smoothstep(0.0, 0.25, ph2) * (1.0 - smoothstep(0.55, 1.0, ph2));',
+        'diffuseColor.a *= crest;',
+      ].join('\n'));
+  };
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.name = 'fx:swell';
+  mesh.renderOrder = 2;
+  mesh.onBeforeRender = () => { uTime.value = performance.now() / 1000; };
+  return mesh;
+}
 
 function buildFoam(THREE, { shoreX = -218, zMin = -320, zMax = 320 } = {}) {
   const NX = 4, NZ = 110, W = 9; // strip spans x in [shoreX - 3.5, shoreX + 3.5]
@@ -280,6 +331,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
   const ocean = new THREE.Mesh(new THREE.PlaneGeometry(300, 680), matWater);
   ocean.rotation.x = -Math.PI / 2; ocean.position.set(-368, -0.25, 0); scene.add(ocean);
   scene.add(buildFoam(THREE, { shoreX: ocean.position.x + 150 }));
+  if (FOAM_SWELL) scene.add(buildSwell(THREE, { shoreX: ocean.position.x + 150 })); // gfxfps round 17
   {
     const X0 = -218, X1 = 320, Z0 = -320, Z1 = 320, NX = 60, NZ = 72; // ~8.6k tris (was 15.4k)
     const pos = [], col = [], idx = [];
@@ -4150,6 +4202,81 @@ function createAdaptiveDrawDistance({scene, adaptive}) {
     get state() { return { reduced, fogFar: scene.fog.far, cullFar: reduced ? 210 : 260 }; },
   };
 }
+const CLOUD_FIELD = false, CLOUD_N = 24;
+function buildCloudField(THREE, camera) {
+  const cv = document.createElement('canvas'); cv.width = 128; cv.height = 64;
+  const cx = cv.getContext('2d');
+  cx.clearRect(0, 0, 128, 64);
+  const blob = (x, y, r, a) => {
+    const g = cx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, 'rgba(255,255,255,' + a + ')');
+    g.addColorStop(0.7, 'rgba(255,255,255,' + (a * 0.45) + ')');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    cx.fillStyle = g;
+    cx.fillRect(x - r, y - r, r * 2, r * 2);
+  };
+  blob(38, 40, 26, 0.85); blob(64, 32, 30, 0.95); blob(92, 42, 24, 0.8); blob(64, 46, 34, 0.55);
+  const tex = new THREE.CanvasTexture(cv);
+
+  const R = 260; // half-extent of the camera-following wrap region
+  const pos = [], uv = [], idx = [], ctr = [], scl = [], ph = [];
+  let seed = 7;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; }; // deterministic layout
+  for (let c = 0; c < CLOUD_N; c++) {
+    const cxp = (rnd() * 2 - 1) * R, czp = (rnd() * 2 - 1) * R;
+    const cyp = 105 + rnd() * 60, w = 34 + rnd() * 40, h = 12 + rnd() * 14, p = rnd() * 6.283;
+    const base = c * 4;
+    const corners = [[-0.5, -0.5], [0.5, -0.5], [-0.5, 0.5], [0.5, 0.5]];
+    const uvs = [[0, 0], [1, 0], [0, 1], [1, 1]];
+    for (let k = 0; k < 4; k++) {
+      pos.push(corners[k][0], corners[k][1], 0);
+      uv.push(uvs[k][0], uvs[k][1]);
+      ctr.push(cxp, cyp, czp); scl.push(w, h); ph.push(p);
+    }
+    idx.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geo.setAttribute('aCenter', new THREE.Float32BufferAttribute(ctr, 3));
+  geo.setAttribute('aScale', new THREE.Float32BufferAttribute(scl, 2));
+  geo.setAttribute('aPhase', new THREE.Float32BufferAttribute(ph, 1));
+  geo.setIndex(idx);
+
+  const uTime = { value: 0 };
+  const mat = new THREE.MeshBasicMaterial({
+    map: tex, transparent: true, depthWrite: false, fog: false,
+    side: THREE.DoubleSide, opacity: 0.85, color: 0xf6f9ff,
+  });
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = uTime;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nuniform float uTime;\nattribute vec3 aCenter;\nattribute vec2 aScale;\nattribute float aPhase;\nvarying float vFade;')
+      .replace('#include <begin_vertex>', [
+        '#include <begin_vertex>',
+        'float R = ' + R + '.0;',
+        'float lx = mod(aCenter.x + uTime * 3.2, R * 2.0) - R;', // wind: steady +x drift, wraps
+        'float lz = aCenter.z + sin(uTime * 0.05 + aPhase) * 12.0;', // slight lateral wander
+        'vFade = 1.0 - smoothstep(0.75, 0.98, abs(lx) / R);', // fade at wrap edges, no pop
+        'vec3 bc = vec3(lx, aCenter.y, lz);',
+        'vec3 bbRight = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);',
+        'vec3 bbUp = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);',
+        'transformed = bc + bbRight * position.x * aScale.x + bbUp * position.y * aScale.y;',
+      ].join('\n'));
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying float vFade;')
+      .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.a *= vFade;');
+  };
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.name = 'fx:cloudfield';
+  mesh.renderOrder = 1;
+  mesh.frustumCulled = false; // region follows the camera like the dome
+  mesh.onBeforeRender = () => {
+    uTime.value = performance.now() / 1000;
+    mesh.position.set(camera.position.x, 0, camera.position.z);
+  };
+  return mesh;
+}
 
 function makeStatsProbe({ THREE, renderer, scene, adaptive }) {
   function bucketOf(o, top) {
@@ -4266,6 +4393,7 @@ const skyDome = (() => { // F2: gradient sky dome; follows the camera so the hor
 
 const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 270); // P6: was 600; fog saturates at 260
 scene.add(buildClouds(THREE, camera));
+if (CLOUD_FIELD) scene.add(buildCloudField(THREE, camera)); // gfxfps round 17
 
 const hemi = new THREE.HemisphereLight(0xbdd8f2, 0x77684a, 0.85); // F1: cooler sky, warm ground bounce
 scene.add(hemi);
