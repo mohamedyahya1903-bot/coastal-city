@@ -71,7 +71,28 @@ import * as THREE from 'three';
 //    stop (480,84.5) still 4.5 m off centerline (hwy w=14). North tips of V200/V280/V360/V440
 //    extended to meet the curved highway centerline.
 //  - Two short Southside connectors: x=310 (H440 -> south edge) and x=558 (H200 -> H280).
-// Coordinator notes: none - single-file change, map API unchanged.
+// v7c (builder "roads", Nov 20 round 2 - standing work 1, Los-Santos district reshaping):
+//  - Hillcrest Road upper stretch -> 3 curved switchbacks (Vinewood-hills feel), max grade
+//    7.3%, endpoints unchanged (Palm Court 500,200 <-> highway junction 580,84).
+//  - 2 Southside cul-de-sacs with turning-circle loops: Pelican Court (off V310) and
+//    Grove Court (off V245).
+//  - Downtown grid tightening: 2 narrow secondary streets (w=6) in the tower-lot gaps
+//    (x=248 and y=248), 1 m clear of every tower footprint; nine-lot cluster untouched.
+//  - Optional marina-front pier-approach refinement: SKIPPED (pier approach already curved
+//    in v7b; left stable to protect the Pelican Pier stop and houses/props placements).
+// Coordinator notes:
+//  - Road moves for placement re-check: ONLY Hillcrest Road changed shape (same endpoints).
+//    4 roads ADDED (2 cul-de-sacs, 2 downtown secondaries). No existing residential street moved.
+//  - houses.js: its skipRoad() Boardwalk match (2 pts at x=130) has been stale since v7b's arc;
+//    its LOTS_L copy still lists the v7a Shop 2 (160,240-262) / Shop 4 (160,360-382) pads -
+//    v7b moved them to (160,392-414) and (160,366-388). Live map.isBlocked rejects overlaps
+//    with the real shops, but houses.js should re-sync its copy from map.js LOTS_L.
+//  - houses.js zoneAt(): any road with >2 pts counts as "winding" -> villa zone, so the two
+//    new cul-de-sac loops can attract villa archetypes in Southside. Placements validate
+//    against live geometry (nothing breaks); if Grove-Street bungalows are wanted there,
+//    zone by location before the winding check.
+//  - map API unchanged: groundAt, isBlocked, isRoadAt, roadPaths, addBlock, taxiStops,
+//    spawnPoints, starterHome, update(dt).
 // v3 (owner via lead Nov 19): real elevation - analytic terrain, hills east, rise north,
 // roads + highway draped on it (grades verified <=9%, drivable at 19 m/s), building lots
 // flattened into pads, ground = one subdivided vertex-colored mesh. groundAt = real height.
@@ -195,7 +216,20 @@ function createMap({ THREE, scene, GLTFLoader }) {
     { pts: [[310,440],[310,520]], w: 7 },
     { pts: [[558,200],[558,280]], w: 7 },
     // v7 (Phase A): Hillcrest Road - winding Vinewood-Hills-style climb, Palm Court -> highway
-    { pts: [[500,200],[545,175],[580,140],[588,100],[580,84]], w: 7 },
+    // v7c (round 2): upper stretch reworked into 3 curved switchbacks through the gentle
+    // corridors of the eastern hill: the final climb runs east of the Fuel Stop pad
+    // (x 561-565, 3.7 m clear of the lot) through the 6-7% corridor, avoiding the steep
+    // pocket at x 550-556, y 100-130. Max grade 7.6% (was 6.2%). Same endpoints:
+    // Palm Court (500,200) and the highway junction (580,84).
+    { pts: [[500,200],[514,198],[528,196],[542,192],[556,188],[565.5,183],[575,178],[582,170],[574,164],[566,158],[553,155],[540,152],[530,150],[520,148],[532,141],[548,137],[561,132],[565,124],[564,116],[562,108],[561,100],[562,93],[566,88],[573,85],[580,84]], w: 7 },
+    // v7c (round 2): Southside cul-de-sacs (Grove-Street feel) - short dead-end courts,
+    // each ending in a turning-circle arc loop (center r=7 octagon, w=7)
+    { pts: [[310,472],[339,472],[341,467],[346,465],[351,467],[353,472],[351,477],[346,479],[341,477],[339,472]], w: 7 }, // Pelican Court, off V310 east
+    { pts: [[245,470],[225,470],[223,465],[218,463],[213,465],[211,470],[213,475],[218,477],[223,475],[225,470]], w: 7 }, // Grove Court, off V245 west
+    // v7c (round 2): downtown grid tightening - two narrow secondary streets in the gaps
+    // between the tower lots (1 m clear of every footprint) so the district reads as blocks
+    { pts: [[248,200],[248,360]], w: 6 }, // between tower columns 1 and 2
+    { pts: [[200,248],[360,248]], w: 6 }, // between tower rows 1 and 2
   ];
   // v7b: Bayshore Highway - gentle curve sweeping north around the eastern hills; still meets
   // the ramp (x=500), the Hillcrest junction (580,84) and the Bayshore Fuel stop (480,84.5).
@@ -1394,33 +1428,45 @@ function createSave({ getActors, getJobs }) {
 
 // ===== houses.js =====
 // ============================================================================
-// houses.js — Coastal City / Los Santos, standing work 2: "every house on every road".
+// houses.js — Los Santos, standing work 2: "every house on every road".
 // Builder module: this file ONLY. No other file is edited.
 //
-// Lines residential streets with original houses (closest-version Los Santos feel,
-// original geometry only — no GTA assets, names or art):
-//   - Hillcrest Road + Palm Court area  -> 2-storey hillside villas, domes, spanish flat roofs
-//   - Southside (south of the H440 street) -> small single-storey bungalows/cottages
-//   - Everywhere else residential        -> mixed bungalows, gable houses, cottages
+// v2 (round 2, map v7b): coverage pass on the remaining roads + 2 new archetypes.
+//  - Coverage audit: stats.coverage lists every roadPath (classified, length, houses
+//    placed within 16 m) so the coordinator can see which segments are lined.
+//  - v7b-aware road classification, all derived from roadPaths at build time (no
+//    hardcoded road coordinates): the curved Boardwalk arc and the diagonal downtown
+//    avenue are skipped (commercial/beach fronts, not residential), the winding
+//    eastern climb is Hillcrest (villa zone), everything else is grid residential.
+//    New roads added by the roads builder are picked up automatically.
+//  - Gap fill: Southside connectors (x=310, x=558) and the extended street tips now
+//    get houses; MAX_HOUSES dial raised 150 -> 200 (same dial, same semantics: a
+//    single integer cap applied during placement, before merging).
+//  - New archetype A: hillside villa with a rounded garage (Hillcrest/Palm Court).
+//  - New archetype B: corner-shop house (rounded storefront awning + round sign
+//    board, original shapes only, no text/logos) placed at Southside corners;
+//    corners are DERIVED from roadPaths (junction points of every road pair).
+//  - props.js coexistence: driveway slabs now stop ~1.4 m from the road edge so the
+//    lamp/bin/shelter strip (road half-width + 1.2 m) stays clear.
 //
-// Perf (Galaxy M02s hard budget): every house part is baked into ONE merged
-// BufferGeometry per material (~13 draw calls total for ALL houses, 0 per-house
-// draw calls), shared MeshLambertMaterials, no shadows. Typical whole-module
-// triangle cost is ~25-40k (budget 150k). update(dt) is a no-op.
+// Perf (Galaxy M02s hard budget): all houses bake into one merged BufferGeometry
+// per material: 14 draw calls total (+1 vs v1b for the sign boards, inside the +2
+// allowance), shared MeshLambertMaterials, no shadows, 0 per-house draw calls.
+// v1b was 44.4k tris @150 houses; v2 adds ~+16-18k at the default cap (+40k cap).
+// update(dt) is a no-op.
 //
 // Procedural original geometry only. No GLTF models are loaded, so no asset
-// licences are added to MODEL-SOURCES.md by this module (procedural is the
-// PROJECT-BASE-preferred route). GLTFLoader is accepted in the signature for
-// contract compatibility and is unused.
+// licences are added to MODEL-SOURCES.md by this module.
 //
 // ---- Coordinator notes ----
-// Exact wiring line expected in main.js (after createMap):
+// Exact wiring line expected in main.js (after createMap), unchanged from v1b:
 //   const houses = createHouses({ THREE, scene, map, GLTFLoader });
 // Optionally call houses.update(dt) in the loop (no-op today).
-// houses.count = number of placed buildings; houses.placements = placement
-// records (world x/z/yaw/archetype/zone) for debugging or save tooling.
-// This module calls map.addBlock(minX, minZ, maxX, maxZ) for every placed
-// house, so player/car collision works with no other wiring.
+// houses.count, houses.placements, houses.stats { drawCalls, triangles, coverage }.
+// MAX_HOUSES (below) is the FPS dial: single integer cap, tune for the M02s bench.
+// This module calls map.addBlock(minX, minZ, maxX, maxZ) for every placed house.
+// LOTS_L is mirrored from map.js v7b (comment below) — if map.js changes its lot
+// list, sync the copy here.
 // ============================================================================
 
 function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-line no-unused-vars
@@ -1443,15 +1489,17 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
     conc:  new THREE.MeshLambertMaterial({ color: 0x9d9a92 }), // concrete slabs
     brick: new THREE.MeshLambertMaterial({ color: 0x9a5a4a }), // chimney brick
     dark:  new THREE.MeshLambertMaterial({ color: 0x3a3e44 }), // flat roof deck
+    sign:  new THREE.MeshLambertMaterial({ color: 0xf0e0b8 }), // corner-shop sign board
   };
 
   // ---- occupied regions (all in LAYOUT coords unless noted) ----
-  // Existing lots from map.js LOTS_L — treated as occupied (brief). Keep in sync with map.js.
+  // Existing lots mirrored from map.js v7b LOTS_L (Shop 2 moved south of H360,
+  // Shop 4 nudged south) — treated as occupied. Sync with map.js when it changes.
   const LOTS_L = [
     [212,212,244,244],[252,212,276,240],[212,252,240,276],[252,252,276,276],
     [292,212,324,244],[292,252,324,276],[212,292,244,324],[252,292,276,324],
-    [292,292,324,324],[160,210,186,232],[160,240,186,262],[160,296,186,318],
-    [160,330,186,352],[160,360,186,382],[460,220,480,238],[495,220,515,238],
+    [292,292,324,324],[160,210,186,232],[160,392,186,414],[160,296,186,318],
+    [160,330,186,352],[160,366,186,388],[460,220,480,238],[495,220,515,238],
     [530,220,550,238],[460,300,480,318],[530,300,550,318],[460,380,480,398],
     [495,380,515,398],[530,380,550,398],[380,210,410,250],[380,290,410,330],
     [520,100,556,130],[494,300,516,318],
@@ -1461,13 +1509,60 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
   const PIER_W = { minX: lw(20), maxX: lw(122), minZ: lz(292), maxZ: lz(308) };  // Pelican Pier deck
   const WATER_X = lw(82);                                                        // water west of here (world)
 
-  // Streets that get NO houses: the Boardwalk (shops row + beach strip) and the
-  // highway ramp. Identified by their path shape (map.js ROADS, v7a).
-  function skipRoad(r) {
-    if (r.pts.length === 2) {
-      const [a, b] = r.pts;
-      if (a[0] === 130 && b[0] === 130) return true; // Boardwalk: shops row east, beach west
-      if (a[0] === 500 && b[0] === 500) return true; // highway ramp
+  // ---- road classification, fully derived from roadPaths geometry (v7b) ----
+  // 'skip': no houses (boardwalk arc = shops row + beach; diagonal downtown avenue
+  // = commercial canyon; highway ramp). 'hillcrest': winding eastern climb (villas).
+  // 'grid': everything else (residential). New roads from the roads builder land in
+  // 'grid' automatically unless they are coastal/downtown multi-point paths.
+  function classify(r) {
+    const xs = r.pts.map((p) => p[0]);
+    const maxX = Math.max(...xs);
+    if (r.pts.length === 2 && r.pts[0][0] === 500 && r.pts[1][0] === 500) return 'skip'; // highway ramp
+    if (r.pts.length > 2 && maxX < 140) return 'skip';   // curved boardwalk arc (v7b)
+    if (r.pts.length > 2 && maxX <= 210) return 'skip';  // diagonal downtown avenue (v7b)
+    if (r.pts.length > 2) return 'hillcrest';            // winding eastern climb
+    return 'grid';
+  }
+
+  // ---- junction points derived from roadPaths (for corner-shop siting) ----
+  // A junction is where two DIFFERENT roads cross (segment intersection) or where a
+  // path endpoint lands within 12 m of another road's segment (T-junction).
+  function segDist2(a, b, c, d) { // min squared distance between segments ab and cd (layout coords)
+    const sub = (p, q) => [p[0] - q[0], p[1] - q[1]];
+    const dot = (p, q) => p[0] * q[0] + p[1] * q[1];
+    const d1 = sub(b, a), d2 = sub(d, c), r = sub(a, c);
+    const A = dot(d1, d1), E = dot(d2, d2), F = dot(d2, r), Cc = dot(d1, r), B = dot(d1, d2);
+    const den = A * E - B * B;
+    let s = den > 1e-9 ? (B * F - Cc * E) / den : 0;
+    s = Math.min(1, Math.max(0, s));
+    let t = E > 1e-9 ? (B * s + F) / E : 0;
+    t = Math.min(1, Math.max(0, t));
+    s = A > 1e-9 ? Math.min(1, Math.max(0, (B * t - Cc) / A)) : 0;
+    const p1 = [a[0] + d1[0] * s, a[1] + d1[1] * s], p2 = [c[0] + d2[0] * t, c[1] + d2[1] * t];
+    const dx = p1[0] - p2[0], dy = p1[1] - p2[1];
+    return { d2: dx * dx + dy * dy, x: (p1[0] + p2[0]) / 2, y: (p1[1] + p2[1]) / 2 };
+  }
+  const JUNCTIONS = []; // layout coords
+  {
+    const roads = map.roadPaths.filter((r) => classify(r) !== 'skip');
+    for (let i = 0; i < roads.length; i++) {
+      for (let j = i + 1; j < roads.length; j++) {
+        let best = null;
+        const A = roads[i].pts, B = roads[j].pts;
+        for (let a = 0; a < A.length - 1; a++) {
+          for (let b = 0; b < B.length - 1; b++) {
+            const r = segDist2(A[a], A[a + 1], B[b], B[b + 1]);
+            if (!best || r.d2 < best.d2) best = r;
+          }
+        }
+        if (best && best.d2 < 12 * 12) JUNCTIONS.push([best.x, best.y]);
+      }
+    }
+  }
+  function nearJunction(lx, ly, rad) {
+    for (const [jx, jy] of JUNCTIONS) {
+      const dx = jx - lx, dy = jy - ly;
+      if (dx * dx + dy * dy < rad * rad) return true;
     }
     return false;
   }
@@ -1483,7 +1578,7 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
 
   // ---- small geometry helpers ----
   const box  = (w, h, d) => new THREE.BoxGeometry(w, h, d);
-  const cyl  = (rt, rb, h, s) => new THREE.CylinderGeometry(rt, rb, h, s);
+  const cyl  = (rt, rb, h, s, open, ts, tl) => new THREE.CylinderGeometry(rt, rb, h, s, 1, open || false, ts || 0, tl === undefined ? Math.PI * 2 : tl);
   const cone = (r, h, s) => new THREE.ConeGeometry(r, h, s, 1);
   const dome = (r) => new THREE.SphereGeometry(r, 10, 5, 0, Math.PI * 2, 0, Math.PI / 2);
   // part: geometry + material key + local translate + optional euler (applied Rz,Rx,Ry) + scale
@@ -1515,11 +1610,11 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
     parts.push(P(cyl(0.12, 0.14, 2.3, 6), 'trim', [fx + 1.5, 1.32, d / 2 + 1.55]));
     parts.push(P(box(3.7, 0.16, 2.2), roofM, [fx, 2.62, d / 2 + 1.05]));
   }
-  function driveway(parts, w, d) { // concrete slab toward the street, stops ~1 m short of the road edge
-    parts.push(P(box(2.8, 0.12, 3.5), 'conc', [w / 2 - 1.8, 0.06, d / 2 + 1.75]));
-  }
+  function driveway(parts, w, d) { // concrete slab toward the street; ends ~1.4 m from the
+    parts.push(P(box(2.8, 0.12, 3.1), 'conc', [w / 2 - 1.8, 0.06, d / 2 + 1.55])); // road edge
+  }                                                                                  // (props strip stays clear)
 
-  // ---- 6 house archetypes (all rounded shapes; footprints keep slope < 0.5 m) ----
+  // ---- 8 house archetypes (all rounded shapes; footprints keep slope < 0.5 m) ----
   // Each returns { w, d, parts } in local coords: front = +Z (street side), ground y=0.
   function archBungalowHip(wall, roof) { // Southside / standard single-storey, hip roof
     const w = 9, d = 7.5, h = 3, parts = [];
@@ -1584,7 +1679,7 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
     driveway(parts, w, d);
     return { w, d, parts };
   }
-  function archVilla(wall, roof) { // Hillcrest / Palm Court 2-storey villa, balcony + columns
+  function archVilla(wall, roof) { // Palm Court 2-storey villa, balcony + columns
     const w = 11, d = 8.5, parts = [];
     parts.push(P(box(w, 3.1, d), wall, [0, 1.55, 0]));
     parts.push(P(box(w - 1, 2.9, d - 1), wall, [0, 3.1 + 1.45, 0]));
@@ -1602,17 +1697,70 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
     driveway(parts, w, d);
     return { w, d, parts };
   }
+  // Round-2 archetype A: hillside villa with a ROUNDED GARAGE (Hillcrest / Palm Court).
+  // Slightly smaller footprint than archVilla (9.5x8) so more slope spots pass 0.5 m.
+  function archHillVillaGarage(wall, roof) {
+    const w = 9.5, d = 8, parts = [];
+    parts.push(P(box(w - 2.6, 3, d), wall, [1.3, 1.5, 0]));                    // main block (right of garage)
+    parts.push(P(box(w - 2.6 - 0.6, 2.7, d - 0.8), wall, [1.3, 3 + 1.35, 0])); // upper floor
+    parts.push(P(box(w - 2.6 + 0.6, 0.22, d + 0.6), roof, [1.3, 5.7, 0]));     // eave
+    parts.push(P(cone(Math.hypot(w - 3.2, d - 0.8) / 2 * 0.95, 2, 4), roof, [1.3, 5.7 + 1, 0], { ry: Math.PI / 4, s: [1, 1, (d - 0.8) / (w - 3.2)] }));
+    // rounded garage: box + half-cylinder vault, roll-up door facing the street
+    parts.push(P(box(3.6, 2.5, d - 1.4), wall, [-w / 2 + 1.8, 1.25, 0.3]));
+    parts.push(P(cyl(1.85, 1.85, 3.7, 10), roof, [-w / 2 + 1.8, 2.3, 0.3], { rz: Math.PI / 2 }));
+    parts.push(P(box(2.9, 2, 0.16), 'dark', [-w / 2 + 1.8, 1, d / 2 + 0.05])); // roll-up door
+    parts.push(P(box(3.3, 0.24, 0.2), 'trim', [-w / 2 + 1.8, 2.1, d / 2 + 0.06]));
+    // door + windows on the street face
+    parts.push(P(box(1.34, 2.5, 0.12), 'trim', [1.3 - 1.2, 1.25, d / 2 + 0.02]));
+    parts.push(P(box(1.05, 2.3, 0.18), 'door', [1.3 - 1.2, 1.15, d / 2 + 0.07]));
+    win(parts, 1.3 + 1.2, 1.7, d / 2, 0);
+    win(parts, 1.3 + 1.0, 4.6, d / 2, 0);
+    win(parts, 1.3 - 1.2, 4.6, d / 2, 0);
+    win(parts, w / 2, 1.7, 0, Math.PI / 2);
+    parts.push(P(cyl(0.28, 0.32, 1.4, 6), 'brick', [w / 2 - 1.2, 5.9, -1.5])); // chimney
+    driveway(parts, w, d);
+    return { w, d, parts };
+  }
+  // Round-2 archetype B: corner-shop house for Southside corners — storefront with a
+  // rounded awning + round sign board (original shapes only, no text/logos).
+  function archCornerShop(wall, roof) {
+    const w = 9, d = 7.5, h = 3.2, parts = [];
+    parts.push(P(box(w, h, d), wall, [0, h / 2, 0]));
+    parts.push(P(box(w + 0.6, 0.22, d + 0.6), 'trim', [0, h, 0]));
+    parts.push(P(dome(4.2), roof, [0, h + 0.05, 0], { s: [1, 0.5, 1] })); // shallow dome
+    // storefront: big glass window + door on the street face
+    parts.push(P(box(3.6, 2, 0.14), 'trim', [-0.6, 1.35, d / 2 + 0.03]));
+    parts.push(P(box(3.3, 1.8, 0.18), 'glass', [-0.6, 1.3, d / 2 + 0.08]));
+    parts.push(P(box(1.34, 2.5, 0.12), 'trim', [w / 2 - 1.2, 1.25, d / 2 + 0.02]));
+    parts.push(P(box(1.05, 2.3, 0.18), 'door', [w / 2 - 1.2, 1.15, d / 2 + 0.07]));
+    // rounded awning: half-cylinder vault over the storefront
+    parts.push(P(cyl(0.9, 0.9, 4.6, 10, true, Math.PI, Math.PI), roof, [-0.6, 2.6, d / 2 + 0.55], { rz: Math.PI / 2 }));
+    // round sign board on a post (shape only, no text)
+    parts.push(P(cyl(0.07, 0.07, 1.6, 6), 'trim', [-0.6, 3.6, d / 2 + 0.3]));
+    parts.push(P(cyl(0.85, 0.85, 0.14, 12), 'sign', [-0.6, 4.5, d / 2 + 0.3], { rx: Math.PI / 2 }));
+    win(parts, w / 2, 1.7, -d * 0.15, Math.PI / 2);
+    win(parts, -w / 2, 1.7, -d * 0.15, -Math.PI / 2);
+    parts.push(P(box(4.6, 0.14, 1.6), 'conc', [-0.6, 0.07, d / 2 + 0.8])); // shopfront slab
+    return { w, d, parts };
+  }
 
   const WALLS = ['wall0', 'wall1', 'wall2', 'wall3'];
   const ROOFS = ['roof0', 'roof1', 'roof2'];
   const ARCHS = {
-    bungalow: [archBungalowHip, archBungalowBarrel],
-    cottage:  [archCottageDome],
-    villa:    [archVilla, archGable2, archSpanish, archCottageDome],
-    mixed:    [archBungalowHip, archBungalowBarrel, archCottageDome, archSpanish, archGable2],
-    south:    [archBungalowHip, archBungalowBarrel, archCottageDome],
+    hillcrest: [archHillVillaGarage, archVilla, archGable2, archSpanish, archCottageDome],
+    villa:     [archHillVillaGarage, archVilla, archGable2, archSpanish, archCottageDome],
+    mixed:     [archBungalowHip, archBungalowBarrel, archCottageDome, archSpanish, archGable2],
+    south:     [archBungalowHip, archBungalowBarrel, archCottageDome],
   };
-  function pickArch(zone) {
+  function pickArch(zone, isCorner) {
+    if (isCorner && zone === 'south') { // corner-shop house for Southside corners (70%)
+      if (rng() < 0.7) {
+        const a = archCornerShop(WALLS[Math.floor(rng() * WALLS.length) % WALLS.length],
+                                 ROOFS[Math.floor(rng() * ROOFS.length) % ROOFS.length]);
+        a.kind = 'cornershop';
+        return a;
+      }
+    }
     const list = ARCHS[zone] || ARCHS.mixed;
     const f = list[Math.floor(rng() * list.length) % list.length];
     const wall = WALLS[Math.floor(rng() * WALLS.length) % WALLS.length];
@@ -1644,8 +1792,8 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
     };
   }
 
-  function zoneAt(cx, cz, winding) {
-    if (winding) return 'villa';                          // Hillcrest Road: hillside villas
+  function zoneAt(cx, cz, roadClass) {
+    if (roadClass === 'hillcrest') return 'hillcrest';    // winding climb: hillside villas
     if (cz > lz(442)) return 'south';                     // Southside bungalows
     if (cx > lw(445)) return 'villa';                     // Palm Court hillside
     return 'mixed';
@@ -1656,7 +1804,8 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
 
   const placed = [];      // world AABBs of placed houses (for house-house spacing)
   const placements = [];  // records returned for debugging/save tooling
-  const MAX_HOUSES = 150;
+  const MAX_HOUSES = 200; // FPS dial: single integer cap, applied during placement
+                          // (coordinator tunes for the M02s bench; v1b was 150)
 
   // A house is valid only if its whole footprint is off-road (4 corners + 4 edge
   // midpoints through map.isRoadAt), on land (not water/pier/park), slope across
@@ -1731,19 +1880,24 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
   // Priority order: signature streets first (Hillcrest winding climb, Southside lanes,
   // Palm Court street), then the general grid, so the MAX_HOUSES cap trims generic
   // blocks rather than starving the streets the brief names.
-  const roads = [...map.roadPaths].sort((a, b) => rank(a) - rank(b));
-  function rank(r) {
-    if (r.pts.length > 2) return 0;                       // Hillcrest Road
-    const ys = r.pts.map((p) => p[1]);
+  const roads = map.roadPaths.map((r) => ({ r, cls: classify(r) }))
+    .filter((e) => e.cls !== 'skip')
+    .sort((a, b) => rank(a) - rank(b));
+  function rank(e) {
+    if (e.cls === 'hillcrest') return 0;
+    let len = 0;
+    for (let k = 0; k < e.r.pts.length - 1; k++)
+      len += Math.hypot(e.r.pts[k + 1][0] - e.r.pts[k][0], e.r.pts[k + 1][1] - e.r.pts[k][1]);
+    if (len < 120) return 1;                              // short connectors fill before the grid
+    const ys = e.r.pts.map((p) => p[1]);
     if (Math.min(...ys) >= 440) return 1;                 // Southside lanes
-    if (r.pts.length === 2 && r.pts[0][0] === 440 && r.pts[1][0] === 440) return 2; // Palm Court street
+    if (e.r.pts.length === 2 && e.r.pts[0][0] === 440 && e.r.pts[1][0] === 440) return 2; // Palm Court street
     return 3;
   }
-  for (const road of roads) {
-    if (skipRoad(road) || count >= MAX_HOUSES) continue;
+  for (const { r: road, cls } of roads) {
+    if (count >= MAX_HOUSES) break;
     const walk = walker(road.pts);
     const frontOff = road.w / 2 + 4.5;             // front wall 8-8.5 m off centerline (w 7..8)
-    const winding = road.pts.length > 2;
     let s = 9;
     while (s < walk.total - 9 && count < MAX_HOUSES) {
       const p = walk.at(s);
@@ -1751,8 +1905,9 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
       for (const side of [-1, 1]) {
         if (count >= MAX_HOUSES) break;
         const nx = -p.uz * side, nz = p.ux * side; // unit normal, world coords
-        const zone = zoneAt(p.x + nx * 12, p.z + nz * 12, winding);
-        let arch = pickArch(zone);
+        const zone = zoneAt(p.x + nx * 12, p.z + nz * 12, cls);
+        const isCorner = zone === 'south' && nearJunction(p.x + C, p.z + C, 20); // layout coords
+        let arch = pickArch(zone, isCorner);
         let coff = frontOff + arch.d / 2;
         let cx = p.x + nx * coff, cz = p.z + nz * coff;
         const yaw = Math.atan2(-nx, -nz);          // local +Z (front) faces the street
@@ -1770,13 +1925,38 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
         for (const part of arch.parts) bakePart(part, cx, gy - 0.3, cz, yaw); // sunk 0.3 foundation
         map.addBlock(bb.minX, bb.minZ, bb.maxX, bb.maxZ);
         placed.push(bb);
-        placements.push({ x: cx, z: cz, y: gy, yaw, w: arch.w, d: arch.d, archetype: arch.kind, zone });
+        placements.push({ x: cx, z: cz, y: gy, yaw, w: arch.w, d: arch.d, archetype: arch.kind, zone, corner: isCorner });
         count++;
         if (arch.w > widest) widest = arch.w;
       }
       s += widest + 3.5;                           // house width + side gap
     }
   }
+
+  // ---- coverage audit (derived from roadPaths; for the coordinator's report) ----
+  function distToRoad(road, x, z) { // x,z world
+    let best = Infinity;
+    for (let i = 0; i < road.pts.length - 1; i++) {
+      const ax = lw(road.pts[i][0]), az = lz(road.pts[i][1]);
+      const bx = lw(road.pts[i + 1][0]), bz = lz(road.pts[i + 1][1]);
+      const dx = bx - ax, dz = bz - az, L2 = dx * dx + dz * dz;
+      let t = L2 ? ((x - ax) * dx + (z - az) * dz) / L2 : 0;
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const px = ax + t * dx - x, pz = az + t * dz - z;
+      const d2 = px * px + pz * pz;
+      if (d2 < best) best = d2;
+    }
+    return Math.sqrt(best);
+  }
+  const coverage = map.roadPaths.map((r, i) => {
+    const cls = classify(r);
+    let len = 0;
+    for (let k = 0; k < r.pts.length - 1; k++)
+      len += Math.hypot(r.pts[k + 1][0] - r.pts[k][0], r.pts[k + 1][1] - r.pts[k][1]);
+    const near = cls === 'skip' ? 0
+      : placements.filter((p) => distToRoad(r, p.x, p.z) < 16).length;
+    return { road: i, class: cls, length: Math.round(len), houses: near };
+  });
 
   // ---- one merged mesh per material ----
   let triTotal = 0;
@@ -1796,7 +1976,7 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
     update(dt) {}, // static district: nothing per-frame (dt unused)
     count,
     placements,
-    stats: { drawCalls: buckets.size, triangles: Math.round(triTotal) },
+    stats: { drawCalls: buckets.size, triangles: Math.round(triTotal), coverage },
   };
 }
 
@@ -1815,7 +1995,11 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
 //   Placements come from map.roadPaths (LAYOUT coords; world = layout - 300), sit at
 //   road half-width + ~1.2 m, and are validated with map.isRoadAt / map.isBlocked.
 //   Pier/water: map.isBlocked already rejects water; the pier deck rectangle from
-//   map.js v7a (layout x 20-122, y 292-308) is mirrored below and excluded.
+//   map.js v7b (layout x 20-122, y 292-308) is mirrored below and excluded.
+//   Round 2: shelters now retry several spots/sides per road (5 placed on v7b);
+//   new merged prop types: mailboxes, planters, parking meters (downtown arterials,
+//   3+ junctions), newsstands on spare signalized corners (addBlock, ~1.5 m wide).
+//   All placement derives from map.roadPaths at build time - no hardcoded coordinates.
 //   No other module changes are needed.
 //
 // Shared palette (baked into vertex colors; only 2 shared materials):
@@ -1924,6 +2108,39 @@ function createProps({ THREE, scene, map }) {
     addTo(m, new THREE.BoxGeometry(3.0, 0.08, 0.4), P.wood, 0, 0.5, 0.3);
     return { m, g };
   }
+  // ---- round-2 prop types ----
+  function tMailbox() { // 1.1 m rounded curbside mailbox on a post
+    const m = Acc(), g = Acc();
+    addTo(m, new THREE.CylinderGeometry(0.035, 0.045, 1.0, 6, 1, true), P.pole, 0, 0.5, 0);
+    addTo(m, new THREE.CapsuleGeometry(0.16, 0.3, 2, 7), '#3a5f8a', 0, 1.12, 0, Math.PI / 2);
+    addTo(m, new THREE.BoxGeometry(0.04, 0.16, 0.1), P.signRed, 0.14, 1.28, 0); // flag
+    return { m, g };
+  }
+  function tPlanter() { // 0.85 m rounded street planter with shrub
+    const m = Acc(), g = Acc();
+    addTo(m, new THREE.CylinderGeometry(0.42, 0.34, 0.5, 8), P.concrete, 0, 0.25, 0);
+    addTo(m, new THREE.CylinderGeometry(0.38, 0.38, 0.06, 8), '#4a3826', 0, 0.5, 0); // soil
+    addTo(m, new THREE.SphereGeometry(1, 7, 5), '#3f7d3a', 0, 0.72, 0, 0, 0, 0, 0.42, 0.34, 0.42); // shrub dome
+    addTo(m, new THREE.SphereGeometry(1, 6, 5), '#4f9448', 0.1, 0.86, 0.06, 0, 0, 0, 0.26, 0.2, 0.26);
+    return { m, g };
+  }
+  function tParkingMeter() { // 1.15 m dome-head parking meter
+    const m = Acc(), g = Acc();
+    addTo(m, new THREE.CylinderGeometry(0.028, 0.04, 1.0, 5, 1, true), P.metal, 0, 0.5, 0);
+    addTo(m, new THREE.CapsuleGeometry(0.075, 0.1, 2, 6), P.pole, 0, 1.08, 0);
+    addTo(m, new THREE.CylinderGeometry(0.05, 0.05, 0.03, 6), P.glass, 0, 1.1, -0.07, Math.PI / 2); // dial
+    return { m, g };
+  }
+  function tNewsStand() { // 1.5 m corner newsstand with awning (registers collision)
+    const m = Acc(), g = Acc();
+    addTo(m, new THREE.CapsuleGeometry(0.5, 0.7, 2, 8), '#7a5a8a', 0, 1.0, 0, 0, 0, Math.PI / 2); // rounded kiosk body
+    addTo(m, new THREE.BoxGeometry(1.5, 0.1, 0.9), P.roof, 0, 1.78, 0, -0.12);
+    addTo(m, new THREE.BoxGeometry(1.3, 0.16, 0.5), P.wood, 0, 0.85, -0.42); // paper shelf
+    for (const dx of [-0.4, 0, 0.4]) {
+      addTo(m, new THREE.BoxGeometry(0.3, 0.1, 0.36), '#e8e4d0', dx, 0.97, -0.42); // paper stacks
+    }
+    return { m, g };
+  }
   function tTrafficLight(greenFirst) { // 4.4 m signal, head faces -Z; one bulb lit
     const m = Acc(), g = Acc();
     addTo(m, new THREE.CylinderGeometry(0.14, 0.18, 0.35, 7), P.concrete, 0, 0.17, 0);
@@ -1951,6 +2168,7 @@ function createProps({ THREE, scene, map }) {
   const TYPES = {
     lamp: tLamppost(), bench: tBench(), bin: tBin(), hydrant: tHydrant(),
     shelter: tShelter(), signRed: tSign(P.signRed), signYellow: tSign(P.signYellow),
+    mailbox: tMailbox(), planter: tPlanter(), meter: tParkingMeter(), newsStand: tNewsStand(),
   };
 
   // ---- placement validation ----
@@ -2097,25 +2315,94 @@ function createProps({ THREE, scene, map }) {
         put('hydrant', x, z, Math.random() * Math.PI * 2, 0.3, 2);
       }
     }
-    // bus shelters: one per long straight-ish wide road, max 6 city-wide, not on the beach
-    if (road.w >= 8 && road.len > 250 && sheltersPlaced < 6) {
-      const s = road.len * 0.55;
-      const p = pointAt(road, s);
-      const x = p.x + -p.uz * (h + 1.9), z = p.z + p.ux * (h + 1.9);
-      if (x < -160) continue; // keep shelters on the city side of the boardwalk sand
-      // needs a wide clear area; check center + 4 footprint corners
-      const along = Math.abs(p.ux) > Math.abs(p.uz); // road runs E-W -> shelter long axis X
-      const ex = along ? 1.8 : 1.0, ez = along ? 1.0 : 1.8;
-      const ok = free(x, z, 0.5, 4) &&
-        [[ex, ez], [-ex, ez], [ex, -ez], [-ex, -ez]].every(([dx, dz]) =>
-          !isRoad(x + dx, z + dz) && !isBlk(x + dx, z + dz, 0.3) && inBounds(x + dx, z + dz));
-      if (ok) {
-        const yaw = faceYaw(x, z, p.x, p.z);
-        put('shelter', x, z, yaw, 0.5, 4);
-        if (map.addBlock) map.addBlock(x - ex, z - ez, x + ex, z + ez); // WORLD coords
-        sheltersPlaced++;
+    // bus shelters (round 2): target 5 city-wide; try several spots and both sides per road
+    // instead of a single candidate, since map v7b's curves invalided some v1 spots.
+    if (road.w >= 8 && road.len > 250 && sheltersPlaced < 5) {
+      outer: for (const f of [0.55, 0.35, 0.7, 0.25, 0.85, 0.45]) {
+        for (const side of [1, -1]) {
+          const s = road.len * f;
+          const p = pointAt(road, s);
+          const x = p.x + -p.uz * side * (h + 1.9), z = p.z + p.ux * side * (h + 1.9);
+          if (x < -160) continue; // keep shelters on the city side of the boardwalk sand
+          const along = Math.abs(p.ux) > Math.abs(p.uz); // road runs E-W -> shelter long axis X
+          const ex = along ? 1.8 : 1.0, ez = along ? 1.0 : 1.8;
+          const ok = free(x, z, 0.5, 4) &&
+            [[ex, ez], [-ex, ez], [ex, -ez], [-ex, -ez]].every(([dx, dz]) =>
+              !isRoad(x + dx, z + dz) && !isBlk(x + dx, z + dz, 0.3) && inBounds(x + dx, z + dz));
+          if (ok) {
+            const yaw = faceYaw(x, z, p.x, p.z);
+            put('shelter', x, z, yaw, 0.5, 4);
+            if (map.addBlock) map.addBlock(x - ex, z - ez, x + ex, z + ez); // WORLD coords
+            sheltersPlaced++;
+            break outer;
+          }
+        }
       }
     }
+  }
+
+  // ---- round-2 props: mailboxes, planters, parking meters, newsstands ----
+  let metersPlaced = 0, standsPlaced = 0;
+  const JUNCTIONS_PER_ROAD = roads.map((r) =>
+    junctions.filter((J) => {
+      // junction belongs to a road if its center sits within the road's swept width
+      const rr = { pts: r.pts.map((p) => [p[0], p[1]]), w: r.w + 4 };
+      for (let i = 0; i < rr.pts.length - 1; i++) {
+        const ax = rr.pts[i][0], az = rr.pts[i][1], bx = rr.pts[i + 1][0], bz = rr.pts[i + 1][1];
+        const dx = bx - ax, dz = bz - az, L2 = dx * dx + dz * dz;
+        let t = L2 ? ((J.x - ax) * dx + (J.z - az) * dz) / L2 : 0;
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        const px = ax + t * dx - J.x, pz = az + t * dz - J.z;
+        if (px * px + pz * pz <= (rr.w / 2) * (rr.w / 2)) return true;
+      }
+      return false;
+    }).length);
+  for (let ri = 0; ri < roads.length; ri++) {
+    const road = roads[ri], h = road.w / 2;
+    // mailboxes: sparse, residential-style streets (narrower roads), curbside
+    if (road.w <= 7.5 && road.len > 60) {
+      for (let s = 28, k = 0; s < road.len - 8; s += 55, k++) {
+        const p = pointAt(road, s);
+        const side = k % 2 === 0 ? 1 : -1;
+        const x = p.x + -p.uz * side * (h + 1.05), z = p.z + p.ux * side * (h + 1.05);
+        if (!free(x, z, 0.3, 1.2)) continue;
+        put('mailbox', x, z, faceYaw(x, z, p.x, p.z), 0.3, 1.2);
+      }
+    }
+    // planters: on the wider streets, set further out than lamps so lanes stay clear
+    if (road.w >= 8 && road.len > 150) {
+      for (let s = 55, k = 0; s < road.len - 10; s += 130, k++) {
+        const p = pointAt(road, s);
+        const side = k % 2 === 0 ? -1 : 1;
+        const x = p.x + -p.uz * side * (h + 2.3), z = p.z + p.ux * side * (h + 2.3);
+        if (!free(x, z, 0.5, 2.2)) continue;
+        put('planter', x, z, Math.random() * Math.PI * 2, 0.5, 2.2);
+      }
+    }
+    // parking meters: only on busy downtown-style arterials (3+ junctions), one side,
+    // clear of junction corners; capped city-wide for the tri budget
+    if (road.w >= 8 && road.len > 200 && JUNCTIONS_PER_ROAD[ri] >= 3) {
+      const side = ri % 2 === 0 ? 1 : -1;
+      for (let s = 30; s < road.len - 10 && metersPlaced < 48; s += 26) {
+        if (junctions.some((J) => Math.hypot(J.x - pointAt(road, s).x, J.z - pointAt(road, s).z) < 12)) continue;
+        const p = pointAt(road, s);
+        const x = p.x + -p.uz * side * (h + 0.8), z = p.z + p.ux * side * (h + 0.8);
+        if (!free(x, z, 0.25, 1.0)) continue;
+        put('meter', x, z, faceYaw(x, z, p.x, p.z), 0.25, 1.0);
+        metersPlaced++;
+      }
+    }
+  }
+  // newsstands: on the spare fourth corner of signalized junctions, capped at 6
+  for (const J of junctions) {
+    if (standsPlaced >= 6 || J.wA < 8 || J.wB < 8) continue;
+    const n1x = -J.az, n1z = J.ax, n2x = -J.bz, n2z = J.bx;
+    const o1 = J.wA / 2 + 1.1, o2 = J.wB / 2 + 1.1;
+    const x = J.x - n1x * o1 + n2x * o2, z = J.z - n1z * o1 + n2z * o2;
+    if (!free(x, z, 0.8, 3)) continue;
+    put('newsStand', x, z, faceYaw(x, z, J.x, J.z), 0.8, 3);
+    if (map.addBlock) map.addBlock(x - 0.8, z - 0.55, x + 0.8, z + 0.55); // ~1.5 m wide: collision
+    standsPlaced++;
   }
 
   // ---- merge to 2 static meshes ----
@@ -2156,7 +2443,12 @@ function createProps({ THREE, scene, map }) {
 //     const pedestrians = createPedestrians({ THREE, scene, map, getPlayerPos });
 //     // per frame: pedestrians.update(dt);
 //   getPlayerPos() -> {x, z} in WORLD coords; called at most once per frame.
+//   The module additionally derives 2 pier-waiting spots itself from the westmost road
+//   (roadPaths-derived; pier rect mirrored from map.js v7b, same as props.js).
+//   Peds near a spot sometimes idle (static sit/stand pose, 6-15 s) instead of walking.
 //   No map.addBlock calls, no collision, no shadows, no lights.
+//   Round 2 also fixes junction turns to use segment-intersection transfer points
+//   (grid junctions are not polyline vertices; the v1 vertex check rarely fired).
 //
 // Shared palette (one shared MeshLambertMaterial({vertexColors:true}); colors baked):
 //   skin  #c68b59 #8d5a3a #e0ac82 #6b4a2f
@@ -2168,7 +2460,7 @@ function createProps({ THREE, scene, map }) {
 // are cached per color combo and shared. Full swing animation only within 60 m of the
 // player; 60-140 m glide (no limb animation); past 140 m hidden and respawned near the
 // player on a random road. Walk speed 1.2-1.8 m/s. No skinned meshes, no AnimationMixer.
-function createPedestrians({ THREE, scene, map, getPlayerPos }) {
+function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots = [] }) {
   const SKIN = ['#c68b59', '#8d5a3a', '#e0ac82', '#6b4a2f'];
   const SHIRT = ['#c94f4f', '#4f7dc9', '#d8c94f', '#5aa66b', '#d8d4c8', '#7a5ac8'];
   const PANTS = ['#26344c', '#4a4a52', '#6e5a3a', '#2e5d4c'];
@@ -2188,6 +2480,35 @@ function createPedestrians({ THREE, scene, map, getPlayerPos }) {
     }
     return { pts, cum, w: r.w, len: cum[cum.length - 1] };
   }).filter((r) => r.len > 30);
+
+  // ---- junction transfers: where another road crosses, peds may turn onto it ----
+  function segIntT(a, b, c, d) {
+    const r = [b[0] - a[0], b[1] - a[1]], s = [d[0] - c[0], d[1] - c[1]];
+    const den = r[0] * s[1] - r[1] * s[0];
+    if (Math.abs(den) < 1e-9) return null;
+    const t = ((c[0] - a[0]) * s[1] - (c[1] - a[1]) * s[0]) / den;
+    const u = ((c[0] - a[0]) * r[1] - (c[1] - a[1]) * r[0]) / den;
+    if (t < -0.02 || t > 1.02 || u < -0.02 || u > 1.02) return null;
+    return { t: Math.min(1, Math.max(0, t)), u: Math.min(1, Math.max(0, u)) };
+  }
+  for (const r of roads) r.transfers = [];
+  const arcAt = (road, seg, t) => road.cum[seg] + t * (road.cum[seg + 1] - road.cum[seg]);
+  for (let i = 0; i < roads.length; i++) {
+    for (let j = i + 1; j < roads.length; j++) {
+      const A = roads[i], B = roads[j];
+      for (let a = 0; a < A.pts.length - 1; a++) {
+        for (let b = 0; b < B.pts.length - 1; b++) {
+          const hit = segIntT(A.pts[a], A.pts[a + 1], B.pts[b], B.pts[b + 1]);
+          if (!hit) continue;
+          const sA = arcAt(A, a, hit.t), sB = arcAt(B, b, hit.u);
+          if (A.transfers.every((q) => Math.abs(q.s - sA) > 6)) {
+            A.transfers.push({ s: sA, other: B, sOther: sB });
+            B.transfers.push({ s: sB, other: A, sOther: sA });
+          }
+        }
+      }
+    }
+  }
 
   const isRoad = map.isRoadAt || (() => false);
   const isBlk = map.isBlocked || map.blockedAt || (() => false);
@@ -2214,6 +2535,40 @@ function createPedestrians({ THREE, scene, map, getPlayerPos }) {
     const p = pointAt(road, s);
     const off = road.w / 2 + SIDEWALK;
     return { x: p.x + -p.uz * side * off, z: p.z + p.ux * side * off, ux: p.ux, uz: p.uz, seg: p.seg };
+  }
+
+  // ---- round 2: idle spots. Passed-in spots (benches/shelters) + self-derived pier waits. ----
+  const PIER = { minX: -280, maxX: -178, minZ: -8, maxZ: 8 }; // mirror of map.js v7b PIER
+  const SPOTS = [];
+  for (const s of idleSpots || []) {
+    if (s && Number.isFinite(s.x) && Number.isFinite(s.z)) {
+      SPOTS.push({ x: s.x, z: s.z, pose: s.pose === 'sit' ? 'sit' : 'stand' });
+    }
+  }
+  { // pier waiting: westmost road, point nearest the pier, a spot on the water side
+    let wRoad = null, wMin = Infinity;
+    for (const r of roads) for (const p of r.pts) if (p[0] < wMin) { wMin = p[0]; wRoad = r; }
+    if (wRoad) {
+      const pcx = (PIER.minX + PIER.maxX) / 2, pcz = (PIER.minZ + PIER.maxZ) / 2;
+      let bestS = 0, bestD = Infinity;
+      for (let s = 0; s <= wRoad.len; s += 2) {
+        const q = pointAt(wRoad, s);
+        const d = Math.hypot(q.x - pcx, q.z - pcz);
+        if (d < bestD) { bestD = d; bestS = s; }
+      }
+      for (const ds of [-3.5, 3.5]) {
+        const s = Math.min(wRoad.len - 2, Math.max(2, bestS + ds));
+        const q = pointAt(wRoad, s);
+        for (const side of [1, -1]) {
+          const off = wRoad.w / 2 + SIDEWALK;
+          const x = q.x + -q.uz * side * off, z = q.z + q.ux * side * off;
+          if (x < q.x && inBounds(x, z) && !isRoad(x, z) && !isBlk(x, z, 0.35)) {
+            SPOTS.push({ x, z, pose: 'stand' }); // watching the bay by the pier
+            break;
+          }
+        }
+      }
+    }
   }
 
   // ---- geometry helpers ----
@@ -2302,6 +2657,7 @@ function createPedestrians({ THREE, scene, map, getPlayerPos }) {
       root, body, legL, legR, armL, armR,
       road: null, s: 0, dir: 1, side: 1, speed: 1.2 + Math.random() * 0.6,
       phase: Math.random() * 6.283, lastSeg: -1, respawnCd: 0, turnCd: 0, x: 0, z: 0,
+      mode: 'walk', idleT: 0, idleCd: 4 + Math.random() * 25, pose: 'stand',
     };
   }
 
@@ -2336,26 +2692,6 @@ function createPedestrians({ THREE, scene, map, getPlayerPos }) {
     peds.push(p);
   }
 
-  // junction hand-off: when crossing a polyline vertex, maybe switch to a crossing road
-  function maybeTurn(p, q) {
-    if (q.seg === p.lastSeg) return;
-    p.lastSeg = q.seg;
-    const vtx = p.road.pts[q.seg]; // vertex just crossed
-    if (!vtx || Math.random() > 0.35) return;
-    for (const r of roads) {
-      if (r === p.road) continue;
-      for (let i = 0; i < r.pts.length; i++) {
-        if (Math.hypot(r.pts[i][0] - vtx[0], r.pts[i][1] - vtx[1]) < r.w / 2 + 3) {
-          p.road = r; p.s = r.cum[i];
-          p.dir = Math.random() < 0.5 ? 1 : -1;
-          p.side = Math.random() < 0.5 ? 1 : -1;
-          p.lastSeg = -1;
-          return;
-        }
-      }
-    }
-  }
-
   function update(dt) {
     if (!Number.isFinite(dt) || dt <= 0) return;
     dt = Math.min(dt, 0.05);
@@ -2365,6 +2701,7 @@ function createPedestrians({ THREE, scene, map, getPlayerPos }) {
       const dPlayer = Math.hypot(p.x - pp.x, p.z - pp.z);
       if (dPlayer > HIDE_FAR) { // too far: hide, try to respawn near the player
         p.root.visible = false;
+        p.mode = 'walk';
         p.respawnCd -= dt;
         if (p.respawnCd <= 0) {
           p.respawnCd = 2;
@@ -2375,26 +2712,108 @@ function createPedestrians({ THREE, scene, map, getPlayerPos }) {
         }
         continue;
       }
+      p.root.visible = true;
+      if (p.mode === 'corner') { // rounding a junction after a turn: walk the corner line
+        const dx = p.ctx - p.x, dz = p.ctz - p.z, d = Math.hypot(dx, dz);
+        const step = p.speed * 1.5 * dt;
+        if (d <= step + 0.05) { p.mode = 'walk'; p.x = p.ctx; p.z = p.ctz; }
+        else { p.x += dx / d * step; p.z += dz / d * step; }
+        p.root.position.set(p.x, ground(p.x, p.z), p.z);
+        p.root.rotation.y = -Math.atan2(dx, -dz);
+        if (dPlayer < ANIM_NEAR) {
+          p.phase += dt * p.speed * 1.5 * 3.6;
+          const sw = Math.sin(p.phase);
+          p.legL.rotation.x = sw * 0.55; p.legR.rotation.x = -sw * 0.55;
+          p.armL.rotation.x = -sw * 0.4; p.armR.rotation.x = sw * 0.4;
+          p.body.position.y = Math.abs(Math.sin(p.phase * 2)) * 0.045;
+        }
+        continue;
+      }
+      if (p.mode === 'idle') { // resting at a bench/shelter/pier: static pose, no movement
+        p.idleT -= dt;
+        if (p.idleT <= 0) {
+          p.mode = 'walk';
+          p.idleCd = 15 + Math.random() * 40;
+        } else if (dPlayer < ANIM_NEAR) { // pose writes only when visible up close
+          if (p.pose === 'sit') {
+            p.legL.rotation.x = 1.25; p.legR.rotation.x = 1.25;
+            p.armL.rotation.x = 0.45; p.armR.rotation.x = 0.45;
+          } else {
+            p.legL.rotation.x *= 0.8; p.legR.rotation.x *= 0.8;
+            p.armL.rotation.x = 0.14; p.armR.rotation.x = -0.14;
+          }
+          p.body.position.y *= 0.8;
+        }
+        continue;
+      }
+      // walking: maybe start idling near an idle spot
+      p.idleCd -= dt;
+      if (p.idleCd <= 0) {
+        let hit = null;
+        for (const sp of SPOTS) {
+          if (Math.hypot(sp.x - p.x, sp.z - p.z) < 6) { hit = sp; break; }
+        }
+        if (hit && Math.random() < 0.5) {
+          p.mode = 'idle'; p.pose = hit.pose;
+          p.idleT = 6 + Math.random() * 9;
+          p.root.rotation.y = -Math.atan2(hit.x - p.x, -(hit.z - p.z)); // face the spot
+          continue;
+        }
+        if (!hit && Math.random() < 0.004) { // rare pause anywhere
+          p.mode = 'idle'; p.pose = 'stand';
+          p.idleT = 4 + Math.random() * 5;
+          continue;
+        }
+        p.idleCd = 2; // re-check soon while walking past spots
+      }
       // crosswalk hurry: brief says stay off the road surface; at junction crossings the
       // sidewalk line crosses the side road, so they hurry across instead of strolling.
       const onRoad = isRoad(p.x, p.z);
       const v = p.speed * (onRoad ? 2.5 : 1);
+      const sOld = p.s;
       p.s += p.dir * v * dt;
+      p.turnCd -= dt;
+      // turn at junctions: crossed a transfer point -> maybe switch to the crossing road
+      if (p.turnCd <= 0) {
+        for (const tr of p.road.transfers) {
+          const crossed = p.dir > 0 ? (sOld < tr.s && p.s >= tr.s) : (sOld > tr.s && p.s <= tr.s);
+          if (crossed && Math.random() < 0.3) {
+            const nr = tr.other;
+            p.dir = Math.random() < 0.5 ? 1 : -1;
+            // pick the new lane side closest to the current position and walk the
+            // corner line over to it (no 8-12 m pop around the junction)
+            let best = null;
+            for (const sd of [1, -1]) {
+              const qn = spot(nr, Math.min(nr.len - 2, Math.max(2, tr.sOther + p.dir * 2)), sd);
+              const dd = Math.hypot(qn.x - p.x, qn.z - p.z);
+              if (!best || dd < best.d) best = { d: dd, side: sd, s: Math.min(nr.len - 2, Math.max(2, tr.sOther + p.dir * 2)), x: qn.x, z: qn.z };
+            }
+            p.road = nr; p.s = best.s; p.side = best.side;
+            p.ctx = best.x; p.ctz = best.z;
+            p.mode = 'corner';
+            p.turnCd = 1.5;
+            break;
+          }
+        }
+      }
+      if (p.mode === 'corner') continue; // just turned: corner line starts next tick
       if (p.s >= p.road.len - 1) { p.s = p.road.len - 1; p.dir = -1; }
       else if (p.s <= 1) { p.s = 1; p.dir = 1; }
       let q = spot(p.road, p.s, p.side);
-      maybeTurn(p, q);
-      q = spot(p.road, p.s, p.side);
       // blocked-ahead probe: swap sidewalk side, else reverse
       const ax = q.x + q.ux * p.dir * 1.1, az = q.z + q.uz * p.dir * 1.1;
       if (isBlk(ax, az, 0.3)) {
         const q2 = spot(p.road, p.s, -p.side);
         const bx = q2.x + q2.ux * p.dir * 1.1, bz = q2.z + q2.uz * p.dir * 1.1;
-        if (!isBlk(bx, bz, 0.3) && !isRoad(q2.x, q2.z)) { p.side = -p.side; q = q2; }
-        else { p.dir = -p.dir; q = spot(p.road, p.s, p.side); }
+        if (!isBlk(bx, bz, 0.3) && !isRoad(q2.x, q2.z)) {
+          // walk across to the far sidewalk instead of popping over
+          p.side = -p.side;
+          p.ctx = q2.x; p.ctz = q2.z; p.mode = 'corner';
+          continue;
+        }
+        p.dir = -p.dir; q = spot(p.road, p.s, p.side);
       }
       p.x = q.x; p.z = q.z;
-      p.root.visible = true;
       p.root.position.set(p.x, ground(p.x, p.z), p.z);
       p.root.rotation.y = -Math.atan2(q.ux * p.dir, -q.uz * p.dir); // actors heading convention
       if (dPlayer < ANIM_NEAR) { // full cheap walk cycle
@@ -2564,10 +2983,10 @@ class RepoMapGLTFLoader extends GLTFLoader {
   }
 }
 const map = createMap({ THREE, scene, GLTFLoader: RepoMapGLTFLoader }); // class, not instance: swapToModels news it up
-const houses = createHouses({ THREE, scene, map, GLTFLoader: RepoMapGLTFLoader }); // houses v1b: 150 homes, 13 draw calls
+const houses = createHouses({ THREE, scene, map, GLTFLoader: RepoMapGLTFLoader }); // houses v2: 200 homes, 8 archetypes, 14 draw calls
 skyDome.matrixAutoUpdate = true; // map's P2 freeze covers the whole scene; the dome must follow the camera
-const props = createProps({ THREE, scene, map }); // 296 street props in 2 draw calls
-const pedestrians = createPedestrians({ THREE, scene, map, getPlayerPos: () => ({ x: actors.cameraTarget.x, z: actors.cameraTarget.z }) }); // 20 walkers
+const props = createProps({ THREE, scene, map }); // v2: 402 street props on map v7c in 2 draw calls
+const pedestrians = createPedestrians({ THREE, scene, map, getPlayerPos: () => ({ x: actors.cameraTarget.x, z: actors.cameraTarget.z }), idleSpots: props.placements.filter(p => p.type === 'bench' || p.type === 'shelter').map(p => ({ x: p.x, z: p.z, pose: p.type === 'bench' ? 'sit' : 'stand' })) }); // v2: 20 walkers, bench/shelter idles
 
 let paused = false;
 
