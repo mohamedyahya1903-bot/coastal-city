@@ -328,7 +328,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
     { pts: [[558,200],[558,280]], w: 7 },
     { pts: [[500,200],[514,198],[528,196],[542,192],[556,188],[565.5,183],[575,178],[582,170],[574,164],[566,158],[553,155],[540,152],[530,150],[520,148],[532,141],[548,137],[561,132],[565,124],[564,116],[562,108],[561,100],[562,93],[566,88],[573,85],[580,84]], w: 7 },
     { pts: [[310,472],[339,472],[341,467],[346,465],[351,467],[353,472],[351,477],[346,479],[341,477],[339,472]], w: 7 }, // Pelican Court, off V310 east
-    { pts: [[245,470],[225,470],[223,465],[218,463],[213,465],[211,470],[213,475],[218,477],[223,475],[225,470]], w: 7 }, // Grove Court, off V245 west
+    { pts: [[245,470],[225,470],[223,465],[218,463],[213,465],[211,470],[213,475],[218,477],[223,475],[225,470]], w: 7 }, // Seashell Court, off V245 west
     { pts: [[248,200],[248,360]], w: 6 }, // between tower columns 1 and 2
     { pts: [[200,248],[360,248]], w: 6 }, // between tower rows 1 and 2
     { pts: [[245,455],[310,455]], w: 6, cls: 'grid' }, // C1: V245 -> V310
@@ -341,6 +341,13 @@ function createMap({ THREE, scene, GLTFLoader }) {
     { pts: [[208,200],[208,360]], w: 6 }, // A1 N-S behind Tower col 1 / Office 1 (1 m clear of pads)
     { pts: [[200,208],[360,208]], w: 6 }, // A2 E-W behind Tower row 1 (1 m clear of pads + H200 edge)
     { pts: [[200,330],[360,330]], w: 6 }, // A3 E-W behind the Office row (3 m clear of pads)
+  ];
+  const ROAD_NAMES = [ // v22: original invented street names for the future HUD (no real GTA names)
+    'Pelican Bay Promenade', 'Harborview Avenue', 'Solana Avenue', 'Cordova Avenue', 'Coral Avenue',
+    'Palm Court Ramp', 'Palm Drive', 'Seabreeze Street', 'Marlin Street', 'Sandpiper Street',
+    'Skyline Avenue', 'Heron Street', 'Gull Street', 'Southshore Road', 'Tern Street',
+    'Cliffside Lane', 'Hillcrest Road', 'Pelican Court', 'Seashell Court', 'Banyan Street',
+    'Lagoon Street', 'Palmilla Lane', 'Sundown Lane', 'Beacon Drive',
   ];
   const PARK_W = PARKING.map(([, x0, y0, x1, y1]) => ({ minX: lw(x0), maxX: lw(x1), minZ: lz(y0), maxZ: lz(y1) })); // world rects for isRoadAt
   PARK_W.push({ minX: lw(131), maxX: lw(157), minZ: lz(236), maxZ: lz(272) }); // v12 Beachfront Row
@@ -1404,8 +1411,8 @@ function createMap({ THREE, scene, GLTFLoader }) {
     isBlocked, blockedAt: isBlocked,
     isRoadAt, taxiStops,
     starterHome: { x: lw(505), z: lz(309), name: 'Palm Court Bungalow' },
-    roadPaths: ROADS.map((r) => (r.cls ? { pts: r.pts, w: r.w, cls: r.cls } : { pts: r.pts, w: r.w }))
-      .concat(ALLEYS.map((r) => ({ pts: r.pts, w: r.w, cls: 'alley' }))) // v9: alleys carry the class
+    roadPaths: ROADS.map((r, i) => (r.cls ? { pts: r.pts, w: r.w, cls: r.cls, name: ROAD_NAMES[i] } : { pts: r.pts, w: r.w, name: ROAD_NAMES[i] })) // v22: +name
+      .concat(ALLEYS.map((r, i) => ({ pts: r.pts, w: r.w, cls: 'alley', name: 'Service Alley ' + (i + 1) }))) // v9: alleys carry the class
       .map((r) => ({ ...r, limit: r.cls === 'alley' ? 20 : r.w >= 10 ? 60 : r.w === 8 ? 50 : r.w === 7 ? 40 : 30 })), // v21: km/h
     parkingLots, // v9: [{name,x,z,w,h,heading,layout,bays}] world coords, axis-aligned (heading 0),
     coastal, // v10: divided-stretch data (median rects world, guardrail, gantry) for tests/vehicles,
@@ -1415,9 +1422,13 @@ function createMap({ THREE, scene, GLTFLoader }) {
     hillsideSign, // v17: LOS SANTOS hillside letter row (layout data; mesh 'hillsideSign')
     junctions: junctions.map((nd) => { // hwy=true: dash-break only (highway + v9 alley junctions)
       const maxW = Math.max(...nd.arms.map((a) => a.w));
-      const priorityArm = nd.arms.findIndex((a) => a.w === maxW);
-      return { x: nd.x, y: nd.y, maxHalf: nd.maxHalf, hwy: nd.hwy || nd.base === false, arms: nd.arms.map((a) => [a.dx, a.dy, a.w]),
-        priorityArm, yields: nd.arms.map((a, i) => (a.w < maxW ? i : -1)).filter((i) => i >= 0) }; // v21: narrower arms yield
+      const hwy = nd.hwy || nd.base === false;
+      const allEq = nd.arms.every((a) => a.w === maxW); // v22: width-tied junction
+      const control = hwy ? 'none' : (allEq && nd.arms.length >= 3 ? 'all-way' : 'priority');
+      const priorityArm = control === 'priority' ? nd.arms.findIndex((a) => a.w === maxW) : null;
+      const yields = control === 'priority' ? nd.arms.map((a, i) => (a.w < maxW ? i : -1)).filter((i) => i >= 0) : [];
+      return { x: nd.x, y: nd.y, maxHalf: nd.maxHalf, hwy, arms: nd.arms.map((a) => [a.dx, a.dy, a.w]),
+        priorityArm, yields, control };
     }),
     markings,
     addBlock(minX, minZ, maxX, maxZ) { blocks.push({ minX, minZ, maxX, maxZ }); },
