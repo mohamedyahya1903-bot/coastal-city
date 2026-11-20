@@ -4202,7 +4202,7 @@ function createAdaptiveDrawDistance({scene, adaptive}) {
     get state() { return { reduced, fogFar: scene.fog.far, cullFar: reduced ? 210 : 260 }; },
   };
 }
-const CLOUD_FIELD = false, CLOUD_N = 24;
+const CLOUD_FIELD = true, CLOUD_N = 24;
 function buildCloudField(THREE, camera) {
   const cv = document.createElement('canvas'); cv.width = 128; cv.height = 64;
   const cx = cv.getContext('2d');
