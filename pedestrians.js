@@ -2,6 +2,19 @@
 //   Round 6 (peds v6, 2026-11-20, map v10): beach idlers - 2-3 wanderers instead live at the
 //   beach umbrella clusters (towel spots arrive via the existing idleSpots wiring): sit, lie
 //   on the towel, stand facing the sea, short amble on the sand; never touch roads/crosswalks.
+//   Round 9b (peds v10, 2026-11-20, map v16): one pinned stroller on the Bench A frontage
+//   (houses v7 bench homes) - reuses the stayOnRoad pin on a synthetic sub-road sliced from
+//   the switchback leg alongside the pad (map.hillBenches + nearest road arc only). Cafe
+//   conversion gains the stroller fallback: pins + pier + beach can exhaust the wander pool.
+//   Far-shell patch (PED-1/PED-2) kept intact.
+//   Round 9 (peds v9, 2026-11-20, map v14): viewpoint tourists - 1-2 wanderers instead live
+//   at the Hillcrest turnout viewpoint (v11 pad, just east of the wheel-stop curb): stand
+//   facing the view (east), phone-up photo pose, small shuffle; never touch roads. The pinned
+//   Bench A frontage stroller waits for the houses drop. Far-shell patch (PED-1/PED-2) intact.
+//   Round 8 (peds v8, 2026-11-20, map v13): court walkers - 1 wanderer per Southside
+//   cul-de-sac court (v7c loop roads) pinned to its lane (stayOnRoad: no junction transfers,
+//   no far-respawn relocation), so the courts stay dressed; E1 walks via the normal grid
+//   road set. Far-shell patch (PED-1/PED-2) kept intact.
 //   Round 7 (peds v7, 2026-11-20, map v12): cafe lingerers - 1-2 wanderers instead live at the
 //   sidewalk cafe sets (tables arrive via idleSpots as benches): sit at the table, stand a
 //   while, occasionally stroll to another set along the storefronts; never touch roads.
@@ -422,12 +435,104 @@ export function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots =
       assignBeach(peds[i], towels.shift()); want--;
     }
   }
+  { // round 8: one walker per cul-de-sac court (open loop roads: both ends near the same parent street)
+    const courts = roads.filter((r) => {
+      if (r.pts.length < 8 || r.len < 50) return false;
+      const a = r.pts[0], b = r.pts[r.pts.length - 1];
+      return Math.hypot(a[0] - b[0], a[1] - b[1]) < 35;
+    });
+    const e1 = roads.find((r) => r.pts.length === 2 && Math.abs(r.pts[0][0] - 123) < 2 && Math.abs(r.pts[1][0] - 123) < 2 && r.len > 100); // map v13 E1 (layout x=423)
+    const targets = e1 ? [...courts, e1] : courts;
+    for (const court of targets) {
+      let done = false;
+      for (const i of order) {
+        if (done) break;
+        if (peds[i].role !== 'wander' || peds[i].stayOnRoad) continue;
+        const p = peds[i];
+        p.road = court; p.stayOnRoad = true;
+        p.s = 6 + Math.random() * Math.max(1, court.len - 12);
+        p.dir = Math.random() < 0.5 ? 1 : -1;
+        p.side = 1;
+        let q = spot(court, p.s, 1, Q1);
+        if (!validSpot(q.x, q.z)) { p.side = -1; q = spot(court, p.s, -1, Q1); }
+        p.x = q.x; p.z = q.z; p.lastSeg = q.seg; p.mode = 'walk';
+        p.root.position.set(p.x, ground(p.x, p.z), p.z);
+        done = true;
+      }
+    }
+  }
+  { // round 9 phase 2: one pinned stroller on the Bench A frontage (houses v7 bench homes)
+    const benchA = (map.hillBenches || []).find((b) => (b.name || '').indexOf('Bench A') === 0);
+    if (benchA) {
+      const bx = benchA.layout[0] - 300, bz = benchA.layout[1] - 300;
+      let best = null, bd = 1e9;
+      for (const r of roads) {
+        for (let i = 0; i < r.pts.length - 1; i++) {
+          const ax = r.pts[i][0], az = r.pts[i][1], cx = r.pts[i + 1][0], cz = r.pts[i + 1][1];
+          const dx = cx - ax, dz = cz - az, L2 = dx * dx + dz * dz;
+          let t = L2 ? ((bx - ax) * dx + (bz - az) * dz) / L2 : 0; t = Math.max(0, Math.min(1, t));
+          const d = Math.hypot(ax + t * dx - bx, az + t * dz - bz);
+          if (d < bd) { bd = d; best = r; }
+        }
+      }
+      if (best) { // slice the contiguous pts run alongside the pad into a synthetic sub-road
+        const R = Math.max(benchA.w, benchA.h) / 2 + 14;
+        let bi = 0, bs = 1e9;
+        for (let i = 0; i < best.pts.length; i++) {
+          const d = Math.hypot(best.pts[i][0] - bx, best.pts[i][1] - bz);
+          if (d < bs) { bs = d; bi = i; }
+        }
+        let lo = bi, hi = bi;
+        while (lo > 0 && Math.hypot(best.pts[lo - 1][0] - bx, best.pts[lo - 1][1] - bz) < R) lo--;
+        while (hi < best.pts.length - 1 && Math.hypot(best.pts[hi + 1][0] - bx, best.pts[hi + 1][1] - bz) < R) hi++;
+        const pts = best.pts.slice(lo, hi + 1);
+        if (pts.length >= 2) {
+          const cum = [0];
+          for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+          const front = { pts, cum, w: best.w, cls: best.cls, len: cum[cum.length - 1] };
+          if (front.len > 25) {
+            let done = false;
+            for (const i of order) {
+              if (done) break;
+              if (peds[i].role !== 'wander' || peds[i].stayOnRoad) continue;
+              const p = peds[i];
+              p.road = front; p.stayOnRoad = true;
+              p.s = 4 + Math.random() * Math.max(1, front.len - 8);
+              p.dir = Math.random() < 0.5 ? 1 : -1;
+              p.side = 1;
+              let q = spot(front, p.s, 1, Q1);
+              if (!validSpot(q.x, q.z)) { p.side = -1; q = spot(front, p.s, -1, Q1); }
+              p.x = q.x; p.z = q.z; p.lastSeg = q.seg; p.mode = 'walk';
+              p.root.position.set(p.x, ground(p.x, p.z), p.z);
+              done = true;
+            }
+          }
+        }
+      }
+    }
+  }
   { // round 7: 1-2 wanderers become cafe lingerers at the new sets
     let want = Math.min(CAFE_SETS.length, 1 + (Math.random() < 0.5 ? 1 : 0));
     for (const i of order) {
       if (want <= 0) break;
-      if (peds[i].role !== 'wander') continue;
+      if (peds[i].stayOnRoad) continue; // stayOnRoad: court/E1/frontage walkers keep their street
+      if (peds[i].role !== 'wander' && peds[i].role !== 'stroll') continue; // wander pool first, a stroller if it is empty
+      if (peds[i].role === 'stroll' && peds.some((q) => q.role === 'wander' && !q.stayOnRoad)) continue;
       assignCafe(peds[i], CAFE_SETS[Math.floor(Math.random() * CAFE_SETS.length)]); want--;
+    }
+  }
+  { // round 9: 1-2 tourists at the Hillcrest viewpoint turnout (v11 pad, v14 terrain)
+    if (map.turnout) {
+      const sx = map.turnout.layout[0] - 300 + 8.3; // just east of the wheel-stop curb
+      const sz = map.turnout.layout[1] - 300;
+      let want = 1 + (Math.random() < 0.5 ? 1 : 0);
+      for (const i of order) {
+        if (want <= 0) break;
+        if (peds[i].stayOnRoad) continue; // court/E1 walkers keep their street
+        if (peds[i].role !== 'wander' && peds[i].role !== 'stroll') continue; // wander pool first, a stroller if it is empty
+        if (peds[i].role === 'stroll' && peds.some((q) => q.role === 'wander' && !q.stayOnRoad)) continue;
+        assignTourist(peds[i], sx, sz); want--;
+      }
     }
   }
 
@@ -719,11 +824,73 @@ export function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots =
     }
   }
 
+  // ---- round 9: viewpoint tourists - stand at the turnout, face the view, photo pose ----
+  function assignTourist(p, sx, sz) {
+    p.role = 'tourist'; p.road = null; // viewpoint life is road-free; update() handles tourists first
+    p.a = { x: sx + (Math.random() - 0.5) * 1.4, z: sz + (Math.random() - 0.5) * 4.5 };
+    if (isRoad(p.a.x, p.a.z)) p.a.x = sx - 1.2; // never on the pad
+    p.x = p.a.x; p.z = p.a.z;
+    p.mode = 'tourGaze'; p.idleT = 6 + Math.random() * 8;
+    p.root.rotation.y = -Math.PI / 2 + (Math.random() - 0.5) * 0.3; // facing the view (+x)
+    p.root.position.set(p.x, ground(p.x, p.z), p.z);
+  }
+
+  function touristPick(p) { // next idle mode after a gaze/photo spell
+    const r = Math.random();
+    if (r < 0.55) { p.mode = 'tourGaze'; p.idleT = 6 + Math.random() * 8; p.root.rotation.y = -Math.PI / 2 + (Math.random() - 0.5) * 0.3; }
+    else if (r < 0.85) { p.mode = 'tourPhoto'; p.idleT = 3 + Math.random() * 3; } // phone up for the skyline shot
+    else {
+      p.mode = 'tourShift';
+      p.wx = p.a.x + (Math.random() - 0.5) * 2.4;
+      p.wz = p.a.z + (Math.random() - 0.5) * 3.6;
+      if (isRoad(p.wx, p.wz)) { p.mode = 'tourGaze'; p.idleT = 4 + Math.random() * 4; }
+    }
+  }
+
+  function updateTourist(p, dt, dPlayer) {
+    if (p.mode === 'tourShift') { // small shuffle near the anchor, never onto the pad
+      const dx = p.wx - p.x, dz = p.wz - p.z, d = Math.hypot(dx, dz);
+      const step = p.speed * 0.5 * dt;
+      if (d <= step + 0.05) { p.mode = 'tourGaze'; p.idleT = 5 + Math.random() * 7; p.root.rotation.y = -Math.PI / 2; }
+      else {
+        const nx = p.x + dx / d * step, nz = p.z + dz / d * step;
+        if (isRoad(nx, nz)) { p.mode = 'tourGaze'; p.idleT = 4 + Math.random() * 4; }
+        else { p.x = nx; p.z = nz; }
+      }
+      if (p.mode === 'tourShift') p.root.rotation.y = -Math.atan2(dx, -dz);
+      if (dPlayer < ANIM_NEAR) {
+        p.phase += dt * p.speed * 3.6;
+        const sw = Math.sin(p.phase);
+        p.legL.rotation.x = sw * 0.55; p.legR.rotation.x = -sw * 0.55;
+        p.armL.rotation.x = -sw * 0.4; p.armR.rotation.x = sw * 0.4;
+      }
+    } else {
+      p.idleT -= dt;
+      if (dPlayer < ANIM_NEAR) {
+        p.legL.rotation.x *= 0.8; p.legR.rotation.x *= 0.8;
+        if (p.mode === 'tourPhoto') { // both arms up with the phone
+          p.armL.rotation.x = -2.35; p.armR.rotation.x = -2.35;
+        } else { // tourGaze: at ease, watching the city
+          p.armL.rotation.x = 0.14; p.armR.rotation.x = -0.14;
+        }
+        p.body.position.y *= 0.8;
+      }
+      if (p.idleT <= 0) touristPick(p);
+    }
+    p.root.position.set(p.x, ground(p.x, p.z), p.z);
+  }
+
   function update(dt) {
     if (!Number.isFinite(dt) || dt <= 0) return;
     dt = Math.min(dt, 0.05);
     const pp = (getPlayerPos && getPlayerPos()) || { x: 0, z: 0 }; // once per frame
     for (const p of peds) {
+      if (p.role === 'tourist') { // round 9: viewpoint tourists skip all road logic (incl. respawn)
+        const dP = Math.hypot(p.x - pp.x, p.z - pp.z);
+        p.root.visible = dP <= HIDE_FAR;
+        if (p.root.visible) updateTourist(p, dt, dP);
+        continue;
+      }
       if (p.role === 'cafe') { // round 7: cafe lingerers skip all road logic (incl. respawn)
         const dP = Math.hypot(p.x - pp.x, p.z - pp.z);
         p.root.visible = dP <= HIDE_FAR;
@@ -747,6 +914,7 @@ export function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots =
       if (dPlayer > HIDE_FAR) { // too far: hide, try to respawn near the player
         p.root.visible = false;
         p.mode = 'walk';
+        if (p.stayOnRoad) continue; // round 8: court walkers keep their court (visibility only)
         p.respawnCd -= dt;
         if (p.respawnCd <= 0) {
           p.respawnCd = 2;
@@ -830,7 +998,7 @@ export function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots =
       p.s += p.dir * v * dt;
       p.turnCd -= dt;
       // turn at junctions: crossed a transfer point -> maybe switch to the crossing road
-      if (p.turnCd <= 0) {
+      if (p.turnCd <= 0 && !p.stayOnRoad) { // round 8: court walkers never leave their court
         for (const tr of p.road.transfers) {
           const crossed = p.dir > 0 ? (sOld < tr.s && p.s >= tr.s) : (sOld > tr.s && p.s <= tr.s);
           if (crossed && Math.random() < 0.3) {
@@ -920,4 +1088,4 @@ export function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots =
   }
 
   return { update, count: peds.length };
-  }
+}
