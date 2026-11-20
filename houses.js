@@ -2,6 +2,10 @@
 // houses.js — Los Santos, standing work 2: "every house on every road".
 // Builder module: this file ONLY. No other file is edited.
 //
+// v7 (round 7, map v14, Nov 20 2026): deliberate Hillcrest bench development.
+// Round 7: 252 houses, 57,496 tris, 14 draw calls on map v14 (test-place7.mjs 69/69).
+// Bench rows: A 3, F 1, B 2, E 1 = 7 Grove-Street bungalows on the hillBenches pads.
+//
 // v6 (round 6, map v10, Nov 20 2026): sparse-road infill + Vinewood two-storey.
 //
 // v5 (round 5, map v9, Nov 20 2026): downtown residential character + alley awareness.
@@ -29,7 +33,22 @@
 //    every candidate there is correctly rejected by the 4 m lot-clearance rule.
 //  - LOTS_L re-verified byte-identical between v7b and v7c (still current).
 //
-// v6 (this version):
+// v7 (this version):
+//  - BENCH DEVELOPMENT: map.hillBenches (v14) are flat buildable terraces beside
+//    the Hillcrest switchbacks. They are developed BY DESIGN before the road
+//    walks: Grove-Street bungalow rows (the 'south' archetype pool - zoned by
+//    LOCATION, since the switchbacks read as winding and would attract villas),
+//    each home facing its nearest road point. Bench A takes a row of up to 4,
+//    B two, E/F one each; every placement goes through validFootprint and
+//    map.addBlock like any road-side lot. Slots blocked by an existing
+//    addBlock footprint (props/vehicles/lots) are skipped and reported in
+//    stats.benches[].displaced - nothing is displaced silently.
+//  - HILLCREST CAP: the hillcrest zone tops out at 14 homes total (bench +
+//    road-side), per the round-7 brief's 10-14 range.
+//  - Bench homes skip front-yard features: the pads are 10 m deep, a hedge or
+//    tree would hang off the terrace apron.
+//
+// v6:
 //  - NEW ARCHETYPE: two-storey suburban with a rounded-railed balcony (Vinewood-
 //    hills feel), ~220 tris/instance (cap 3.5k); primary pick on the hillcrest climb.
 //  - SPARSE-ROAD INFILL: placement walks roads round-robin (was: one road at a
@@ -669,6 +688,9 @@ export function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disa
 
   // ---- placement pass ----
   let count = 0;
+  let hillCount = 0;       // v7: hillcrest-zone total (bench + road-side)
+  let benchCount = 0;      // v7: bench homes are EXTRA, not part of the v5-phase count
+  const HILL_CAP = 14;     // v7 brief: Hillcrest ends at 10-14 homes
   // Priority order: signature streets first (Hillcrest winding climb, Southside lanes,
   // Palm Court street), then the general grid, so the MAX_HOUSES cap trims generic
   // blocks rather than starving the streets the brief names.
@@ -695,6 +717,81 @@ export function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disa
   // joins phase A automatically.
   const PHASE_A = 218; // the v5 build count: phase A reproduces it 1:1
     const queues = roads.map((e) => ({ road: e.r, cls: e.cls, walk: walker(e.r.pts), s: 9, fine: false }));
+
+  // ---- v7: deliberate development of the map.hillBenches pads ----
+  // Runs before the road walks so the rows take the pads by design; the
+  // hillcrest walk then fills only the road-side gaps (2 m spacing keeps the
+  // two apart) up to the zone cap.
+  const benchStats = [];
+  function nearestRoadPt(x, z) { // nearest point on any non-alley roadPath (world)
+    let best = null;
+    for (const r of map.roadPaths) {
+      if (r.cls === 'alley') continue;
+      for (let i = 0; i < r.pts.length - 1; i++) {
+        const ax = lw(r.pts[i][0]), az = lz(r.pts[i][1]), bx = lw(r.pts[i + 1][0]), bz = lz(r.pts[i + 1][1]);
+        const dx = bx - ax, dz = bz - az, L2 = dx * dx + dz * dz;
+        let t = L2 ? ((x - ax) * dx + (z - az) * dz) / L2 : 0;
+        t = Math.min(1, Math.max(0, t));
+        const px = ax + t * dx, pz = az + t * dz;
+        const d = Math.hypot(px - x, pz - z);
+        if (!best || d < best.d) best = { x: px, z: pz, d };
+      }
+    }
+    return best;
+  }
+  function placeBenchHome(cx, cz, arch, yaw, benchName) {
+    const bb = validFootprint(cx, cz, arch.w, arch.d, yaw);
+    if (!bb) return null;
+    const jit = houseJitter(count);            // seeded by the lot index, same as road-side
+    if (jit.variant === 0) {                   // trim garnish stays (it is ON the house)
+      arch.parts.push(P(box(1.6, 0.28, 0.36), 'wall3', [arch.w * 0.2, 0.86, arch.d / 2 + 0.2]));
+    } else {
+      arch.parts.push(P(cyl(0.35, 0.35, 0.1, 6), 'trim', [arch.w * 0.2, arch.h - 0.5, arch.d / 2 + 0.05], { rx: Math.PI / 2 }));
+    }
+    const gy = map.groundAt(cx, cz);
+    bakeTris = 0;
+    for (const part of arch.parts) bakePart(part, cx, gy - 0.3, cz, yaw, jit);
+    map.addBlock(bb.minX, bb.minZ, bb.maxX, bb.maxZ);
+    placed.push(bb);
+    placements.push({ x: cx, z: cz, y: gy, yaw, w: arch.w, d: arch.d, archetype: arch.kind, zone: 'hillcrest',
+      corner: false, variant: jit.variant, yard: null, tree: false, rearFence: null,
+      tris: Math.round(bakeTris), bench: benchName }); // pads are 10 m deep: no yard/tree off the terrace
+    count++;
+    hillCount++;
+    benchCount++;
+    return bb;
+  }
+  (function developBenches() {
+    for (const b of (map.hillBenches || [])) {
+      const cx = lw(b.layout[0]), cz = lz(b.layout[1]);
+      const alongX = b.w >= b.h;               // pack the row along the pad's long axis
+      const lo = (alongX ? cx - b.w / 2 : cz - b.h / 2), hi = (alongX ? cx + b.w / 2 : cz + b.h / 2);
+      const short = b.name.match(/Bench ([A-F])/) ? b.name.match(/Bench ([A-F])/)[1] : b.name;
+      const target = short === 'A' ? 4 : short === 'B' ? 2 : 1; // brief: A 3-4, B 1-2, E/F 1-2
+      const st = { name: b.name, placed: 0, displaced: [] };
+      let cursor = lo + 1, probes = 0;         // 1 m inset from the pad edge
+      while (st.placed < target && probes < 40 && count < MAX_HOUSES && hillCount < HILL_CAP) {
+        probes++;
+        const h0 = houseHash(count + 1);       // own deterministic stream: the road walks keep their rng
+        const pool = [archBungalowHip, archBungalowBarrel, archCottageDome]; // Grove-Street stock
+        const f0 = pool[h0 % 3];
+        const arch = f0(WALLS[(h0 >>> 3) % WALLS.length], ROOFS[(h0 >>> 5) % ROOFS.length]);
+        arch.kind = f0.name.replace('arch', '').toLowerCase();
+        const half = Math.max(arch.w, arch.d) / 2;
+        if (cursor + half * 2 > hi - 1) break;
+        const hx = alongX ? cursor + half : cx, hz = alongX ? cz : cursor + half;
+        const rp = nearestRoadPt(hx, hz);
+        let nx = hx - rp.x, nz = hz - rp.z;
+        const nl = Math.hypot(nx, nz) || 1; nx /= nl; nz /= nl;
+        const yaw = Math.atan2(-nx, -nz);      // local +Z (front) faces the street
+        if (map.isBlocked && map.isBlocked(hx, hz, half)) // an existing addBlock footprint (prop/vehicle/lot)
+          st.displaced.push([+hx.toFixed(1), +hz.toFixed(1)]); // reported, never built over
+        if (placeBenchHome(hx, hz, arch, yaw, b.name)) { st.placed++; cursor += half * 2 + 2.5; }
+        else cursor += 3;                      // tight/blocked spot: probe 3 m down the row
+      }
+      benchStats.push(st);
+    }
+  })();
   function step(q) {
       const road = q.road, cls = q.cls, walk = q.walk;
       const baseOff = road.w / 2 + 4.5;            // front wall 8-8.5 m off centerline (w 7..8)
@@ -705,7 +802,7 @@ export function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disa
         const nx = -p.uz * side, nz = p.ux * side; // unit normal, world coords
         const zone = zoneAt(p.x + nx * 12, p.z + nz * 12, cls);
         const isCorner = zone === 'south' && nearJunction(p.x + C, p.z + C, 20); // layout coords
-        const lean = count >= PHASE_A ? (cls === 'hillcrest' ? 2 : 1) : 0; // v6: growth phase = lean stock
+        const lean = count - benchCount >= PHASE_A ? (cls === 'hillcrest' ? 2 : 1) : 0; // v6: growth phase = lean stock
         let arch = pickArch(zone, isCorner, lean);
         // v5: downtown-fringe lots (within 40 m of the tower core rect) can become
         // apartment blocks instead of suburban stock; cap 12.
@@ -730,6 +827,7 @@ export function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disa
           bb = validFootprint(cx, cz, arch.w, arch.d, yaw);
         }
         if (!bb) continue;
+        if (zone === 'hillcrest' && hillCount >= HILL_CAP) continue; // v7: cap AFTER the rng-consuming checks so other roads keep the v6 stream
         if (arch.kind === 'apartment') apartments++;
         // v5: rear fence when the footprint backs onto an alley (<= 4 m to its centerline)
         let rearFence = null;
@@ -769,14 +867,15 @@ export function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disa
         placements.push({ x: cx, z: cz, y: gy, yaw, w: arch.w, d: arch.d, archetype: arch.kind, zone, corner: isCorner,
           variant: jit.variant, yard, tree: hasTree, rearFence, tris: Math.round(bakeTris) });
         count++;
+        if (zone === 'hillcrest') hillCount++; // v7
         if (arch.w > widest) widest = arch.w;
       }
       // phase A: v5's exact advance. Phase B (fine): jump past a placed house,
       // else probe forward 4 m so kerbs/lots/junctions don't skip whole pockets.
       q.s += !q.fine ? widest + 2.5 : (widest > 9 ? widest + 2.5 : 4);
   }
-  for (const q of queues)                          // phase A: v5 sequential walk
-    while (q.s < q.walk.total - 9 && count < PHASE_A) step(q);
+  for (const q of queues)                          // phase A: v5 sequential walk (bench homes don't count toward it)
+    while (q.s < q.walk.total - 9 && count - benchCount < PHASE_A) step(q);
   for (const q of queues) if (q.cls === 'hillcrest') { q.s = 9; } // fine re-walk from the top
   for (const q of queues) if (q.s < q.walk.total - 9) q.fine = true;
   let more = true;                                 // phase B: round-robin growth
@@ -817,17 +916,61 @@ export function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disa
       frontage: cls === 'skip' ? 0 : Math.min(1, +(frontLen / len).toFixed(3)) };
   });
 
-  // ---- one merged mesh per material ----
+  // HOUSES-CHUNK + FOG-CULL (gfxfps round 7): one town-spanning merged mesh per material
+  // meant a map-sized bounding sphere, so frustum culling never dropped a house triangle
+  // and 21,094 of the 56,685 house tris sat beyond fog far (260 m), drawn as pure fog
+  // colour (bench-measured at spawn). Now each material bucket bakes into 100 m
+  // grid-cell chunks (frustum culls out-of-frame cells), and each chunk sits in a
+  // THREE.LOD whose far level is an empty Object3D at FOG_CULL_DIST + cell bounding
+  // radius: beyond that distance every surface of the chunk is past fog saturation,
+  // i.e. mathematically invisible. Buckets under MIN_TRIS stay whole (their culling
+  // gain is not worth the extra draws). Same vertices/materials: zero visual change.
   let triTotal = 0;
   const group = new THREE.Group(); group.name = 'houses';
-  for (const [mk, b] of buckets) {
+  const HOUSE_CHUNK_CELL = 100;
+  const HOUSE_CHUNK_MIN_TRIS = 2500;
+  const FOG_CULL_DIST = 260; // scene fog far (main.js scene.fog = 70..260); past this a surface is 100% fog colour
+  const bakeWhole = (b, mat) => {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(b.pos, 3));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(b.norm, 3));
-    g.setAttribute('color', new THREE.Float32BufferAttribute(b.col, 3)); // per-house tint jitter
-    const mesh = new THREE.Mesh(g, MATS[mk]);
+    g.setAttribute('color', new THREE.Float32BufferAttribute(b.col, 3));
+    const mesh = new THREE.Mesh(g, mat);
     mesh.matrixAutoUpdate = false;
     group.add(mesh);
+  };
+  const bakeChunked = (b, mat, mk) => {
+    if (b.pos.length / 9 < HOUSE_CHUNK_MIN_TRIS) { bakeWhole(b, mat); return; }
+    const cells = new Map();
+    for (let t = 0; t < b.pos.length; t += 9) { // non-indexed triangle soup: 9 floats per tri
+      const cx = (b.pos[t] + b.pos[t + 3] + b.pos[t + 6]) / 3;
+      const cz = (b.pos[t + 2] + b.pos[t + 5] + b.pos[t + 8]) / 3;
+      const key = Math.floor(cx / HOUSE_CHUNK_CELL) + ':' + Math.floor(cz / HOUSE_CHUNK_CELL);
+      let c = cells.get(key);
+      if (!c) { c = { pos: [], norm: [], col: [] }; cells.set(key, c); }
+      for (let k = 0; k < 9; k++) { c.pos.push(b.pos[t + k]); c.norm.push(b.norm[t + k]); c.col.push(b.col[t + k]); }
+    }
+    for (const [key, c] of cells) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(c.pos, 3));
+      g.setAttribute('normal', new THREE.Float32BufferAttribute(c.norm, 3));
+      g.setAttribute('color', new THREE.Float32BufferAttribute(c.col, 3));
+      g.computeBoundingSphere();
+      const ctr = g.boundingSphere.center, r = g.boundingSphere.radius;
+      const mesh = new THREE.Mesh(g, mat);
+      mesh.name = 'house:' + mk + ':' + key;
+      mesh.position.set(-ctr.x, -ctr.y, -ctr.z); // cancel: geometry is world-baked
+      mesh.updateMatrix();
+      mesh.matrixAutoUpdate = false;
+      const lod = new THREE.LOD();
+      lod.position.set(ctr.x, ctr.y, ctr.z);
+      lod.addLevel(mesh, 0);
+      lod.addLevel(new THREE.Object3D(), FOG_CULL_DIST + r); // nearest surface past fog far -> invisible
+      group.add(lod);
+    }
+  };
+  for (const [mk, b] of buckets) {
+    bakeChunked(b, MATS[mk], mk);
     triTotal += b.pos.length / 9;
   }
   scene.add(group);
@@ -839,7 +982,7 @@ export function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disa
     update(dt) {}, // static district: nothing per-frame (dt unused)
     count,
     placements,
-    stats: { drawCalls: buckets.size, triangles: Math.round(triTotal), trisByArch, apartments, coverage },
+    stats: { drawCalls: buckets.size, triangles: Math.round(triTotal), trisByArch, apartments, coverage, benches: benchStats },
   };
 }
 // main.js imports createHouses; buildHouses kept as an alias for the brief's naming.
