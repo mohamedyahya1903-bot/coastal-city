@@ -58,6 +58,20 @@ import * as THREE from 'three';
 // centerline paths, so curved/winding/diagonal streets are possible. First new layout: winding
 // Hillcrest Road climb (Palm Court -> Bayshore Highway) + denser Southside residential streets.
 // Taxi stops, spawns and gameplay anchors unchanged and still road-safe.
+// v7b (builder "roads", Nov 20, Phase A continued - standing work 1):
+//  - Boardwalk is now a curved coastal boulevard hugging the bay (Vespucci/Del-Perro-style arc):
+//    bulges toward the water mid-bay (layout x down to ~119.5), comes back to x=130 at the pier
+//    so the Pelican Pier stop (132.5,300) stays 2.5 m off centerline and the pier stays walkable.
+//  - East-west streets extended west to meet the arc (H200 to x=112, H280 to x=118, H360/H440 to x=124).
+//  - New diagonal downtown avenue: boardwalk (132,336) -> V200/H200 corner (204,200), angled
+//    skyline-street through the shop strip. Shop 2 moved to (160,390)-(186,412) to make room
+//    (LOTS_L pad + building() call moved together; nine-lot tower district untouched).
+//  - Bayshore Highway now a gentle curve sweeping north around the eastern hills (y 80 -> 66 mid
+//    -> 84 east). Ramp (500,80) and Hillcrest junction (580,84) stay connected; Bayshore Fuel
+//    stop (480,84.5) still 4.5 m off centerline (hwy w=14). North tips of V200/V280/V360/V440
+//    extended to meet the curved highway centerline.
+//  - Two short Southside connectors: x=310 (H440 -> south edge) and x=558 (H200 -> H280).
+// Coordinator notes: none - single-file change, map API unchanged.
 // v3 (owner via lead Nov 19): real elevation - analytic terrain, hills east, rise north,
 // roads + highway draped on it (grades verified <=9%, drivable at 19 m/s), building lots
 // flattened into pads, ground = one subdivided vertex-colored mesh. groundAt = real height.
@@ -87,8 +101,8 @@ function createMap({ THREE, scene, GLTFLoader }) {
     ['Tower 1',212,212,244,244,40],['Tower 2',252,212,276,240,30],['Tower 3',212,252,240,276,46],
     ['Tower 4',252,252,276,276,24],['Tower 5',292,212,324,244,34],['Tower 6',292,252,324,276,27],
     ['Office 1',212,292,244,324,20],['Office 2',252,292,276,324,17],['Office 3',292,292,324,324,20],
-    ['Shop 1',160,210,186,232,8],['Shop 2',160,240,186,262,8],['Cafe',160,296,186,318,8],
-    ['Shop 3',160,330,186,352,8],['Shop 4',160,360,186,382,8],
+    ['Shop 1',160,210,186,232,8],['Shop 2',160,392,186,414,8],['Cafe',160,296,186,318,8],
+    ['Shop 3',160,330,186,352,8],['Shop 4',160,366,186,388,8],
     ['House 1',460,220,480,238,5],['House 2',495,220,515,238,5],['House 3',530,220,550,238,5],
     ['House 4',460,300,480,318,5],['House 5',530,300,550,318,5],
     ['House 6',460,380,480,398,5],['House 7',495,380,515,398,5],['House 8',530,380,550,398,5],
@@ -139,40 +153,53 @@ function createMap({ THREE, scene, GLTFLoader }) {
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
     g.setIndex(idx); g.computeVertexNormals();
-    scene.add(new THREE.Mesh(g, new THREE.MeshLambertMaterial({ vertexColors: true })));
+    const groundMesh = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ vertexColors: true })); scene.add(groundMesh);
   }
 
   // Pelican Pier: walkable deck out over the water
   const pier = new THREE.Mesh(new THREE.BoxGeometry(102, 0.4, 16), matPier);
   pier.position.set(lw(71), 0.2, lz(300)); scene.add(pier);
-  for (let px = 24; px <= 116; px += 23) { // pier posts
-    for (const pz of [293, 307]) {
-      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.6, 2.2, 8), matPier);
-      post.position.set(lw(px), -0.7, lz(pz)); scene.add(post);
-    }
+  { // P3b (gfxfps v1): pier posts as one InstancedMesh (10 draws -> 1)
+    const postGeo = new THREE.CylinderGeometry(0.5, 0.6, 2.2, 8);
+    const postPos = [];
+    for (let px = 24; px <= 116; px += 23) for (const pz of [293, 307]) postPos.push([lw(px), lz(pz)]);
+    const posts = new THREE.InstancedMesh(postGeo, matPier, postPos.length);
+    const pm4 = new THREE.Matrix4();
+    postPos.forEach(([x, z], i) => { pm4.setPosition(x, -0.7, z); posts.setMatrixAt(i, pm4); });
+    posts.instanceMatrix.needsUpdate = true;
+    scene.add(posts);
   }
 
   // ---- roads (v7: centerline paths - curved/winding/diagonal streets now possible) ----
   // Every street is a path of layout-coord points [[x,y],...]; straight streets use 2 points.
   const ROADS = [
-    { pts: [[130,80],[130,520]], w: 8 },  // Boardwalk
-    { pts: [[200,80],[200,480]], w: 8 },
-    { pts: [[280,80],[280,480]], w: 8 },
-    { pts: [[360,80],[360,480]], w: 8 },
-    { pts: [[440,80],[440,480]], w: 8 },
+    // v7b: Boardwalk - curved coastal boulevard hugging the bay (Vespucci/Del-Perro-style arc).
+    // On land (x >= ~112), x=130 at the pier so the Pelican Pier stop stays 2.5 m off centerline.
+    { pts: [[134,78],[132,91.5],[130,105],[127.5,120],[125,135],[123,150],[121,165],[120.3,180],[119.5,195],[119.8,210],[120,225],[121,240],[122,255],[123.5,266.5],[125,278],[128,291],[130,300],[131,314],[132,332],[132.2,343.5],[132.3,355],[132.4,367.5],[132.5,380],[132.7,392.5],[132.8,405],[132.9,417.5],[133,430],[133.2,442.5],[133.4,455],[133.6,467.5],[133.8,480],[133.9,490],[134,500],[134,520]], w: 8 },
+    { pts: [[200,74],[200,480]], w: 8 },  // v7b: north tip extended to the curved highway
+    { pts: [[280,69],[280,480]], w: 8 },  // v7b: north tip extended to the curved highway
+    { pts: [[360,65],[360,480]], w: 8 },  // v7b: north tip extended to the curved highway
+    { pts: [[440,70],[440,480]], w: 8 },  // v7b: north tip extended to the curved highway
     { pts: [[500,80],[500,200]], w: 10 }, // highway ramp
-    { pts: [[130,200],[560,200]], w: 8 },
-    { pts: [[130,280],[560,280]], w: 8 },
-    { pts: [[130,360],[560,360]], w: 8 },
-    { pts: [[130,440],[560,440]], w: 8 },
+    { pts: [[112,200],[560,200]], w: 8 }, // v7b: west end extended to meet the boardwalk arc
+    { pts: [[118,280],[560,280]], w: 8 }, // v7b: west end extended to meet the boardwalk arc
+    { pts: [[124,360],[560,360]], w: 8 }, // v7b: west end extended to meet the boardwalk arc
+    { pts: [[124,440],[560,440]], w: 8 }, // v7b: west end extended to meet the boardwalk arc
+    // v7b: diagonal downtown avenue (angled skyline-street), boardwalk -> V200/H200 corner
+    { pts: [[132,336],[139.5,323.5],[147,311],[152,300],[157,289],[163.5,280.5],[170,272],[176,263],[182,254],[187,246],[192,238],[195.5,230],[199,222],[203,210],[204,200]], w: 8 },
     // v7 (Phase A, standing work 1): Southside - denser South-Los-Santos-style residential blocks
     { pts: [[245,440],[245,520]], w: 7 },
     { pts: [[375,440],[375,520]], w: 7 },
     { pts: [[130,500],[440,500]], w: 7 },
+    // v7b: short Southside connectors for more varied block sizes
+    { pts: [[310,440],[310,520]], w: 7 },
+    { pts: [[558,200],[558,280]], w: 7 },
     // v7 (Phase A): Hillcrest Road - winding Vinewood-Hills-style climb, Palm Court -> highway
     { pts: [[500,200],[545,175],[580,140],[588,100],[580,84]], w: 7 },
   ];
-  const HWY = { pts: [[126,80],[600,80]], w: 14 }; // Bayshore Highway
+  // v7b: Bayshore Highway - gentle curve sweeping north around the eastern hills; still meets
+  // the ramp (x=500), the Hillcrest junction (580,84) and the Bayshore Fuel stop (480,84.5).
+  const HWY = { pts: [[126,80],[144.5,79],[163,78],[181.5,77],[200,76],[218,74.8],[236,73.6],[254,72.4],[272,71.2],[290,70],[308,69.2],[326,68.4],[344,67.6],[362,66.8],[380,66],[395,67.5],[410,69],[425,70.5],[440,72],[453.3,74.7],[466.7,77.3],[480,80],[495,81],[510,82],[525,83],[540,84],[560,84],[580,84]], w: 14 };
   const DRIVES = [{ pts: [[497,284],[497,304]], w: 6 }]; // bungalow driveway (drivable, no dashes)
 
   // roads + highway drape the terrain: path pieces subdivided to <=step m, offset by halfW,
@@ -214,7 +241,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
   for (const r of ROADS) strip(r, matLine, 0.2, 0.08, 8, 3, 12);
   strip(HWY, matHwyLn, 0.2, 0.09, 8, 4, 16);
   { // merge strip segments into one mesh per material
-    const byMat = new Map();
+    const byMat = new Map(); const stripMeshes = [];
     for (const s of strips) {
       if (!byMat.has(s.mat)) byMat.set(s.mat, []);
       byMat.get(s.mat).push(...s.qs);
@@ -235,7 +262,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
       g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
       g.setAttribute('normal', new THREE.Float32BufferAttribute(norm, 3));
       g.setIndex(idx);
-      scene.add(new THREE.Mesh(g, mat));
+      const sm = new THREE.Mesh(g, mat); scene.add(sm); stripMeshes.push(sm);
     }
   }
 
@@ -260,13 +287,41 @@ function createMap({ THREE, scene, GLTFLoader }) {
         g.beginPath(); g.roundRect(x0, y0, ww, wh * 0.35, 2); g.fill();
       }
     }
+    // F3a (gfxfps v1): sparse warm-lit windows on tall kinds (~9%, deterministic)
+    if (kind === 'tower' || kind === 'office' || kind === 'apartment') {
+      for (let f = 0; f < floors; f++) {
+        for (let c = 0; c < cols; c++) {
+          if ((f * 7 + c * 13 + kind.length) % 11 !== 0) continue;
+          const x0 = c * wx + wx * 0.22, y0 = f * wy + wy * 0.2, ww = wx * 0.56, wh = wy * 0.52;
+          g.fillStyle = 'rgba(255,214,140,0.9)';
+          g.beginPath(); g.roundRect(x0, y0, ww, wh, 2); g.fill();
+          g.fillStyle = 'rgba(255,236,190,0.9)';
+          g.beginPath(); g.roundRect(x0, y0 + wh * 0.55, ww, wh * 0.45, 2); g.fill();
+        }
+      }
+    }
     // ground floor: entrance door + lintel
     const dw = Math.min(cw * 0.22, 26), dx = (cw - dw) / 2, dh = Math.min(wy * 0.9, 30);
     g.fillStyle = '#2c343c'; g.fillRect(dx - 2, ch - dh - 2, dw + 4, dh + 2);
     g.fillStyle = '#4a3828'; g.fillRect(dx, ch - dh, dw, dh);
     g.fillStyle = 'rgba(160,210,235,0.5)'; g.fillRect(dx + 2, ch - dh + 2, dw - 4, dh * 0.4);
+    // F3b (gfxfps v1): baked base darkening, grounds the building (not a shadow map)
+    const aoH = Math.min(44, ch * 0.18);
+    const ao = g.createLinearGradient(0, ch, 0, ch - aoH);
+    ao.addColorStop(0, 'rgba(16,20,26,0.5)');
+    ao.addColorStop(1, 'rgba(16,20,26,0)');
+    g.fillStyle = ao; g.fillRect(0, ch - aoH, cw, aoH);
     const t = new THREE.CanvasTexture(cv);
     t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  }
+
+  // P4 (gfxfps v1): same-kind buildings share facade textures in 2 m buckets
+  const facadeCache = new Map();
+  function facadeTexCached(w, h, kind) {
+    const key = kind + '|' + Math.round(w / 2) * 2 + 'x' + Math.round(h / 2) * 2;
+    let t = facadeCache.get(key);
+    if (!t) { t = facadeTex(w, h, kind); facadeCache.set(key, t); }
     return t;
   }
 
@@ -283,8 +338,13 @@ function createMap({ THREE, scene, GLTFLoader }) {
     const cx = lw((x0 + x1) / 2), cz = lz((y0 + y1) / 2);
     const gy = terrainH(cx, cz) - 0.6; // lot pad height, sunk 0.6 as a foundation
     const g = new THREE.Group(); g.name = 'bld:' + name;
-    const side = new THREE.MeshLambertMaterial({ map: facadeTex(Math.max(w, d), h, kind) });
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), [side, side, roofMat, roofMat, side, side]);
+    const side = new THREE.MeshLambertMaterial({ map: facadeTexCached(Math.max(w, d), h, kind) }); // P4
+    const geo = new THREE.BoxGeometry(w, h, d); // P3a (gfxfps v1): regroup 6 face-groups -> 3 draws
+    geo.clearGroups();
+    geo.addGroup(0, 12, 0);  // px, nx -> facade
+    geo.addGroup(12, 12, 1); // py, ny -> roof slab
+    geo.addGroup(24, 12, 0); // pz, nz -> facade
+    const m = new THREE.Mesh(geo, [side, roofMat]);
     m.position.set(cx, gy + h / 2, cz); g.add(m);
     // roof trim slab (cornice)
     const trim = new THREE.Mesh(new THREE.BoxGeometry(w + 0.8, 0.6, d + 0.8), trimMat);
@@ -329,10 +389,10 @@ function createMap({ THREE, scene, GLTFLoader }) {
   building('Office 3', 292, 292, 324, 324, 6, 'office', 'n', null);
   // Boardwalk shops (entrances face west to the boardwalk), red awnings
   building('Shop 1', 160, 210, 186, 232, 2, 'shop', 'w', 'awning');
-  building('Shop 2', 160, 240, 186, 262, 2, 'shop', 'w', 'awning');
+  building('Shop 2', 160, 392, 186, 414, 2, 'shop', 'w', 'awning'); // v7b: moved south (was y 240-262) to make room for the diagonal avenue
   building('Cafe',   160, 296, 186, 318, 2, 'shop', 'w', 'awning'); // nudged south of H280 (v4)
   building('Shop 3', 160, 330, 186, 352, 2, 'shop', 'w', 'awning');
-  building('Shop 4', 160, 360, 186, 382, 2, 'shop', 'w', 'awning');
+  building('Shop 4', 160, 366, 186, 388, 2, 'shop', 'w', 'awning'); // v7b: nudged 6 m south - in v7a it overlapped H360 (y 356-364) and blocked the street
   // Palm Court houses (hip roofs)
   building('House 1', 460, 220, 480, 238, 1, 'house', 'n', 'hip');
   building('House 2', 495, 220, 515, 238, 1, 'house', 'n', 'hip');
@@ -352,10 +412,38 @@ function createMap({ THREE, scene, GLTFLoader }) {
     const gy = terrainH(cx, cz);
     const can = new THREE.Mesh(new THREE.CylinderGeometry(14, 14, 0.5, 16), trimMat);
     can.position.set(cx, gy + 5.2, cz); scene.add(can);
-    for (const dx of [-9, 9]) {
-      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 5, 8), pentMat);
-      post.position.set(cx + dx, gy + 2.5, cz); scene.add(post);
+    { // P3b (gfxfps v1): canopy posts as one InstancedMesh
+      const fp = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.35, 0.35, 5, 8), pentMat, 2);
+      const fm4 = new THREE.Matrix4();
+      [-9, 9].forEach((dx, i) => { fm4.setPosition(cx + dx, gy + 2.5, cz); fp.setMatrixAt(i, fm4); });
+      fp.instanceMatrix.needsUpdate = true;
+      scene.add(fp);
     }
+  }
+
+  { // F4 (gfxfps v1): merged contact-shadow discs under every lot, one draw total
+    const cv = document.createElement('canvas'); cv.width = cv.height = 128;
+    const g2 = cv.getContext('2d');
+    const rg = g2.createRadialGradient(64, 64, 8, 64, 64, 64);
+    rg.addColorStop(0, 'rgba(10,14,20,0.42)'); rg.addColorStop(1, 'rgba(10,14,20,0)');
+    g2.fillStyle = rg; g2.fillRect(0, 0, 128, 128);
+    const tex = new THREE.CanvasTexture(cv);
+    const pos = [], uv = [], idx = [];
+    LOTS_L.forEach((b, i) => {
+      const x0 = lw(b[1]) - 2, x1 = lw(b[3]) + 2, z0 = lz(b[2]) - 2, z1 = lz(b[4]) + 2;
+      const y = LOTS[i].padY + 0.06; // above ground, below the road strips
+      const base = i * 4;
+      pos.push(x0, y, z0, x1, y, z0, x1, y, z1, x0, y, z1);
+      uv.push(0, 1, 1, 1, 1, 0, 0, 0);
+      idx.push(base, base + 2, base + 1, base, base + 3, base + 2);
+    });
+    const gq = new THREE.BufferGeometry();
+    gq.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    gq.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    gq.setIndex(idx);
+    const discs = new THREE.Mesh(gq, new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }));
+    discs.renderOrder = 1;
+    scene.add(discs);
   }
 
 
@@ -504,24 +592,24 @@ function createMap({ THREE, scene, GLTFLoader }) {
         if (m.lod === 'primitive' && old) { // towers: detailed GLB near, lightened primitive far
           S.remove(old);
           const farSide = new THREE.MeshLambertMaterial({
-            map: facadeTex(Math.max(ft.x1 - ft.x0, ft.y1 - ft.y0), ft.h || 30, 'far') });
-          old.traverse((o) => { // swap the dark near facade for the light far one
-            if (o.isMesh && Array.isArray(o.material)) o.material = [farSide, farSide, o.material[2], o.material[3], farSide, farSide];
+            map: facadeTexCached(Math.max(ft.x1 - ft.x0, ft.y1 - ft.y0), ft.h || 30, 'far') }); // P4
+          old.traverse((o) => { // swap the dark near facade for the light far one (P3a: 2-material box)
+            if (o.isMesh && Array.isArray(o.material)) o.material = [farSide, o.material[1]];
           });
           const lod = new THREE.LOD();
           lod.addLevel(obj, 0); lod.addLevel(old, 70); // towers: far level past 70 m
-          scene.add(lod);
+          scene.add(lod); freeze(lod);
         } else if (m.lod) {
           if (old) S.remove(old);
           loader.load(MODEL_BASE + m.lod + '.glb', (g2) => {
             const low = fitFootprint(lodify(g2.scene), ft, m.rot);
             const lod = new THREE.LOD();
             lod.addLevel(obj, 0); lod.addLevel(low, 55); // shops/offices: low detail past 55 m
-            scene.add(lod);
-          }, undefined, () => scene.add(obj));
+            scene.add(lod); freeze(lod);
+          }, undefined, () => { scene.add(obj); freeze(obj); });
         } else {
           if (old) S.remove(old);
-          scene.add(obj);
+          scene.add(obj); freeze(obj);
         }
       }, undefined, () => {}); // load failed: primitive fallback stays
     }
@@ -544,11 +632,26 @@ function createMap({ THREE, scene, GLTFLoader }) {
       ['suburban/tree-small', 160, -55, 0, 4.5], ['suburban/tree-large', 215, -55, 1, 6],
       ['suburban/tree-small', 160, 100, 2, 4.5], ['suburban/tree-large', 215, 100, 0, 6],
     );
-    for (const [f, x, z, rot, h] of PROPS) {
-      loader.load(MODEL_BASE + f + '.glb', (g) => {
-        scene.add(fitHeight(lodify(g.scene), x, z, rot, h));
-      }, undefined, () => {});
+    // P5 (gfxfps v1): load each unique prop GLB once, clone per placement
+    const propProtos = {}; // f -> Promise of lodify'd template scene
+    function propProto(f) {
+      if (!propProtos[f]) {
+        propProtos[f] = new Promise((resolve) => {
+          loader.load(MODEL_BASE + f + '.glb', (g) => resolve(lodify(g.scene)),
+            undefined, () => resolve(null)); // missing file: skip silently
+        });
+      }
+      return propProtos[f];
     }
+    function placeProp(f, x, z, rot, h) {
+      propProto(f).then((proto) => {
+        if (!proto) return;
+        const inst = proto.clone(true); // shares geometry + materials with the template
+        scene.add(fitHeight(inst, x, z, rot, h));
+        freeze(inst);
+      });
+    }
+    for (const [f, x, z, rot, h] of PROPS) placeProp(f, x, z, rot, h);
     // Mohamed's six props (palm, streetlight, bench, bin, hydrant, traffic light) - GLB zip pending;
     // each load silently skips until assets/models/props/<name>.glb exists (v4 pre-wiring)
     const PROPS2 = [
@@ -568,11 +671,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
       // traffic light at the H280 x V280 junction (the roads-kit lights cover two other junctions)
       ['props/traffic_light', -24, -104, Math.PI / 2, 4.2],
     ];
-    for (const [f, x, z, rot, h] of PROPS2) {
-      loader.load(MODEL_BASE + f + '.glb', (g) => {
-        scene.add(fitHeight(lodify(g.scene), x, z, rot, h));
-      }, undefined, () => {}); // zip not here yet: skip silently
-    }
+    for (const [f, x, z, rot, h] of PROPS2) placeProp(f, x, z, rot, h); // zip pending: skips silently
   }
   if (GLTFLoader) swapToModels(GLTFLoader);
   else {
@@ -580,6 +679,15 @@ function createMap({ THREE, scene, GLTFLoader }) {
       .then((m) => swapToModels(m.GLTFLoader))
       .catch(() => {}); // no loader wired: stay on primitives
   }
+
+  // P2 (gfxfps v1): freeze every static map object - none ever move; a future module that
+  // moves one must re-enable matrixAutoUpdate on it. Map is created before actors, so the
+  // scene holds only map statics at this point. Async GLB/prop adds freeze themselves above.
+  function freeze(root) {
+    root.updateMatrixWorld(true);
+    root.traverse((o) => { o.matrixAutoUpdate = false; });
+  }
+  freeze(scene);
 
   // ---- API ----
   const WATER_X = lw(82);
@@ -635,6 +743,11 @@ function createMap({ THREE, scene, GLTFLoader }) {
     isBlocked, blockedAt: isBlocked,
     isRoadAt, taxiStops,
     starterHome: { x: lw(505), z: lz(309), name: 'Palm Court Bungalow' },
+    // v7a (coordinator, additive): road centerlines in LAYOUT coords [[x,y],...] with width w,
+    // for placement modules (houses, props, pedestrians). Convert world = layout - 300.
+    roadPaths: ROADS.map((r) => ({ pts: r.pts, w: r.w })),
+    // v7a: register an extra collision footprint (world coords), e.g. a placed house.
+    addBlock(minX, minZ, maxX, maxZ) { blocks.push({ minX, minZ, maxX, maxZ }); },
     update(dt) {},
   };
 }
@@ -655,11 +768,222 @@ function createControls({container=document.body,onInteract=()=>{}}={}) {
 }
 
 
+// ===== vehicles.js =====
+// js/vehicles.js — VEHICLE VARIETY module (GTA builder: vehicles). v001.
+// Original designs only: no real-world brands, no GTA vehicle names or models.
+//
+// COORDINATOR NOTES
+// - Heading convention: this module matches the SHIPPED actors.js exactly: a vehicle's
+//   FRONT is local -Z (taxi lamps sit at z=-1.82; motion at yaw=0 is -Z with
+//   rotation.y=-yaw). The role brief said "forward = +Z", but the existing code and all
+//   three shipped vehicles use front=-Z, so -Z wins for drop-in compatibility. Every type
+//   below is built front=-Z and needs no rotation in the wiring.
+// - Expected wiring (coordinator-owned): an addVehicle(typeKey, {x,z,heading})-style API
+//   in actors.js that finds the entry in VEHICLE_TYPES, calls entry.make(THREE), adds the
+//   returned group to the scene, and pushes a record
+//   { key, mesh, leanGroup: entry.twoWheeler ? mesh.userData.leanGroup : null,
+//     x, z, y:0, yaw: heading||0, speed:0, lean:0,
+//     label, foot, circleR, exitR, seatY, tune }
+//   into the vehicles array. make() is pure: it touches nothing outside its own group.
+// - Two-wheeler handling: actors.js currently hardcodes v.key==='bike' for lean, seat-back
+//   offset and rider pose. Generalize those checks to v.tune.leanMax > 0 (or a twoWheeler
+//   flag copied from the type entry) so the scooter leans and seats the rider correctly.
+// - Save/snapshot migration for the new keys (hatch, pickup, van, scooter) is
+//   coordinator-owned (actors snapshot v2 stores per-key records; unknown keys simply have
+//   no saved entry until first save).
+// - Materials: all types share one cached MeshLambertMaterial palette built from
+//   VEHICLE_PAINTS, so batchStatic merges across the whole vehicle and draw calls stay low.
+// - Wheel pivots are child Groups named 'wheel' (tire torus + rim cylinder inside) so the
+//   coordinator can spin them later; batchStatic leaves them untouched.
+
+const VEHICLE_PAINTS = {
+  red:    '#b03a2e', // hatch body
+  blue:   '#2f5d8a', // pickup body
+  cream:  '#e7dbc0', // van body
+  teal:   '#2e8a7a', // scooter body
+  dark:   '#243247', // bumpers, trim, grille
+  glass:  '#2b3a47', // windows
+  rubber: '#202733', // tires
+  rim:    '#b8c7c9', // wheel rims
+  lamp:   '#fff0b2', // headlamps
+  tail:   '#ce594e', // tail lamps
+  chrome: '#c3cdcf', // scooter brightwork
+  black:  '#1c242e', // seats, floorboard
+};
+
+let _mats = null; // cached shared materials, built once from VEHICLE_PAINTS
+function paints(THREE) {
+  if (!_mats) {
+    _mats = {};
+    for (const k in VEHICLE_PAINTS) _mats[k] = new THREE.MeshLambertMaterial({ color: VEHICLE_PAINTS[k] });
+  }
+  return _mats;
+}
+
+// --- geometry helpers (same visual language as actors.js: hulls, rounded panels, torus tires) ---
+function mesh(T, parent, geo, mat, x = 0, y = 0, z = 0) {
+  const o = new T.Mesh(geo, mat); o.position.set(x, y, z); parent.add(o); return o;
+}
+function sphere(T, parent, x, y, z, rx, ry, rz, mat) {
+  const o = mesh(T, parent, new T.SphereGeometry(1, 12, 8), mat, x, y, z); o.scale.set(rx, ry, rz); return o;
+}
+function rounded(T, parent, w, h, d, mat, x, y, z, r = Math.min(w, h, d) * .3) {
+  r = Math.min(r, w * .45, h * .45, d * .45);
+  const a = w / 2 - r, b = h / 2 - r, s = new T.Shape();
+  s.moveTo(-a - r, -b); s.lineTo(-a - r, b); s.quadraticCurveTo(-a - r, b + r, -a, b + r);
+  s.lineTo(a, b + r); s.quadraticCurveTo(a + r, b + r, a + r, b); s.lineTo(a + r, -b);
+  s.quadraticCurveTo(a + r, -b - r, a, -b - r); s.lineTo(-a, -b - r);
+  s.quadraticCurveTo(-a - r, -b - r, -a - r, -b);
+  const g = new T.ExtrudeGeometry(s, { depth: Math.max(.005, d - 2 * r), bevelEnabled: true, bevelSegments: 2, steps: 1, bevelSize: r * .45, bevelThickness: r, curveSegments: 3 });
+  g.translate(0, 0, -(d - 2 * r) / 2);
+  return mesh(T, parent, g, mat, x, y, z);
+}
+// hull: elliptical ring loft, rings = [z, halfWidth, centerY, halfHeight]
+function hull(T, parent, rings, mat) {
+  const vs = [], ix = [], N = 12;
+  for (const [z, w, cy, h] of rings) for (let i = 0; i < N; i++) {
+    const a = i / N * Math.PI * 2; vs.push(Math.cos(a) * w, cy + Math.sin(a) * h, z);
+  }
+  for (let j = 0; j < rings.length - 1; j++) for (let i = 0; i < N; i++) {
+    const a = j * N + i, b = j * N + (i + 1) % N, c = a + N, d = b + N; ix.push(a, b, c, b, d, c);
+  }
+  for (let i = 1; i < N - 1; i++) {
+    ix.push(0, i + 1, i); const o = (rings.length - 1) * N; ix.push(o, o + i, o + i + 1);
+  }
+  const g = new T.BufferGeometry();
+  g.setAttribute('position', new T.Float32BufferAttribute(vs, 3));
+  g.setIndex(ix); g.computeVertexNormals();
+  return mesh(T, parent, g, mat);
+}
+// Batch direct-child meshes by material; child Groups (wheel pivots, lean) stay movable.
+function batchStatic(T, group) {
+  const buckets = new Map();
+  for (const o of [...group.children]) if (o.isMesh) {
+    o.updateMatrix();
+    const g = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone();
+    g.applyMatrix4(o.matrix);
+    const a = buckets.get(o.material) || []; a.push({ o, g }); buckets.set(o.material, a);
+  }
+  for (const [mat, items] of buckets) {
+    if (items.length < 2) { items.forEach(i => i.g.dispose()); continue; }
+    const positions = [], normals = [];
+    for (const { o, g } of items) {
+      positions.push(...g.attributes.position.array); normals.push(...g.attributes.normal.array);
+      group.remove(o); g.dispose();
+    }
+    const joined = new T.BufferGeometry();
+    joined.setAttribute('position', new T.Float32BufferAttribute(positions, 3));
+    joined.setAttribute('normal', new T.Float32BufferAttribute(normals, 3));
+    mesh(T, group, joined, mat);
+  }
+}
+// Wheel pivot: torus tire + rim cylinder, bottom of tire rests on y=0.
+// R = torus ring radius, tube = torus tube radius; pivot y = R + tube.
+function wheel(T, parent, x, z, R, tube, m, rimMat) {
+  const outer = R + tube;
+  const pivot = new T.Group(); pivot.name = 'wheel'; pivot.position.set(x, outer, z); parent.add(pivot);
+  const tire = mesh(T, pivot, new T.TorusGeometry(R, tube, 6, 12), m.rubber); tire.rotation.y = Math.PI / 2;
+  const rim = mesh(T, pivot, new T.CylinderGeometry(R * .85, R * .85, tube * 1.15, 10), rimMat || m.rim);
+  rim.rotation.z = Math.PI / 2;
+  return pivot;
+}
+
+// --- red hatch: compact hatchback, ~3.9 m long (own design, front = -Z) ---
+function makeHatch(T) {
+  const m = paints(T), g = new T.Group(); g.name = 'Original red compact hatchback';
+  hull(T, g, [[-1.9, .52, .56, .1], [-1.75, .74, .62, .18], [-1.15, .84, .68, .23], [1.25, .84, .68, .23], [1.78, .76, .63, .17], [1.9, .56, .58, .1]], m.red);
+  hull(T, g, [[-.55, .52, .9, .06], [-.1, .6, 1.1, .24], [.75, .57, 1.08, .22], [1.15, .48, .88, .06]], m.glass);
+  hull(T, g, [[-.12, .5, 1.28, .05], [.06, .54, 1.33, .055], [.68, .5, 1.28, .05], [.82, .44, 1.18, .04]], m.red); // roof cap
+  for (const x of [-.78, .78]) rounded(T, g, .05, .3, .07, m.red, x, 1.05, -.35, .02); // A-pillar hints
+  for (const x of [-.78, .78]) for (const z of [-1.2, 1.25]) wheel(T, g, x, z, .28, .1, m);
+  for (const x of [-.54, .54]) { sphere(T, g, x, .76, -1.86, .2, .1, .08, m.lamp); sphere(T, g, x, .74, 1.88, .18, .09, .07, m.tail); }
+  rounded(T, g, 1.0, .13, .1, m.dark, 0, .52, -1.93, .05);  // front bumper
+  rounded(T, g, 1.15, .11, .1, m.dark, 0, .5, 1.93, .045);  // rear bumper
+  rounded(T, g, .55, .14, .05, m.dark, 0, .72, -1.94, .02); // grille
+  rounded(T, g, .3, .07, .015, m.dark, 0, .74, 1.94, .008); // plate
+  batchStatic(T, g);
+  return g;
+}
+
+// --- blue pickup: pickup truck with open bed, ~5.2 m long (own design, front = -Z) ---
+function makePickup(T) {
+  const m = paints(T), g = new T.Group(); g.name = 'Original blue pickup truck';
+  hull(T, g, [[-2.55, .55, .68, .12], [-2.35, .85, .76, .2], [2.3, .88, .78, .2], [2.52, .8, .74, .16], [2.58, .6, .68, .1]], m.blue); // chassis + bed floor
+  hull(T, g, [[-2.58, .6, .9, .12], [-2.35, .9, 1.0, .2], [-1.5, .93, 1.04, .22], [-.35, .9, .98, .2]], m.blue); // hood + front fenders
+  hull(T, g, [[-1.5, .62, 1.2, .1], [-1.1, .72, 1.5, .3], [-.05, .72, 1.5, .3], [.3, .6, 1.15, .08]], m.glass); // cab glass
+  hull(T, g, [[-1.12, .6, 1.76, .05], [-.9, .66, 1.82, .06], [-.1, .64, 1.82, .06], [.14, .56, 1.74, .04]], m.blue); // cab roof
+  rounded(T, g, 1.7, .85, .1, m.blue, 0, 1.25, .38, .04);          // cab back panel / bed front wall
+  for (const x of [-.82, .82]) rounded(T, g, .14, .46, 1.9, m.blue, x, 1.05, 1.5, .05); // bed side walls
+  rounded(T, g, 1.66, .46, .12, m.blue, 0, 1.05, 2.42, .05);       // tailgate
+  for (const x of [-.55, .55]) rounded(T, g, .06, .3, .08, m.blue, x * 1.55, 1.32, -.55, .02); // cab pillars
+  for (const x of [-.88, .88]) for (const z of [-1.65, 1.7]) wheel(T, g, x, z, .33, .12, m);
+  for (const x of [-.6, .6]) { sphere(T, g, x, .92, -2.5, .2, .11, .09, m.lamp); sphere(T, g, x, .95, 2.5, .17, .12, .07, m.tail); }
+  rounded(T, g, 1.25, .16, .12, m.dark, 0, .6, -2.6, .055);  // front bumper
+  rounded(T, g, 1.4, .14, .12, m.dark, 0, .58, 2.6, .05);    // rear bumper
+  rounded(T, g, .7, .18, .05, m.dark, 0, .92, -2.62, .02);   // grille
+  batchStatic(T, g);
+  return g;
+}
+
+// --- cream van: delivery van, ~5.0 m long (own design, front = -Z) ---
+function makeVan(T) {
+  const m = paints(T), g = new T.Group(); g.name = 'Original cream delivery van';
+  hull(T, g, [[-2.45, .8, .9, .2], [-2.25, .94, 1.18, .56], [-1.8, .97, 1.24, .6], [1.85, .97, 1.24, .6], [2.3, .92, 1.12, .5], [2.46, .78, .86, .15]], m.cream); // tall rounded body
+  hull(T, g, [[-2.2, .8, 1.28, .14], [-2.05, .92, 1.45, .24], [-1.2, .96, 1.5, .24], [-.85, .85, 1.4, .14]], m.glass); // wrap-around cab glass canopy (taxi-style, hugs the curved body)
+  for (const x of [-.94, .94]) rounded(T, g, .05, .12, 3.4, m.dark, x, 1.12, .1, .05); // side rub strips (embedded at the body's widest band)
+  for (const x of [-.84, .84]) for (const z of [-1.55, 1.6]) wheel(T, g, x, z, .3, .12, m);
+  for (const x of [-.6, .6]) sphere(T, g, x, .8, -2.42, .19, .1, .08, m.lamp);
+  for (const x of [-.68, .68]) sphere(T, g, x, 1.05, 2.42, .12, .22, .06, m.tail); // vertical van tails
+  rounded(T, g, 1.2, .15, .1, m.dark, 0, .52, -2.48, .05);   // front bumper
+  rounded(T, g, 1.3, .13, .1, m.dark, 0, .5, 2.5, .05);      // rear bumper
+  rounded(T, g, .6, .12, .05, m.dark, 0, .66, -2.5, .02);    // grille
+  batchStatic(T, g);
+  return g;
+}
+
+// --- teal scooter: step-through scooter, ~1.9 m long, lean-in riding (own design, front = -Z) ---
+function makeScooter(T) {
+  const m = paints(T), g = new T.Group(); g.name = 'Original teal scooter';
+  const lean = new T.Group(); lean.name = 'lean'; g.add(lean); g.userData.leanGroup = lean;
+  for (const z of [-.62, .64]) wheel(T, lean, 0, z, .19, .07, m, m.black);
+  rounded(T, lean, .32, .07, .62, m.black, 0, .3, .02, .03);              // floorboard
+  hull(T, lean, [[-.68, .14, .5, .12], [-.58, .17, .78, .28], [-.42, .15, .92, .2]], m.teal); // front leg shield
+  const post = mesh(T, lean, new T.CylinderGeometry(.03, .035, .5, 8), m.chrome, 0, 1.12, -.7); post.rotation.x = .35;
+  const bar = mesh(T, lean, new T.CylinderGeometry(.028, .028, .52, 8), m.chrome, 0, 1.28, -.78); bar.rotation.z = Math.PI / 2;
+  for (const x of [-.26, .26]) {
+    sphere(T, lean, x, 1.28, -.78, .045, .045, .08, m.black);            // grips
+    const stalk = mesh(T, lean, new T.CylinderGeometry(.012, .012, .16, 6), m.chrome, x * .8, 1.38, -.76); stalk.rotation.z = -Math.sign(x) * .5;
+    sphere(T, lean, x * 1.02, 1.44, -.74, .05, .06, .02, m.black);       // mirrors
+  }
+  sphere(T, lean, 0, 1.16, -.82, .11, .11, .09, m.lamp);                 // headlamp
+  const ff = mesh(T, lean, new T.TorusGeometry(.26, .05, 6, 10, Math.PI), m.teal, 0, .26, -.62); ff.rotation.y = Math.PI / 2; // front fender
+  sphere(T, lean, 0, .55, .38, .23, .2, .38, m.teal);                    // body under seat
+  sphere(T, lean, 0, .76, .34, .18, .08, .34, m.black);                  // seat
+  rounded(T, lean, .22, .1, .3, m.teal, 0, .68, .78, .04);               // rear rack body
+  const rf = mesh(T, lean, new T.TorusGeometry(.25, .055, 6, 10, Math.PI), m.teal, 0, .26, .64); rf.rotation.y = Math.PI / 2; // rear fender
+  const ex = mesh(T, lean, new T.CylinderGeometry(.045, .055, .8, 8), m.chrome, .16, .3, .45); ex.rotation.x = Math.PI / 2 - .05; // exhaust
+  sphere(T, lean, 0, .62, .94, .05, .08, .06, m.tail);                   // tail lamp
+  batchStatic(T, lean);
+  return g;
+}
+
+const VEHICLE_TYPES = [
+  { key: 'hatch', label: 'red hatch', foot: [-1.25, 0, 1.25], circleR: 1.0, exitR: 1.7, seatY: .55,
+    tune: { accel: 12, maxF: 22, maxR: 6, turn: 1.8, leanMax: 0 }, twoWheeler: false, make: makeHatch },
+  { key: 'pickup', label: 'blue pickup', foot: [-1.7, 0, 1.7], circleR: 1.1, exitR: 1.9, seatY: .95,
+    tune: { accel: 10, maxF: 20, maxR: 6, turn: 1.5, leanMax: 0 }, twoWheeler: false, make: makePickup },
+  { key: 'van', label: 'cream van', foot: [-1.6, 0, 1.6], circleR: 1.15, exitR: 1.9, seatY: .95,
+    tune: { accel: 9, maxF: 19, maxR: 6, turn: 1.45, leanMax: 0 }, twoWheeler: false, make: makeVan },
+  { key: 'scooter', label: 'teal scooter', foot: [-.62, 0, .62], circleR: .45, exitR: 1.1, seatY: .62,
+    tune: { accel: 13, maxF: 20, maxR: 5, turn: 2.5, leanMax: .45 }, twoWheeler: true, make: makeScooter },
+];
+
+
 // ===== actors.js =====
 // Original primitive geometry. No external models, names, textures or paid dependencies.
 // v009: adds original white sport sedan (starter car, ~4.6 m) and green cruiser bike (~2.2 m,
 // lean-in riding). sedan parks at map.spawnPoints.car (map v6 driveway); taxi keeps actors.car.
-function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onModeChange=()=>{}}){
+function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onModeChange=()=>{},vehicleTypes=[]}){
  const ground=(x,z)=>{const y=(map.groundAt||map.heightAt||(()=>0))(x,z);return Number.isFinite(y)?y:0;};
  const blocked=(x,z,r)=>!!((map.isBlocked||map.blockedAt||(()=>false))(x,z,r));
  const material=c=>new T.MeshLambertMaterial({color:c});const mats={skin:material('#c68b59'),shirt:material('#ecebdf'),pants:material('#26344c'),shoe:material('#152335'),body:material('#e6b32e'),dark:material('#243247'),glass:material('#71b7cb'),rubber:material('#202733'),lamp:material('#fff0b2'),rim:material('#b8c7c9'),tail:material('#ce594e'),white:material('#f2f1ea'),glass2:material('#2b3a47'),red:material('#c0392b'),green:material('#2e7d4f'),chrome:material('#c3cdcf'),black:material('#1c242e')};
@@ -717,7 +1041,15 @@ function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onMode
  const car=mkV('taxi',cm,null,start.taxi||{},{x:(spawn.x??0)+4,z:spawn.z??8,heading:0,label:'yellow car',foot:[-1.25,0,1.25],circleR:1.02,exitR:1.7,seatY:.8,tune:{accel:9,maxF:19,maxR:6,turn:1.55}});
  const sedan=mkV('sedan',sm,null,start.sedan||start.car||{},{x:(spawn.x??0)-4,z:(spawn.z??8)+2,heading:0,label:'white sedan',foot:[-1.5,0,1.5],circleR:1.05,exitR:1.75,seatY:.6,tune:{accel:12,maxF:24,maxR:6,turn:1.7}});
  const bike=mkV('bike',bm,lean,start.bike||{},{x:(spawn.x??0)+7,z:(spawn.z??8)+2,heading:0,label:'green bike',foot:[-.7,0,.7],circleR:.5,exitR:1.1,seatY:.74*bikeK,tune:{accel:13,maxF:22,maxR:5,turn:2.3,leanMax:.42}});
- const vehicles=[car,sedan,bike];
+ // v012: extra drivable types from js/vehicles.js (coordinator wiring; builder 7 adopt upstream)
+ const extra=[];
+ for(const t of vehicleTypes){try{
+  const g=t.make(T);g.name='Original '+t.label;scene.add(g);
+  const sp=t.spawn||{};
+  extra.push(mkV(t.key,g,t.twoWheeler?g.userData.leanGroup||null:null,(map.spawnPoints||{})[t.key]||{},{x:sp.x??0,z:sp.z??0,heading:sp.heading??0,label:t.label,foot:t.foot,circleR:t.circleR,exitR:t.exitR,seatY:t.seatY,tune:t.tune}));
+ }catch(e){}}
+ const twoW=(v)=>(v.tune&&v.tune.leanMax>0); // two-wheeler check (was hardcoded key==='bike')
+ const vehicles=[car,sedan,bike,...extra];
  const player={x:ps.x??0,z:ps.z??8,y:0,yaw:ps.heading??0,mesh:pm,inCar:false};
  let phase=0,driving=false,driveV=null,disposed=false,lastBlocked=false,mixer=null,walkAction=null,idleAction=null,loadedModels=false,hipY=.83,seated=false,boneRest=null,boneMap=null;
  function vehicleBlocked(v,x,z,yaw=v.yaw){for(const d of v.foot)if(blocked(x+Math.sin(yaw)*d,z-Math.cos(yaw)*d,v.circleR))return true;return false;}
@@ -729,7 +1061,7 @@ function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onMode
   else if(seated){seated=false;legs.forEach(l=>l.rotation.x=0);arms.forEach(a=>a.rotation.x=0);}}
  function sync(){player.y=ground(player.x,player.z);
   for(const v of vehicles){v.y=ground(v.x,v.z);v.mesh.position.set(v.x,v.y,v.z);v.mesh.rotation.y=-v.yaw;if(v.leanGroup)v.leanGroup.rotation.z=v.lean||0;}
-  if(driving&&driveV){const v=driveV,back=v.key==='bike'?.22:0;pm.position.set(v.x-Math.sin(v.yaw)*back,v.y+v.seatY-hipY,v.z+Math.cos(v.yaw)*back);pm.rotation.set(0,-v.yaw,0);if(v.key==='bike')pm.rotateZ(v.lean);poseSeat(true,v.key==='bike');}
+  if(driving&&driveV){const v=driveV,back=twoW(v)?.22:0;pm.position.set(v.x-Math.sin(v.yaw)*back,v.y+v.seatY-hipY,v.z+Math.cos(v.yaw)*back);pm.rotation.set(0,-v.yaw,0);if(twoW(v))pm.rotateZ(v.lean);poseSeat(true,twoW(v));}
   else{pm.position.set(player.x,player.y,player.z);pm.rotation.set(0,-player.yaw,0);poseSeat(false);}}
  function clearPath(x1,z1,x2,z2,r=.3){const n=Math.max(1,Math.ceil(Math.hypot(x2-x1,z2-z1)/.2));for(let i=1;i<=n;i++)if(blocked(x1+(x2-x1)*i/n,z1+(z2-z1)*i/n,r))return false;return true;}
  function interact(){if(disposed)return false;
@@ -737,9 +1069,9 @@ function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onMode
    if(!best||bd>4){notify('Walk closer to a vehicle');return false;}
    if(!clearPath(player.x,player.z,best.x,best.z)){notify('Go around to the '+best.label+'. A wall is in the way.');return false;}
    driving=true;driveV=best;best.speed=0;best.lean=0;player.x=best.x;player.z=best.z;
-   notify(best.key==='bike'?'Ride with the left stick. BRAKE slows the bike.':'Drive with the left stick. BRAKE slows the car.');}
+   notify(twoW(best)?'Ride with the left stick. BRAKE slows the bike.':'Drive with the left stick. BRAKE slows the car.');}
   else{const v=driveV;
-   if(Math.abs(v.speed)>1){notify('Stop the '+(v.key==='bike'?'bike':'car')+' before getting out');return false;}
+   if(Math.abs(v.speed)>1){notify('Stop the '+(twoW(v)?'bike':'car')+' before getting out');return false;}
    let exit=null;for(const s of[1,-1]){const x=v.x+Math.cos(v.yaw)*s*v.exitR,z=v.z+Math.sin(v.yaw)*s*v.exitR;if(!blocked(x,z,.4)&&clearPath(v.x,v.z,x,z,.37)){exit={x,z};break;}}
    if(!exit){notify('Both sides are blocked. Move first.');return false;}
    driving=false;driveV=null;player.x=exit.x;player.z=exit.z;player.yaw=v.yaw;v.speed=0;v.lean=0;}
@@ -753,7 +1085,7 @@ function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onMode
    const hit=move(v,Math.sin(v.yaw)*v.speed*dt,-Math.cos(v.yaw)*v.speed*dt,null,v);
    if(hit){if(!lastBlocked){v.speed*=.25;notify('Road blocked');}else v.speed*=Math.exp(-3*dt);}// v011: damp once per impact, gentle decay while scraping (per-frame x.2 pinned vehicles dead on walls)
    lastBlocked=hit;
-   if(v.key==='bike'){const tgt=steer*Math.min(1,Math.abs(v.speed)/7)*(t.leanMax||0);v.lean+=(tgt-v.lean)*Math.min(1,dt*8);}
+   if(twoW(v)){const tgt=steer*Math.min(1,Math.abs(v.speed)/7)*(t.leanMax||0);v.lean+=(tgt-v.lean)*Math.min(1,dt*8);}
    player.x=v.x;player.z=v.z;}
   else{let x=Number.isFinite(input.moveX)?Math.max(-1,Math.min(1,input.moveX)):0,z=Number.isFinite(input.moveY)?-Math.max(-1,Math.min(1,input.moveY)):0,n=Math.max(1,Math.hypot(x,z));x/=n;z/=n;const moving=Math.hypot(x,z)>.05;if(moving){move(player,x*4.5*dt,z*4.5*dt,.37);player.yaw=Math.atan2(x,-z);phase+=dt*9;}else phase=0;for(let i=0;i<2;i++){legs[i].rotation.x=Math.sin(phase+i*Math.PI)*.5;arms[i].rotation.x=-Math.sin(phase+i*Math.PI)*.35;}}
   if(mixer){const moving=!driving&&(Math.abs(input.moveX||0)+Math.abs(input.moveY||0)>.1);walkAction.enabled=moving;idleAction.enabled=!moving&&!driving;mixer.update(dt);}
@@ -1060,24 +1392,509 @@ function createSave({ getActors, getJobs }) {
 }
 
 
+// ===== houses.js =====
+// ============================================================================
+// houses.js — Coastal City / Los Santos, standing work 2: "every house on every road".
+// Builder module: this file ONLY. No other file is edited.
+//
+// Lines residential streets with original houses (closest-version Los Santos feel,
+// original geometry only — no GTA assets, names or art):
+//   - Hillcrest Road + Palm Court area  -> 2-storey hillside villas, domes, spanish flat roofs
+//   - Southside (south of the H440 street) -> small single-storey bungalows/cottages
+//   - Everywhere else residential        -> mixed bungalows, gable houses, cottages
+//
+// Perf (Galaxy M02s hard budget): every house part is baked into ONE merged
+// BufferGeometry per material (~13 draw calls total for ALL houses, 0 per-house
+// draw calls), shared MeshLambertMaterials, no shadows. Typical whole-module
+// triangle cost is ~25-40k (budget 150k). update(dt) is a no-op.
+//
+// Procedural original geometry only. No GLTF models are loaded, so no asset
+// licences are added to MODEL-SOURCES.md by this module (procedural is the
+// PROJECT-BASE-preferred route). GLTFLoader is accepted in the signature for
+// contract compatibility and is unused.
+//
+// ---- Coordinator notes ----
+// Exact wiring line expected in main.js (after createMap):
+//   const houses = createHouses({ THREE, scene, map, GLTFLoader });
+// Optionally call houses.update(dt) in the loop (no-op today).
+// houses.count = number of placed buildings; houses.placements = placement
+// records (world x/z/yaw/archetype/zone) for debugging or save tooling.
+// This module calls map.addBlock(minX, minZ, maxX, maxZ) for every placed
+// house, so player/car collision works with no other wiring.
+// ============================================================================
+
+function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-line no-unused-vars
+  const C = 300;                       // layout -> world offset (world = layout - 300)
+  const lw = (lx) => lx - C;
+  const lz = (ly) => ly - C;
+
+  // ---- shared materials (one draw call per material for the whole district) ----
+  const MATS = {
+    wall0: new THREE.MeshLambertMaterial({ color: 0xe8dcc8 }), // cream stucco
+    wall1: new THREE.MeshLambertMaterial({ color: 0xdfa06e }), // terracotta
+    wall2: new THREE.MeshLambertMaterial({ color: 0xa8c4d4 }), // pale blue
+    wall3: new THREE.MeshLambertMaterial({ color: 0xc9d6ab }), // sage
+    roof0: new THREE.MeshLambertMaterial({ color: 0x8a4a3a }), // red-brown tile
+    roof1: new THREE.MeshLambertMaterial({ color: 0x5a6068 }), // slate
+    roof2: new THREE.MeshLambertMaterial({ color: 0xb08a5a }), // tan
+    trim:  new THREE.MeshLambertMaterial({ color: 0xf2eee2 }), // white trim
+    glass: new THREE.MeshLambertMaterial({ color: 0x243b52 }), // window glass
+    door:  new THREE.MeshLambertMaterial({ color: 0x5f4128 }), // wood door
+    conc:  new THREE.MeshLambertMaterial({ color: 0x9d9a92 }), // concrete slabs
+    brick: new THREE.MeshLambertMaterial({ color: 0x9a5a4a }), // chimney brick
+    dark:  new THREE.MeshLambertMaterial({ color: 0x3a3e44 }), // flat roof deck
+  };
+
+  // ---- occupied regions (all in LAYOUT coords unless noted) ----
+  // Existing lots from map.js LOTS_L — treated as occupied (brief). Keep in sync with map.js.
+  const LOTS_L = [
+    [212,212,244,244],[252,212,276,240],[212,252,240,276],[252,252,276,276],
+    [292,212,324,244],[292,252,324,276],[212,292,244,324],[252,292,276,324],
+    [292,292,324,324],[160,210,186,232],[160,240,186,262],[160,296,186,318],
+    [160,330,186,352],[160,360,186,382],[460,220,480,238],[495,220,515,238],
+    [530,220,550,238],[460,300,480,318],[530,300,550,318],[460,380,480,398],
+    [495,380,515,398],[530,380,550,398],[380,210,410,250],[380,290,410,330],
+    [520,100,556,130],[494,300,516,318],
+  ];
+  const LOTS_W = LOTS_L.map(([x0, y0, x1, y1]) => ({ minX: lw(x0), maxX: lw(x1), minZ: lz(y0), maxZ: lz(y1) }));
+  const PARK_W = { minX: lw(210), maxX: lw(350), minZ: lz(368), maxZ: lz(432) }; // Seaside Park grass (map.js ground mesh)
+  const PIER_W = { minX: lw(20), maxX: lw(122), minZ: lz(292), maxZ: lz(308) };  // Pelican Pier deck
+  const WATER_X = lw(82);                                                        // water west of here (world)
+
+  // Streets that get NO houses: the Boardwalk (shops row + beach strip) and the
+  // highway ramp. Identified by their path shape (map.js ROADS, v7a).
+  function skipRoad(r) {
+    if (r.pts.length === 2) {
+      const [a, b] = r.pts;
+      if (a[0] === 130 && b[0] === 130) return true; // Boardwalk: shops row east, beach west
+      if (a[0] === 500 && b[0] === 500) return true; // highway ramp
+    }
+    return false;
+  }
+
+  // ---- deterministic rng (stable layouts between loads/tests) ----
+  let seed = 20261120 >>> 0;
+  function rng() {
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+
+  // ---- small geometry helpers ----
+  const box  = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const cyl  = (rt, rb, h, s) => new THREE.CylinderGeometry(rt, rb, h, s);
+  const cone = (r, h, s) => new THREE.ConeGeometry(r, h, s, 1);
+  const dome = (r) => new THREE.SphereGeometry(r, 10, 5, 0, Math.PI * 2, 0, Math.PI / 2);
+  // part: geometry + material key + local translate + optional euler (applied Rz,Rx,Ry) + scale
+  const P = (g, m, t, o = {}) => ({ g, m, t, ry: o.ry || 0, rx: o.rx || 0, rz: o.rz || 0, s: o.s || [1, 1, 1] });
+
+  function win(parts, x, y, z, ry) { // window + white trim, facing local +Z rotated by ry
+    const ox = Math.sin(ry), oz = Math.cos(ry);
+    parts.push(P(box(1.7, 1.5, 0.1), 'trim', [x + ox * 0.02, y, z + oz * 0.02], { ry }));
+    parts.push(P(box(1.4, 1.2, 0.16), 'glass', [x + ox * 0.06, y, z + oz * 0.06], { ry }));
+  }
+  function front(parts, w, d, twoStorey) { // door + windows on the street face (+Z), side windows
+    const fx = -w * 0.22;
+    parts.push(P(box(1.34, 2.5, 0.12), 'trim', [fx, 1.25, d / 2 + 0.02]));
+    parts.push(P(box(1.05, 2.3, 0.18), 'door', [fx, 1.15, d / 2 + 0.07]));
+    win(parts, w * 0.2, 1.7, d / 2, 0);
+    if (w > 9.4) win(parts, w * 0.38, 1.7, d / 2, 0);
+    win(parts, w / 2, 1.7, -d * 0.15, Math.PI / 2);
+    win(parts, -w / 2, 1.7, -d * 0.15, -Math.PI / 2);
+    if (twoStorey) {
+      win(parts, w * 0.2, 4.5, d / 2, 0);
+      win(parts, -w * 0.22, 4.5, d / 2, 0);
+      win(parts, w / 2, 4.5, 0, Math.PI / 2);
+      win(parts, -w / 2, 4.5, 0, -Math.PI / 2);
+    }
+  }
+  function porch(parts, fx, d, roofM) { // slab + two round posts + flat porch roof
+    parts.push(P(box(3.4, 0.18, 1.9), 'conc', [fx, 0.09, d / 2 + 0.95]));
+    parts.push(P(cyl(0.12, 0.14, 2.3, 6), 'trim', [fx - 1.5, 1.32, d / 2 + 1.55]));
+    parts.push(P(cyl(0.12, 0.14, 2.3, 6), 'trim', [fx + 1.5, 1.32, d / 2 + 1.55]));
+    parts.push(P(box(3.7, 0.16, 2.2), roofM, [fx, 2.62, d / 2 + 1.05]));
+  }
+  function driveway(parts, w, d) { // concrete slab toward the street, stops ~1 m short of the road edge
+    parts.push(P(box(2.8, 0.12, 3.5), 'conc', [w / 2 - 1.8, 0.06, d / 2 + 1.75]));
+  }
+
+  // ---- 6 house archetypes (all rounded shapes; footprints keep slope < 0.5 m) ----
+  // Each returns { w, d, parts } in local coords: front = +Z (street side), ground y=0.
+  function archBungalowHip(wall, roof) { // Southside / standard single-storey, hip roof
+    const w = 9, d = 7.5, h = 3, parts = [];
+    parts.push(P(box(w, h, d), wall, [0, h / 2, 0]));
+    parts.push(P(box(w + 0.7, 0.22, d + 0.7), roof, [0, h, 0])); // eave
+    parts.push(P(cone(Math.hypot(w, d) / 2 * 0.95, 2.2, 4), roof, [0, h + 1.1, 0], { ry: Math.PI / 4, s: [1, 1, d / w] }));
+    parts.push(P(cyl(0.3, 0.34, 1.6, 6), 'brick', [w / 2 - 1.4, h + 0.9, -1]));
+    front(parts, w, d, false);
+    porch(parts, -w * 0.22, d, roof);
+    driveway(parts, w, d);
+    return { w, d, parts };
+  }
+  function archBungalowBarrel(wall, roof) { // small bungalow, rounded barrel-vault roof
+    const w = 8.5, d = 7, h = 3, parts = [];
+    parts.push(P(box(w, h, d), wall, [0, h / 2, 0]));
+    parts.push(P(cyl(3.4, 3.4, w + 0.5, 10), roof, [0, h - 0.2, 0], { rz: Math.PI / 2 })); // half embedded
+    parts.push(P(box(w + 0.5, 0.2, d + 0.5), 'trim', [0, h - 0.15, 0])); // trim band under the vault
+    front(parts, w, d, false);
+    parts.push(P(cyl(0.6, 0.6, 2.2, 8), roof, [-w * 0.22, 2.6, d / 2 + 0.4], { rz: Math.PI / 2 })); // door canopy
+    parts.push(P(box(3.2, 0.16, 1.7), 'conc', [-w * 0.22, 0.08, d / 2 + 0.85]));
+    driveway(parts, w, d);
+    return { w, d, parts };
+  }
+  function archCottageDome(wall, roof) { // small rounded cottage with a dome roof
+    const w = 8, d = 8, h = 3.2, parts = [];
+    parts.push(P(box(w, h, d), wall, [0, h / 2, 0]));
+    parts.push(P(box(w + 0.6, 0.22, d + 0.6), 'trim', [0, h, 0]));
+    parts.push(P(dome(4.6), roof, [0, h + 0.05, 0], { s: [1, 0.62, 1] }));
+    parts.push(P(cyl(0.28, 0.32, 1.3, 6), 'brick', [-w / 2 + 1.3, h + 0.6, -1.5]));
+    front(parts, w, d, false);
+    porch(parts, -w * 0.22, d, roof);
+    driveway(parts, w, d);
+    return { w, d, parts };
+  }
+  function archSpanish(wall, roof) { // flat roof + parapet, dome over the entrance, columns
+    const w = 10, d = 8, h = 3.4, parts = [];
+    parts.push(P(box(w, h, d), wall, [0, h / 2, 0]));
+    parts.push(P(box(w - 0.2, 0.12, d - 0.2), 'dark', [0, h + 0.04, 0])); // roof deck
+    parts.push(P(box(w + 0.4, 0.55, 0.25), wall, [0, h + 0.24, d / 2 + 0.07]));  // parapets
+    parts.push(P(box(w + 0.4, 0.55, 0.25), wall, [0, h + 0.24, -d / 2 - 0.07]));
+    parts.push(P(box(0.25, 0.55, d + 0.4), wall, [w / 2 + 0.07, h + 0.24, 0]));
+    parts.push(P(box(0.25, 0.55, d + 0.4), wall, [-w / 2 - 0.07, h + 0.24, 0]));
+    parts.push(P(dome(1.7), roof, [-w * 0.22, h + 0.1, d / 2 - 1.3], { s: [1, 0.75, 1] }));
+    parts.push(P(cyl(0.16, 0.18, 2.6, 8), 'trim', [-w * 0.22 - 1.4, 1.3, d / 2 + 1.3])); // porch columns
+    parts.push(P(cyl(0.16, 0.18, 2.6, 8), 'trim', [-w * 0.22 + 1.4, 1.3, d / 2 + 1.3]));
+    parts.push(P(box(3.6, 0.35, 0.6), 'trim', [-w * 0.22, 2.75, d / 2 + 1.3]));
+    parts.push(P(box(3.6, 0.16, 2.1), 'conc', [-w * 0.22, 0.08, d / 2 + 1.0]));
+    front(parts, w, d, false);
+    driveway(parts, w, d);
+    return { w, d, parts };
+  }
+  function archGable2(wall, roof) { // 2-storey gable house, triangular prism roof
+    const w = 9.5, d = 8, h = 5.4, parts = [];
+    parts.push(P(box(w, h, d), wall, [0, h / 2, 0]));
+    parts.push(P(box(w + 0.5, 0.25, d + 0.5), 'trim', [0, 2.95, 0])); // floor band
+    parts.push(P(box(w + 0.6, 0.25, d + 0.6), 'trim', [0, h, 0]));     // eave
+    const r = d / (2 * 0.866), sy = 0.45; // ridge-up triangular prism, squashed
+    parts.push(P(cyl(r, r, w + 0.5, 3, 1, false, Math.PI / 2), roof, [0, h + 0.5 * r * sy, 0], { rz: Math.PI / 2, s: [1, sy, 1] }));
+    parts.push(P(cyl(0.3, 0.34, 1.8, 6), 'brick', [w / 2 - 1.5, h + 1.4, 0]));
+    front(parts, w, d, true);
+    porch(parts, -w * 0.22, d, roof);
+    driveway(parts, w, d);
+    return { w, d, parts };
+  }
+  function archVilla(wall, roof) { // Hillcrest / Palm Court 2-storey villa, balcony + columns
+    const w = 11, d = 8.5, parts = [];
+    parts.push(P(box(w, 3.1, d), wall, [0, 1.55, 0]));
+    parts.push(P(box(w - 1, 2.9, d - 1), wall, [0, 3.1 + 1.45, 0]));
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) // rounded corner columns
+      parts.push(P(cyl(0.2, 0.24, 3.1, 6), 'trim', [sx * (w / 2 - 0.05), 1.55, sz * (d / 2 - 0.05)]));
+    parts.push(P(box(w - 1 + 0.7, 0.25, d - 1 + 0.7), roof, [0, 6, 0])); // eave
+    parts.push(P(cone(Math.hypot(w - 1, d - 1) / 2 * 0.95, 2.4, 4), roof, [0, 6 + 1.2, 0], { ry: Math.PI / 4, s: [1, 1, (d - 1) / (w - 1)] }));
+    parts.push(P(box(4.4, 0.16, 1.4), 'conc', [0.8, 3.2, (d - 1) / 2 + 0.62])); // balcony slab
+    for (const bx of [-1.1, 0.8, 2.7])
+      parts.push(P(cyl(0.05, 0.05, 0.95, 5), 'trim', [bx, 3.75, (d - 1) / 2 + 1.25]));
+    parts.push(P(cyl(0.06, 0.06, 4.3, 6), 'trim', [0.8, 4.25, (d - 1) / 2 + 1.25], { rz: Math.PI / 2 })); // rail
+    parts.push(P(cyl(0.3, 0.34, 1.6, 6), 'brick', [-w / 2 + 1.6, 6 + 0.8, -1.5]));
+    front(parts, w, d, true);
+    porch(parts, -w * 0.22, d, roof);
+    driveway(parts, w, d);
+    return { w, d, parts };
+  }
+
+  const WALLS = ['wall0', 'wall1', 'wall2', 'wall3'];
+  const ROOFS = ['roof0', 'roof1', 'roof2'];
+  const ARCHS = {
+    bungalow: [archBungalowHip, archBungalowBarrel],
+    cottage:  [archCottageDome],
+    villa:    [archVilla, archGable2, archSpanish, archCottageDome],
+    mixed:    [archBungalowHip, archBungalowBarrel, archCottageDome, archSpanish, archGable2],
+    south:    [archBungalowHip, archBungalowBarrel, archCottageDome],
+  };
+  function pickArch(zone) {
+    const list = ARCHS[zone] || ARCHS.mixed;
+    const f = list[Math.floor(rng() * list.length) % list.length];
+    const wall = WALLS[Math.floor(rng() * WALLS.length) % WALLS.length];
+    const roof = ROOFS[Math.floor(rng() * ROOFS.length) % ROOFS.length];
+    const a = f(wall, roof);
+    a.kind = f.name.replace('arch', '').toLowerCase();
+    return a;
+  }
+
+  // ---- street walking (all math in WORLD coords; roadPaths arrive in LAYOUT) ----
+  function walker(ptsLayout) {
+    const segs = []; let total = 0;
+    for (let i = 0; i < ptsLayout.length - 1; i++) {
+      const ax = lw(ptsLayout[i][0]), az = lz(ptsLayout[i][1]);
+      const bx = lw(ptsLayout[i + 1][0]), bz = lz(ptsLayout[i + 1][1]);
+      const len = Math.hypot(bx - ax, bz - az);
+      if (len < 1e-6) continue;
+      segs.push({ ax, az, ux: (bx - ax) / len, uz: (bz - az) / len, len, start: total });
+      total += len;
+    }
+    return {
+      total,
+      at(s) {
+        let g = segs[segs.length - 1];
+        for (const sg of segs) { if (s <= sg.start + sg.len) { g = sg; break; } }
+        const d = Math.min(Math.max(s - g.start, 0), g.len);
+        return { x: g.ax + g.ux * d, z: g.az + g.uz * d, ux: g.ux, uz: g.uz };
+      },
+    };
+  }
+
+  function zoneAt(cx, cz, winding) {
+    if (winding) return 'villa';                          // Hillcrest Road: hillside villas
+    if (cz > lz(442)) return 'south';                     // Southside bungalows
+    if (cx > lw(445)) return 'villa';                     // Palm Court hillside
+    return 'mixed';
+  }
+
+  const inRect = (r, x, z) => x >= r.minX && x <= r.maxX && z >= r.minZ && z <= r.maxZ;
+  const overlap = (a, b, m) => a.minX - m < b.maxX && a.maxX + m > b.minX && a.minZ - m < b.maxZ && a.maxZ + m > b.minZ;
+
+  const placed = [];      // world AABBs of placed houses (for house-house spacing)
+  const placements = [];  // records returned for debugging/save tooling
+  const MAX_HOUSES = 150;
+
+  // A house is valid only if its whole footprint is off-road (4 corners + 4 edge
+  // midpoints through map.isRoadAt), on land (not water/pier/park), slope across
+  // the footprint <= 0.5 m (map.groundAt at the corners), and clear of existing
+  // lots (4 m) and other placed houses (2 m).
+  function validFootprint(cx, cz, w, d, yaw) {
+    const hw = w / 2, hd = d / 2, co = Math.cos(yaw), si = Math.sin(yaw);
+    const local = [[hw, hd], [-hw, hd], [hw, -hd], [-hw, -hd], [hw, 0], [-hw, 0], [0, hd], [0, -hd]];
+    let gMin = Infinity, gMax = -Infinity;
+    for (let i = 0; i < local.length; i++) {
+      const lx0 = local[i][0], lz0 = local[i][1];
+      const x = cx + lx0 * co + lz0 * si;
+      const z = cz - lx0 * si + lz0 * co;
+      if (map.isRoadAt(x, z)) return null;
+      if (x < WATER_X + 1) return null;                    // water / beach strip
+      if (inRect(PIER_W, x, z) || inRect(PARK_W, x, z)) return null;
+      if (i < 4) { const g = map.groundAt(x, z); if (g < gMin) gMin = g; if (g > gMax) gMax = g; }
+    }
+    if (gMax - gMin > 0.5) return null;                    // too steep for a pad
+    const ex = hw * Math.abs(co) + hd * Math.abs(si);
+    const ez = hw * Math.abs(si) + hd * Math.abs(co);
+    const bb = { minX: cx - ex, maxX: cx + ex, minZ: cz - ez, maxZ: cz + ez };
+    if (bb.minX < -298 || bb.maxX > 298 || bb.minZ < -298 || bb.maxZ > 298) return null;
+    for (const l of LOTS_W) if (overlap(bb, l, 4)) return null;  // existing buildings keep their space
+    for (const h of placed) if (overlap(bb, h, 2)) return null;  // 2 m gap between new houses
+    return bb;
+  }
+
+  // ---- merged-geometry baking (rotations: part Rz,Rx,Ry then house Ry + translate) ----
+  const buckets = new Map(); // matKey -> { pos: [], norm: [] }
+  function bakePart(part, hx, hy, hz, yaw) {
+    const src = part.g.index ? part.g.toNonIndexed() : part.g;
+    const pos = src.attributes.position.array, nrm = src.attributes.normal.array;
+    let b = buckets.get(part.m);
+    if (!b) { b = { pos: [], norm: [] }; buckets.set(part.m, b); }
+    const [sx, sy, sz] = part.s;
+    const c1 = Math.cos(part.rz), s1 = Math.sin(part.rz);
+    const c2 = Math.cos(part.rx), s2 = Math.sin(part.rx);
+    const c3 = Math.cos(part.ry), s3 = Math.sin(part.ry);
+    const cH = Math.cos(yaw), sH = Math.sin(yaw);
+    const [tx, ty, tz] = part.t;
+    for (let i = 0; i < pos.length; i += 3) {
+      // scale
+      let x = pos[i] * sx, y = pos[i + 1] * sy, z = pos[i + 2] * sz;
+      let nx = nrm[i] / sx, ny = nrm[i + 1] / sy, nz = nrm[i + 2] / sz;
+      // part Rz
+      let x2 = x * c1 - y * s1, y2 = x * s1 + y * c1, z2 = z;
+      let nx2 = nx * c1 - ny * s1, ny2 = nx * s1 + ny * c1, nz2 = nz;
+      // part Rx
+      let y3 = y2 * c2 - z2 * s2, z3 = y2 * s2 + z2 * c2, x3 = x2;
+      let ny3 = ny2 * c2 - nz2 * s2, nz3 = ny2 * s2 + nz2 * c2, nx3 = nx2;
+      // part Ry
+      let x4 = x3 * c3 + z3 * s3, z4 = -x3 * s3 + z3 * c3, y4 = y3;
+      let nx4 = nx3 * c3 + nz3 * s3, nz4 = -nx3 * s3 + nz3 * c3, ny4 = ny3;
+      // part translate
+      x4 += tx; y4 += ty; z4 += tz;
+      // house Ry + translate
+      const X = hx + x4 * cH + z4 * sH;
+      const Z = hz - x4 * sH + z4 * cH;
+      b.pos.push(X, hy + y4, Z);
+      const NX = nx4 * cH + nz4 * sH;
+      const NZ = -nx4 * sH + nz4 * cH;
+      const nl = Math.hypot(NX, ny4, NZ) || 1;
+      b.norm.push(NX / nl, ny4 / nl, NZ / nl);
+    }
+    if (src !== part.g) src.dispose();
+    part.g.dispose();
+  }
+
+  // ---- placement pass ----
+  let count = 0;
+  // Priority order: signature streets first (Hillcrest winding climb, Southside lanes,
+  // Palm Court street), then the general grid, so the MAX_HOUSES cap trims generic
+  // blocks rather than starving the streets the brief names.
+  const roads = [...map.roadPaths].sort((a, b) => rank(a) - rank(b));
+  function rank(r) {
+    if (r.pts.length > 2) return 0;                       // Hillcrest Road
+    const ys = r.pts.map((p) => p[1]);
+    if (Math.min(...ys) >= 440) return 1;                 // Southside lanes
+    if (r.pts.length === 2 && r.pts[0][0] === 440 && r.pts[1][0] === 440) return 2; // Palm Court street
+    return 3;
+  }
+  for (const road of roads) {
+    if (skipRoad(road) || count >= MAX_HOUSES) continue;
+    const walk = walker(road.pts);
+    const frontOff = road.w / 2 + 4.5;             // front wall 8-8.5 m off centerline (w 7..8)
+    const winding = road.pts.length > 2;
+    let s = 9;
+    while (s < walk.total - 9 && count < MAX_HOUSES) {
+      const p = walk.at(s);
+      let widest = 9;
+      for (const side of [-1, 1]) {
+        if (count >= MAX_HOUSES) break;
+        const nx = -p.uz * side, nz = p.ux * side; // unit normal, world coords
+        const zone = zoneAt(p.x + nx * 12, p.z + nz * 12, winding);
+        let arch = pickArch(zone);
+        let coff = frontOff + arch.d / 2;
+        let cx = p.x + nx * coff, cz = p.z + nz * coff;
+        const yaw = Math.atan2(-nx, -nz);          // local +Z (front) faces the street
+        let bb = validFootprint(cx, cz, arch.w, arch.d, yaw);
+        if (!bb && arch.kind !== 'cottagedome') {  // steep/tight spot: retry the smallest footprint
+          arch = archCottageDome(WALLS[Math.floor(rng() * WALLS.length) % WALLS.length],
+                                 ROOFS[Math.floor(rng() * ROOFS.length) % ROOFS.length]);
+          arch.kind = 'cottagedome';
+          coff = frontOff + arch.d / 2;
+          cx = p.x + nx * coff; cz = p.z + nz * coff;
+          bb = validFootprint(cx, cz, arch.w, arch.d, yaw);
+        }
+        if (!bb) continue;
+        const gy = map.groundAt(cx, cz);
+        for (const part of arch.parts) bakePart(part, cx, gy - 0.3, cz, yaw); // sunk 0.3 foundation
+        map.addBlock(bb.minX, bb.minZ, bb.maxX, bb.maxZ);
+        placed.push(bb);
+        placements.push({ x: cx, z: cz, y: gy, yaw, w: arch.w, d: arch.d, archetype: arch.kind, zone });
+        count++;
+        if (arch.w > widest) widest = arch.w;
+      }
+      s += widest + 3.5;                           // house width + side gap
+    }
+  }
+
+  // ---- one merged mesh per material ----
+  let triTotal = 0;
+  const group = new THREE.Group(); group.name = 'houses';
+  for (const [mk, b] of buckets) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(b.pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(b.norm, 3));
+    const mesh = new THREE.Mesh(g, MATS[mk]);
+    mesh.matrixAutoUpdate = false;
+    group.add(mesh);
+    triTotal += b.pos.length / 9;
+  }
+  scene.add(group);
+
+  return {
+    update(dt) {}, // static district: nothing per-frame (dt unused)
+    count,
+    placements,
+    stats: { drawCalls: buckets.size, triangles: Math.round(triTotal) },
+  };
+}
+
+
+// ===== adaptive-resolution.js =====
+// adaptive-resolution.js — NEW drop-in module (complete file). Graphics+FPS builder, v1.
+// No THREE import (project module discipline): the renderer arrives as an argument.
+// Used by patches-main.js P1: main.js does
+//   import { createAdaptiveResolution } from './adaptive-resolution.js';
+// and calls adaptive.sample(rawDt) once per frame with the UNCLAMPED frame delta.
+//
+// Behaviour: EMA of frame time; when the average stays slower than ~33 ms the render
+// pixel ratio steps down (1.0 -> 0.85 -> 0.75), when it stays faster than ~57 fps it
+// steps up (toward 1.25). One step per 1.5 s (hysteresis) so it cannot oscillate.
+// The 1.5 hard cap from the project brief is respected: max defaults to 1.25.
+// Guards: a 30-sample warmup (loading hitches must not pick a ratio), and a single
+// frame longer than 250 ms is clamped so one tab-switch hitch can't force a down-step;
+// sustained slowness still steps down from the second slow frame on.
+
+function createAdaptiveResolution({ renderer, min = 0.75, max = 1.25, start = 1 }) {
+  let cur = start;
+  let ema = 1 / 45; // mid-band start: steady state, not the first frames, picks the ratio
+  let cooldown = 0;
+  let warm = 30;
+
+  function apply() {
+    renderer.setPixelRatio(cur);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  }
+
+  renderer.setPixelRatio(cur);
+
+  return {
+    sample(dt) {
+      const d = dt > 0.25 ? 0.25 : dt; // clamp one-off hitches
+      ema = ema * 0.95 + d * 0.05;
+      if (warm > 0) { warm--; return; }
+      cooldown -= dt;
+      if (cooldown > 0) return;
+      if (ema > 1 / 33 && cur > min) {
+        cur = Math.max(min, Math.round((cur - 0.15) * 100) / 100);
+        apply();
+        cooldown = 1.5;
+      } else if (ema < 1 / 57 && cur < max) {
+        cur = Math.min(max, Math.round((cur + 0.1) * 100) / 100);
+        apply();
+        cooldown = 1.5;
+      }
+    },
+    get current() { return cur; },
+  };
+}
+
+
 // ===== main.js =====
 // main.js — game loop, camera, HUD glue, module wiring. Coordinator-owned. Contract v1.1.
 // Only this file imports THREE; every module receives it (or DOM hosts) via arguments.
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+// houses v1b: every road lined with homes; adaptive-resolution = P1
+
 const canvas = document.getElementById('game');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
-renderer.setPixelRatio(1); // Galaxy M02s guardrail: render at CSS pixels
+renderer.toneMapping = THREE.ACESFilmicToneMapping; // F1: warmer coastal tonality
+renderer.toneMappingExposure = 1.12;
 renderer.setSize(window.innerWidth, window.innerHeight);
+const adaptive = createAdaptiveResolution({ renderer }); // P1: sets pixelRatio 1.0, then adapts
+window.ccInfo = () => ({ calls: renderer.info.render.calls, tris: renderer.info.render.triangles, ratio: adaptive.current }); // P8
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x87b5e0);
-scene.fog = new THREE.Fog(0x87b5e0, 80, 260);
+scene.background = new THREE.Color(0xa9c6e2);
+scene.fog = new THREE.Fog(0xa9c6e2, 70, 260); // F5: warmer haze, slightly nearer start
 
-const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 600);
+const skyDome = (() => { // F2: gradient sky dome; follows the camera so the horizon never slides
+  const skyGeo = new THREE.SphereGeometry(200, 24, 12);
+  const posA = skyGeo.attributes.position;
+  const cols = new Float32Array(posA.count * 3);
+  const top = new THREE.Color(0x5f97d6), hor = new THREE.Color(0xa9c6e2); // horizon = fog colour
+  const tmp = new THREE.Color();
+  for (let i = 0; i < posA.count; i++) {
+    const t = Math.max(0, Math.min(1, posA.getY(i) / 200 * 0.5 + 0.5));
+    tmp.copy(hor).lerp(top, t * t);
+    cols[i * 3] = tmp.r; cols[i * 3 + 1] = tmp.g; cols[i * 3 + 2] = tmp.b;
+  }
+  skyGeo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+  const sky = new THREE.Mesh(skyGeo, new THREE.MeshBasicMaterial({
+    vertexColors: true, side: THREE.BackSide, fog: false, depthWrite: false,
+  }));
+  sky.frustumCulled = false;
+  sky.onBeforeRender = () => { sky.position.copy(camera.position); }; // stays centred on the eye
+  scene.add(sky);
+  return sky;
+})();
 
-const hemi = new THREE.HemisphereLight(0xcfe8ff, 0x4a5d3a, 1.05);
+const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 270); // P6: was 600; fog saturates at 260
+
+const hemi = new THREE.HemisphereLight(0xbdd8f2, 0x77684a, 0.85); // F1: cooler sky, warm ground bounce
 scene.add(hemi);
-const sun = new THREE.DirectionalLight(0xfff2d8, 1.4);
+const sun = new THREE.DirectionalLight(0xffdfae, 1.55); // F1: warmer late-afternoon sun
 sun.position.set(60, 100, 40);
 scene.add(sun);
 
@@ -1131,6 +1948,8 @@ class RepoMapGLTFLoader extends GLTFLoader {
   }
 }
 const map = createMap({ THREE, scene, GLTFLoader: RepoMapGLTFLoader }); // class, not instance: swapToModels news it up
+const houses = createHouses({ THREE, scene, map, GLTFLoader: RepoMapGLTFLoader }); // houses v1b: 150 homes, 13 draw calls
+skyDome.matrixAutoUpdate = true; // map's P2 freeze covers the whole scene; the dome must follow the camera
 
 let paused = false;
 
@@ -1139,11 +1958,19 @@ const controls = createControls({
   onInteract: () => { if (!paused) actors.interact(); },
 });
 
+// vehicle variety (builder: vehicles v001, wired Nov 20): parked spawns, verified off-road/unblocked
+const VEHICLE_SPAWNS = {
+  van:     { x: -13,  z: -52, heading: 0 },  // by Solana Depot, downtown
+  pickup:  { x: -51,  z: 166, heading: 0 },  // Southside street shoulder
+  hatch:   { x: 146,  z: 16,  heading: 0 },  // Palm Court street
+  scooter: { x: -152, z: 26,  heading: 0 },  // near the boardwalk
+};
 const actors = createActors({
   THREE, scene, map,
   spawn: { x: map.spawnPoints.player.x, z: map.spawnPoints.player.z },
   notify,
   onModeChange: (d) => controls.setMode(d),
+  vehicleTypes: VEHICLE_TYPES.map((t) => ({ ...t, spawn: VEHICLE_SPAWNS[t.key] })),
 });
 
 // taxi routes: coordinator pairs map-provided road-safe stops into routes
@@ -1305,12 +2132,15 @@ function followCamera(dt) {
 // ---- loop -------------------------------------------------------------------
 let last = performance.now();
 let fpsAcc = 0, fpsN = 0, fpsShown = 0;
+let lastHud = ''; // P7
 
 function frame(now) {
   requestAnimationFrame(frame);
-  let dt = (now - last) / 1000;
+  const rawDt = (now - last) / 1000;
   last = now;
+  let dt = rawDt;
   if (dt > 0.1) dt = 0.1; // clamp hitches
+  adaptive.sample(rawDt); // P1: scale render resolution to the measured frame time
   fpsAcc += dt; fpsN++;
   if (fpsAcc >= 0.5) { fpsShown = Math.round(fpsN / fpsAcc); fpsAcc = 0; fpsN = 0; }
   if (!paused) {
@@ -1326,7 +2156,8 @@ function frame(now) {
   }
   if (taxiJob.consumeDirty() | deliveryJob.consumeDirty() | pizzaJob.consumeDirty()) phone.render();
   const kmh = Math.round(Math.abs(actors.current.speed || 0) * 3.6); // v009: speed of the vehicle being driven (taxi/sedan/bike)
-  elFps.textContent = fpsShown + ' FPS' + (actors.driving ? ' · ' + kmh + ' km/h' : '');
+  const hudText = fpsShown + ' FPS' + (actors.driving ? ' · ' + kmh + ' km/h' : '');
+  if (hudText !== lastHud) { elFps.textContent = hudText; lastHud = hudText; } // P7: write-on-change
   renderer.render(scene, camera);
 }
 
