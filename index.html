@@ -3300,9 +3300,10 @@ function createProps({ THREE, scene, map }) {
     addTo(m, new THREE.SphereGeometry(0.22, 6, 4), '#e66b43', -1.25, 2.5, -0.8);
     return { m, g };
   }
-  function tVolleyballNet() {
+  function tVolleyballNet(leftBase=0, rightBase=0) {
     const m=Acc(), g=Acc();
-    for (const x of [-4,4]) addTo(m,new THREE.CylinderGeometry(0.065,0.085,2.5,6),'#e9dfca',x,1.25,0);
+    for (const [x,base] of [[-4,leftBase],[4,rightBase]])
+      addTo(m,new THREE.CylinderGeometry(0.065,0.085,2.5-base,6),'#e9dfca',x,(2.5+base)/2,0);
     for (let i=0;i<=16;i++) addTo(m,new THREE.BoxGeometry(0.014,0.9,0.014),'#e4dfd3',-4+i*0.5,1.95,0);
     for (let i=0;i<=3;i++) addTo(m,new THREE.BoxGeometry(8,0.014,0.014),'#e4dfd3',0,1.5+i*0.3,0);
     addTo(m,new THREE.BoxGeometry(8.1,0.08,0.035),'#fcf3db',0,2.43,0);
@@ -3416,7 +3417,15 @@ function createProps({ THREE, scene, map }) {
     const y = ground(x, z);
     if (separateBeach) {
       const matte = Acc(), lit = Acc();
-      stamp(matte, TYPES[typeKey].m, 0, 0, 0, yaw);
+      let matteSource = TYPES[typeKey].m;
+      if (typeKey === 'volleyballNet') {
+        const dx = 4 * Math.cos(yaw), dz = -4 * Math.sin(yaw);
+        matteSource = tVolleyballNet(
+          ground(x-dx,z-dz)-y-0.02,
+          ground(x+dx,z+dz)-y-0.02
+        ).m;
+      }
+      stamp(matte, matteSource, 0, 0, 0, yaw);
       if (TYPES[typeKey].g.pos.length) stamp(lit, TYPES[typeKey].g, 0, 0, 0, yaw);
       beachBatches.push({matte, lit, x, y, z, type: recordKey || typeKey});
     } else {
@@ -3959,6 +3968,17 @@ function createProps({ THREE, scene, map }) {
   addBeach('towelB',2,1.0,1.0,[-24,-59,26,119,-144],0,'bench');
 
   separateBeach = false;
+  if (map.addBlock) for (const p of placements) {
+    if (p.type === 'lifeguardTower') {
+      map.addBlock(p.x-1.7,p.z-1.5,p.x+1.7,p.z+1.5);
+    } else if (p.type === 'volleyballNet') {
+      const dx = 4 * Math.cos(p.yaw), dz = -4 * Math.sin(p.yaw);
+      for (const side of [-1,1]) {
+        const x = p.x+side*dx, z = p.z+side*dz;
+        map.addBlock(x-0.2,z-0.2,x+0.2,z+0.2);
+      }
+    }
+  }
   const matMatte = new THREE.MeshLambertMaterial({ vertexColors: true });
   const matGlow = new THREE.MeshBasicMaterial({ vertexColors: true });
   const PROPS_CHUNK_CELL = 100;
