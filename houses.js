@@ -652,13 +652,28 @@ export function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disa
   // ---- merged-geometry baking (rotations: part Rz,Rx,Ry then house Ry + translate) ----
   const buckets = new Map(); // matKey -> { pos: [], norm: [], col: [] }
   let bakeTris = 0;          // triangles baked for the current house (per-placement stats)
+  // DISTRICT_TINT (gfxfps round 17): per-district hue shift baked into the vertex colours
+  // at build time - the tint multiplies into the same cr/cg/cb the per-house jitter uses,
+  // so it rides the HOUSE-MERGE single-material fold for free. +0 tris, +0 draws, +0
+  // per-frame cost. Thresholds mirror zoneAt (layout C=300). false = v30 colours exactly.
+  const DISTRICT_TINT = false;
+  const DT_HUE = { hills: [1.06, 1.00, 0.94], south: [1.04, 0.97, 0.96], beach: [1.02, 1.02, 0.92], grid: [0.97, 1.00, 1.05] };
+  function districtTint(x, z) {
+    if (!DISTRICT_TINT) return null;
+    if (x > 145) return DT_HUE.hills;   // Hillcrest + Palm Court hillside (zoneAt: x > lw(445) / winding climb)
+    if (z > 142) return DT_HUE.south;   // Southside bungalows (zoneAt: z > lz(442))
+    if (x < -120) return DT_HUE.beach;  // Beachfront Row / promenade homes
+    return DT_HUE.grid;                 // central grid
+  }
+
   function bakePart(part, hx, hy, hz, yaw, jit) {
     const src = part.g.index ? part.g.toNonIndexed() : part.g;
     const pos = src.attributes.position.array, nrm = src.attributes.normal.array;
     let b = buckets.get(part.m);
     if (!b) { b = { pos: [], norm: [], col: [] }; buckets.set(part.m, b); }
     const tint = jit[JIT[part.m]] || null; // per-house RGB multiplier for this material
-    const cr = tint ? tint[0] : 1, cg = tint ? tint[1] : 1, cb = tint ? tint[2] : 1;
+    const dt = districtTint(hx, hz); // DISTRICT_TINT (null when flag off)
+    const cr = (tint ? tint[0] : 1) * (dt ? dt[0] : 1), cg = (tint ? tint[1] : 1) * (dt ? dt[1] : 1), cb = (tint ? tint[2] : 1) * (dt ? dt[2] : 1);
     const [sx, sy, sz] = part.s;
     const c1 = Math.cos(part.rz), s1 = Math.sin(part.rz);
     const c2 = Math.cos(part.rx), s2 = Math.sin(part.rx);
