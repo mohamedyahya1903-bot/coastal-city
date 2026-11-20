@@ -2,6 +2,17 @@
 //   Round 6 (peds v6, 2026-11-20, map v10): beach idlers - 2-3 wanderers instead live at the
 //   beach umbrella clusters (towel spots arrive via the existing idleSpots wiring): sit, lie
 //   on the towel, stand facing the sea, short amble on the sand; never touch roads/crosswalks.
+//   Round 13 (peds v13, 2026-11-20, map v23 + houses v8 + vehicles v010): count 22 -> 23; the
+//   new walker is pinned to the north-end promenade by the v19 bollard run (map.coastal.northEnd),
+//   seaward sidewalk preferred, sliced + trimmed with the round-12 anchoring so pacing stays
+//   clear of the bollard blocked rect. No pool/far-shell changes.
+//   Round 12 (peds v12, 2026-11-20, map v21 + houses v8 + vehicles v012): leg-2 pinned
+//   walker anchoring - houses v8's re-sited home fronts leg 2's west run, and near the
+//   west hairpin both sidewalks can be invalid (home footprint / converging leg), so the
+//   old side-flip could anchor the walker inside the home (~30% of runs, in-house for
+//   whole phases). Now both sidewalks are scanned with the anchor's own validity check,
+//   the side with the longest clear contiguous run wins, and the slice is trimmed to
+//   that run so pacing stays clear. No count/pool/far-shell changes.
 //   Round 10 (peds v11, 2026-11-20, map v17): count 20 -> 22; the 2 new walkers are pinned to
 //   the remaining Hillcrest switchback sidewalks (leg 2 east via the Bench F run, leg 3 via the
 //   Bench B run) so all three legs stay dressed; same stayOnRoad pin + sub-road slice as Bench A.
@@ -101,7 +112,7 @@ export function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots =
   const SHOE = '#152335';
   const pick = (a) => a[Math.floor(Math.random() * a.length)];
 
-  const PED_COUNT = 22; // coordinator dial (parent Nov 20): 28->20->22 (round 10: +2 Hillcrest switchback walkers)
+  const PED_COUNT = 23; // coordinator dial (parent Nov 20): 28->20->22 (round 10: +2 Hillcrest switchback walkers) -> 23 (round 13: +1 north-end promenade walker)
   const ANIM_NEAR = 60, HIDE_FAR = 140, SIDEWALK = 2.0;
 
   // ---- world-space road polylines (layout - 300) with cumulative lengths ----
@@ -510,8 +521,165 @@ export function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots =
         if (pts.length >= 2) {
           const cum = [0];
           for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
-          const front = { pts, cum, w: best.w, cls: best.cls, len: cum[cum.length - 1] };
+          let front = { pts, cum, w: best.w, cls: best.cls, len: cum[cum.length - 1] };
           if (front.len > 25) {
+            let done = false;
+            for (const i of order) {
+              if (done) break;
+              if (peds[i].stayOnRoad) continue;
+              if (peds[i].role !== 'wander' && peds[i].role !== 'stroll') continue; // wander pool first, a stroller if it is empty
+              if (peds[i].role === 'stroll' && peds.some((q) => q.role === 'wander' && !q.stayOnRoad)) continue;
+              const p = peds[i];
+              p.role = 'wander'; // a converted stroller becomes a plain pinned walker (shipped flip at the stroll fallback)
+              p.road = front; p.stayOnRoad = true;
+              // round 12: houses v8's re-sited road-side home fronts leg 2's west run; near the west
+              // hairpin the two legs converge, so BOTH sidewalks can be invalid there (one on the
+              // home's footprint, one on the other leg's roadway). A bare side flip lands the anchor
+              // inside the home (measured flake: the pinned walker in-house for whole phases on ~30%
+              // of runs). Instead scan both sidewalks along the slice with the same validity check
+              // the anchor uses (houses-first: footprints are live blocks), take the side with the
+              // longest clear contiguous run, and trim the slice to that run so pacing stays inside.
+              let pinSide = 1;
+              if (padName === 'Bench F' && front.len > 30) {
+                const N = 20;
+                const clearArcs = { 1: [], '-1': [] }; // per side: clear sample arcs
+                for (let k = 0; k <= N; k++) {
+                  const sK = 2 + (front.len - 4) * (k / N);
+                  for (const sd of [1, -1]) {
+                    const qq = spot(front, sK, sd, {});
+                    if (validSpot(qq.x, qq.z)) clearArcs[sd].push(sK);
+                  }
+                }
+                let bestSd = 0, bestS0 = 0, bestS1 = 0;
+                for (const sd of [1, -1]) { // longest contiguous clear run on this side
+                  const ok = clearArcs[sd];
+                  let cs = -1, cl = 0;
+                  for (let k = 0; k <= N; k++) {
+                    const sK = 2 + (front.len - 4) * (k / N);
+                    const clear = ok.indexOf(sK) !== -1;
+                    if (clear && cs < 0) { cs = sK; cl = 0; }
+                    if (clear) cl = k === N ? cl : cl; // length tracked via cs->sK span below
+                    if (!clear || k === N) {
+                      if (cs >= 0) {
+                        const ce = clear && k === N ? sK : 2 + (front.len - 4) * ((k - 1) / N);
+                        if (ce - cs > bestS1 - bestS0) { bestSd = sd; bestS0 = cs; bestS1 = ce; }
+                        cs = -1;
+                      }
+                    }
+                  }
+                }
+                if (bestSd !== 0 && bestS1 - bestS0 >= 25 && bestS1 - bestS0 < front.len - 4) {
+                  let i0 = 0, i1 = front.pts.length - 1; // pts indices bracketing [bestS0, bestS1]
+                  while (i0 < front.cum.length - 2 && front.cum[i0 + 1] < bestS0) i0++;
+                  while (i1 > i0 + 1 && front.cum[i1 - 1] > bestS1) i1--;
+                  const sub = front.pts.slice(i0, i1 + 1);
+                  const cum2 = [0];
+                  for (let i = 1; i < sub.length; i++) cum2.push(cum2[i - 1] + Math.hypot(sub[i][0] - sub[i - 1][0], sub[i][1] - sub[i - 1][1]));
+                  if (cum2[cum2.length - 1] > 25) {
+                    front = { pts: sub, cum: cum2, w: front.w, cls: front.cls, len: cum2[cum2.length - 1] };
+                    pinSide = bestSd;
+                  }
+                }
+              }
+              p.s = 4 + Math.random() * Math.max(1, front.len - 8);
+              p.dir = Math.random() < 0.5 ? 1 : -1;
+              p.side = pinSide;
+              let q = spot(front, p.s, pinSide, Q1);
+              if (!validSpot(q.x, q.z)) { p.side = -pinSide; q = spot(front, p.s, -pinSide, Q1); }
+              p.x = q.x; p.z = q.z; p.lastSeg = q.seg; p.mode = 'walk';
+              p.root.position.set(p.x, ground(p.x, p.z), p.z);
+              done = true;
+            }
+          }
+        }
+      }
+    }
+  }
+  { // round 13: one pinned walker on the north-end promenade by the v19 bollard run
+    // (map.coastal.northEnd), mirroring the foot traffic the south end already gets. Same
+    // stayOnRoad pin + sub-road slice as the switchback pins, with the round-12 anchoring:
+    // scan both sidewalks with the anchor's own validity check (the bollard blocked rect is a
+    // live map block, so the trim keeps pacing clear of it), take the longest clear run, and
+    // prefer the seaward (west, smaller-x) sidewalk when both sides qualify.
+    const ne = map.coastal && map.coastal.northEnd;
+    if (ne && ne.layout) {
+      const nx = ne.layout[0] - 300, nz = ne.layout[1] - 300;
+      let best = null, bd = 1e9;
+      for (const r of roads) {
+        for (let i = 0; i < r.pts.length - 1; i++) {
+          const ax = r.pts[i][0], az = r.pts[i][1], cx = r.pts[i + 1][0], cz = r.pts[i + 1][1];
+          const dx = cx - ax, dz = cz - az, L2 = dx * dx + dz * dz;
+          let t = L2 ? ((nx - ax) * dx + (nz - az) * dz) / L2 : 0; t = Math.max(0, Math.min(1, t));
+          const d = Math.hypot(ax + t * dx - nx, az + t * dz - nz);
+          if (d < bd) { bd = d; best = r; }
+        }
+      }
+      if (best) {
+        const R = 34; // contiguous pts run alongside the bollard run (22 leaves a 27.8 m slice; the junction apron eats ~9 m of sidewalk, so the clear run needs the longer window)
+        let bi = 0, bs = 1e9;
+        for (let i = 0; i < best.pts.length; i++) {
+          const d = Math.hypot(best.pts[i][0] - nx, best.pts[i][1] - nz);
+          if (d < bs) { bs = d; bi = i; }
+        }
+        let lo = bi, hi = bi;
+        while (lo > 0 && Math.hypot(best.pts[lo - 1][0] - nx, best.pts[lo - 1][1] - nz) < R) lo--;
+        while (hi < best.pts.length - 1 && Math.hypot(best.pts[hi + 1][0] - nx, best.pts[hi + 1][1] - nz) < R) hi++;
+        const pts = best.pts.slice(lo, hi + 1);
+        if (pts.length >= 2) {
+          const cum = [0];
+          for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+          let front = { pts, cum, w: best.w, cls: best.cls, len: cum[cum.length - 1] };
+          let pinSide = 0;
+          if (front.len > 30) {
+            const N = 20;
+            const clearArcs = { 1: [], '-1': [] };
+            for (let k = 0; k <= N; k++) {
+              const sK = 2 + (front.len - 4) * (k / N);
+              for (const sd of [1, -1]) {
+                const qq = spot(front, sK, sd, {});
+                if (validSpot(qq.x, qq.z)) clearArcs[sd].push(sK);
+              }
+            }
+            const runs = {};
+            for (const sd of [1, -1]) {
+              let cs = -1, b0 = 0, b1 = 0;
+              for (let k = 0; k <= N; k++) {
+                const sK = 2 + (front.len - 4) * (k / N);
+                const clear = clearArcs[sd].indexOf(sK) !== -1;
+                if (clear && cs < 0) cs = sK;
+                if (!clear || k === N) {
+                  if (cs >= 0) {
+                    const ce = clear && k === N ? sK : 2 + (front.len - 4) * ((k - 1) / N);
+                    if (ce - cs > b1 - b0) { b0 = cs; b1 = ce; }
+                    cs = -1;
+                  }
+                }
+              }
+              runs[sd] = [b0, b1];
+            }
+            // min clear run 18 m here (vs 25 on the switchback): the promenade's clear sidewalk
+            // beside the bollards measures ~23 m seaward / ~16 m landward.
+            let pick = 0;
+            if (runs[1][1] - runs[1][0] >= 18 && runs[-1][1] - runs[-1][0] >= 18) { // both qualify: seaward side
+              const mx = (sd) => { const q = spot(front, (runs[sd][0] + runs[sd][1]) / 2, sd, {}); return q.x; };
+              pick = mx(1) <= mx(-1) ? 1 : -1;
+            } else if (runs[1][1] - runs[1][0] >= 18) pick = 1;
+            else if (runs[-1][1] - runs[-1][0] >= 18) pick = -1;
+            if (pick !== 0) { // trim by interpolated endpoints: the promenade pts are ~10 m apart,
+              const [b0, b1] = runs[pick]; // whole-pt slicing would re-admit the invalid approach
+              const pa = pointAt(front, b0 + 1, {}), pb = pointAt(front, b1 - 1, {});
+              const sub = [[pa.x, pa.z]];
+              for (let i = 0; i < front.pts.length; i++) if (front.cum[i] > b0 + 1 && front.cum[i] < b1 - 1) sub.push(front.pts[i]);
+              sub.push([pb.x, pb.z]);
+              const cum2 = [0];
+              for (let i = 1; i < sub.length; i++) cum2.push(cum2[i - 1] + Math.hypot(sub[i][0] - sub[i - 1][0], sub[i][1] - sub[i - 1][1]));
+              if (cum2[cum2.length - 1] > 18) {
+                front = { pts: sub, cum: cum2, w: front.w, cls: front.cls, len: cum2[cum2.length - 1] };
+                pinSide = pick;
+              }
+            }
+          }
+          if (pinSide !== 0 && front.len > 18) { // trimmed run clears the bollard rect by construction (18 m floor above)
             let done = false;
             for (const i of order) {
               if (done) break;
@@ -523,9 +691,9 @@ export function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots =
               p.road = front; p.stayOnRoad = true;
               p.s = 4 + Math.random() * Math.max(1, front.len - 8);
               p.dir = Math.random() < 0.5 ? 1 : -1;
-              p.side = 1;
-              let q = spot(front, p.s, 1, Q1);
-              if (!validSpot(q.x, q.z)) { p.side = -1; q = spot(front, p.s, -1, Q1); }
+              p.side = pinSide;
+              let q = spot(front, p.s, pinSide, Q1);
+              if (!validSpot(q.x, q.z)) { p.side = -pinSide; q = spot(front, p.s, -pinSide, Q1); }
               p.x = q.x; p.z = q.z; p.lastSeg = q.seg; p.mode = 'walk';
               p.root.position.set(p.x, ground(p.x, p.z), p.z);
               done = true;
