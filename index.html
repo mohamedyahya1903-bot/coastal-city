@@ -332,7 +332,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
     { pts: [[558,200],[558,280]], w: 7 },
     { pts: [[500,200],[514,198],[528,196],[542,192],[556,188],[565.5,183],[575,178],[582,170],[574,164],[566,158],[553,155],[540,152],[530,150],[520,148],[532,141],[548,137],[561,132],[565,124],[564,116],[562,108],[561,100],[562,93],[566,88],[573,85],[580,84]], w: 7 },
     { pts: [[310,472],[339,472],[341,467],[346,465],[351,467],[353,472],[351,477],[346,479],[341,477],[339,472]], w: 7 }, // Pelican Court, off V310 east
-    { pts: [[245,470],[225,470],[223,465],[218,463],[213,465],[211,470],[213,475],[218,477],[223,475],[225,470]], w: 7 }, // Grove Court, off V245 west
+    { pts: [[245,470],[225,470],[223,465],[218,463],[213,465],[211,470],[213,475],[218,477],[223,475],[225,470]], w: 7 }, // Seashell Court, off V245 west
     { pts: [[248,200],[248,360]], w: 6 }, // between tower columns 1 and 2
     { pts: [[200,248],[360,248]], w: 6 }, // between tower rows 1 and 2
     { pts: [[245,455],[310,455]], w: 6, cls: 'grid' }, // C1: V245 -> V310
@@ -345,6 +345,13 @@ function createMap({ THREE, scene, GLTFLoader }) {
     { pts: [[208,200],[208,360]], w: 6 }, // A1 N-S behind Tower col 1 / Office 1 (1 m clear of pads)
     { pts: [[200,208],[360,208]], w: 6 }, // A2 E-W behind Tower row 1 (1 m clear of pads + H200 edge)
     { pts: [[200,330],[360,330]], w: 6 }, // A3 E-W behind the Office row (3 m clear of pads)
+  ];
+  const ROAD_NAMES = [ // v22: original invented street names for the future HUD (no real GTA names)
+    'Pelican Bay Promenade', 'Harborview Avenue', 'Solana Avenue', 'Cordova Avenue', 'Coral Avenue',
+    'Palm Court Ramp', 'Palm Drive', 'Seabreeze Street', 'Marlin Street', 'Sandpiper Street',
+    'Skyline Avenue', 'Heron Street', 'Gull Street', 'Southshore Road', 'Tern Street',
+    'Cliffside Lane', 'Hillcrest Road', 'Pelican Court', 'Seashell Court', 'Banyan Street',
+    'Lagoon Street', 'Palmilla Lane', 'Sundown Lane', 'Beacon Drive',
   ];
   const PARK_W = PARKING.map(([, x0, y0, x1, y1]) => ({ minX: lw(x0), maxX: lw(x1), minZ: lz(y0), maxZ: lz(y1) })); // world rects for isRoadAt
   PARK_W.push({ minX: lw(131), maxX: lw(157), minZ: lz(236), maxZ: lz(272) }); // v12 Beachfront Row
@@ -580,7 +587,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
   for (const d of DRIVES) strip(d, matDrive, d.w / 2, 0.045, 4, 0, 0);
   for (const r of ROADS) strip(r, matLine, 0.2, 0.08, 8, 3, 12, r === ROADS[0] ? medianZones : breakZones); // v8 junction breaks + v10 median stretch
   strip(HWY, matHwyLn, 0.2, 0.09, 8, 4, 16, breakZones);
-  const markings = { crosswalks: [], stopLines: 0, kerbs: 0, arrows: 0, kerbRamps: [], tactilePads: [] }; // crosswalks/kerbRamps/tactilePads: layout [x,y] centres (ramps/pads v17)
+  const markings = { crosswalks: [], stopLines: 0, kerbs: 0, arrows: 0, kerbRamps: [], tactilePads: [], chevrons: [], wordPaint: [], tBays: [] }; // crosswalks/kerbRamps/tactilePads/chevrons: layout [x,y] centres (ramps/pads v17, chevrons v19)
   const offMark = 0.07; // above the asphalt (0.04-0.05), just under the dashes (0.08)
   const markLine = [], markKerb = [];
   function flatQuad(cx, cy, ux, uy, hl, hw, off) { // layout centre, unit axis u, half-len along u, half-wid across; up-facing (strip winding)
@@ -614,8 +621,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
           P(cxi[0] + ux * 1.2, cxi[1] + uy * 1.2, 0.05), P(cxi[0] - ux * 1.2, cxi[1] - uy * 1.2, 0.05)));
         markings.kerbs++;
         markings.kerbRamps.push([bx, by]); // v17: auditable ramp positions
-        if ([[134, 500], [423, 200], [423, 280], [423, 360]].some(([tx, ty]) => Math.abs(nd.x - tx) < 1 && Math.abs(nd.y - ty) < 1))
-          markings.tactilePads.push([bx + nx * sgn * 0.9, by + ny * sgn * 0.9, Math.atan2(uy, ux)]);
+        markings.tactilePads.push([bx + nx * sgn * 0.9, by + ny * sgn * 0.9, Math.atan2(uy, ux)]);
       }
       if (a.w === 6 && !a.alley && nd.x >= 190 && nd.x <= 370 && nd.y >= 190 && nd.y <= 370) { // v9 alleys, v11: arrows stay downtown
         const dA = nd.maxHalf + 7.4;
@@ -627,6 +633,69 @@ function createMap({ THREE, scene, GLTFLoader }) {
         markings.arrows++;
       }
     }
+  }
+  {
+    const hp = ROADS[16].pts, hw2 = ROADS[16].w / 2; // hillcrest switchback, w=7
+    for (const ai of [7, 13, 16]) { // apex points (582,170), (520,148), (561,132)
+      const [ax0, ay0] = hp[ai - 1], [ax1, ay1] = hp[ai], [ax2, ay2] = hp[ai + 1];
+      const cross = (ax1 - ax0) * (ay2 - ay1) - (ay1 - ay0) * (ax2 - ax1); // bend direction at the apex
+      const sgn = Math.sign(cross) || 1;
+      for (const pi of [ai - 1, ai, ai + 1, ai + 2]) { // 4 chevrons along the bend
+        const [px0, py0] = hp[pi - 1], [px1, py1] = hp[pi], [px2, py2] = hp[pi + 1];
+        let ux = px2 - px0, uy = py2 - py0; const L = Math.hypot(ux, uy); ux /= L; uy /= L;
+        const ox = sgn > 0 ? uy : -uy, oy = sgn > 0 ? -ux : ux; // outside of the bend
+        const cx = px1 + ox * (hw2 - 1.15), cy = py1 + oy * (hw2 - 1.15);
+        let dx = ux - ox, dy = uy - oy; const D = Math.hypot(dx, dy); dx /= D; dy /= D; // 45 deg forward-inward
+        markLine.push(flatQuad(cx, cy, dx, dy, 1.1, 0.28));
+        markings.chevrons.push([cx, cy]);
+      }
+    }
+  }
+  {
+    const LET = { // block capitals, 1.5 wide x 3 tall, stroke 0.3, baseline y=0, centred x
+      S: [['h', 0.15, -0.75, 0.75], ['h', 1.5, -0.75, 0.75], ['h', 2.85, -0.75, 0.75], ['v', -0.6, 1.5, 3], ['v', 0.6, 0, 1.5]],
+      T: [['h', 2.85, -0.75, 0.75], ['v', 0, 0, 2.7]],
+      O: [['v', -0.6, 0, 3], ['v', 0.6, 0, 3], ['h', 0.15, -0.75, 0.75], ['h', 2.85, -0.75, 0.75]],
+      P: [['v', -0.6, 0, 3], ['h', 2.85, -0.75, 0.75], ['h', 1.5, -0.75, 0.75], ['v', 0.6, 1.5, 3]],
+      B: [['v', -0.6, 0, 3], ['h', 0.15, -0.75, 0.75], ['h', 1.5, -0.75, 0.75], ['h', 2.85, -0.75, 0.75], ['v', 0.6, 1.65, 3], ['v', 0.6, 0, 1.35]],
+      U: [['v', -0.6, 0.3, 3], ['v', 0.6, 0.3, 3], ['h', 0.15, -0.75, 0.75]],
+    };
+    const wordPaint = (text, wx, wy, tx, ty) => {
+      const rx = -ty, ry = tx; // right of travel = letter width axis
+      for (let k = 0; k < text.length; k++) {
+        const lx = wx + tx * k * 3.5, ly = wy + ty * k * 3.5;
+        for (const [s, a, b, c] of LET[text[k]]) {
+          if (s === 'h') markLine.push(flatQuad(lx + rx * (b + c) / 2 + tx * (a - 1.5), ly + ry * (b + c) / 2 + ty * (a - 1.5), rx, ry, (c - b) / 2, 0.15));
+          else markLine.push(flatQuad(lx + rx * a + tx * ((b + c) / 2 - 1.5), ly + ry * a + ty * ((b + c) / 2 - 1.5), tx, ty, (c - b) / 2, 0.15));
+        }
+      }
+    };
+    wordPaint('BUS', 268.5, 243.25, -1, 0); // Downtown Solana lay-by (north kerb -> westbound)
+    markings.wordPaint.push({ text: 'BUS', layout: [268.5, 243.25] });
+    wordPaint('BUS', 427.75, 322.5, 0, -1); // Palm Court lay-by (east kerb -> northbound)
+    markings.wordPaint.push({ text: 'BUS', layout: [427.75, 322.5] });
+    for (const nd of junctions) { // STOP beside every stop line at 4-arm downtown junctions
+      if (nd.hwy || nd.base === false || nd.arms.length !== 4 || nd.maxHalf < 4) continue;
+      if (nd.x < 190 || nd.x > 450 || nd.y < 190 || nd.y > 460) continue;
+      for (const a of nd.arms) {
+        const shortArm = junctions.some((o) => o !== nd &&
+          (o.x - nd.x) * a.dx + (o.y - nd.y) * a.dy > 0.5 &&
+          Math.hypot(o.x - nd.x, o.y - nd.y) < 24 &&
+          Math.abs((o.x - nd.x) * a.dy - (o.y - nd.y) * a.dx) < 8);
+        if (shortArm) continue; // word would run into the next junction's markings
+        const d0 = nd.maxHalf + 0.9 + 12.4; // S centre: word spans stop+0.4 .. stop+13.9
+        const ox = nd.x + a.dx * d0 + a.dy * (a.w / 4), oy = nd.y + a.dy * d0 - a.dx * (a.w / 4); // right lane
+        wordPaint('STOP', ox, oy, -a.dx, -a.dy);
+        markings.wordPaint.push({ text: 'STOP', layout: [Math.round(ox * 10) / 10, Math.round(oy * 10) / 10] });
+      }
+    }
+    const tbay = (x, yKerb) => { // south kerb: stems run NORTH into the asphalt
+      markLine.push(flatQuad(x, yKerb - 1.1, 0, 1, 1.1, 0.06)); // stem 2.2 m into the road
+      markLine.push(flatQuad(x, yKerb - 0.12, 1, 0, 0.5, 0.06)); // kerb cap
+      markings.tBays.push([Math.round(x * 10) / 10, yKerb]);
+    };
+    for (let x = 508; x <= 553; x += 2.6) tbay(x, 204); // H200 Palm Court frontage
+    for (let x = 447; x <= 553; x += 2.6) { if (x > 493.5 && x < 500.5) continue; tbay(x, 284); } // H280 bungalow frontage, driveway gap
   }
   const markRoad = []; // lot asphalt -> matRoad batch (0 new draws)
   for (const [, x0, y0, x1, y1] of PARKING) {
@@ -809,7 +878,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
   const coastal = { dividedY: [COAST.y0, COAST.y1], medianRects: [], guardrail: { count: 0, offset: 4.1, spacing: 4 }, gantry: null,
     north: { dividedY: [COASTN.y0, COASTN.y1], medianRects: [], guardrail: { count: 0, offset: 4.1, spacing: 4 }, gantry: null }, // v12
     south: { dividedY: [COASTS.y0, COASTS.y1], medianRects: [], guardrail: { count: 0, offset: 4.1, spacing: 4, posts: [] }, gantry: null }, // v15 (+posts v16)
-    southEnd: { bollards: 0, rect: null, sign: null } }; // v16
+    southEnd: { bollards: 0, rect: null, sign: null }, northEnd: null }; // v16 southEnd, v19 northEnd
   {
     const pos = [], norm = [], col = [], idx = [];
     const hex = (h) => [((h >> 16) & 255) / 255, ((h >> 8) & 255) / 255, (h & 255) / 255];
@@ -923,7 +992,21 @@ function createMap({ THREE, scene, GLTFLoader }) {
       box(139.0, 516.8, 0, 0.5, 0.06, 1.74, 2.34, 0xc0272d); // red no-exit panel, faces the lanes
       coastal.southEnd.sign = { layout: [139.0, 516.8], face: 'no-exit', height: 2.34 };
     }
-    for (const tp of markings.tactilePads) box(tp[0], tp[1], tp[2], 0.5, 0.3, 0.2, 0.26, 0xd8c43c);
+    {
+      for (let k = -3; k <= 3; k++) box(131.5 + 0.984 * k * 1.13, 89 - 0.179 * k * 1.13, 0, 0.09, 0.09, 0.04, 0.94, 0xd8c43c);
+      const r = { minX: lw(127.7), maxX: lw(135.3), minZ: lz(87.9), maxZ: lz(90.1) }; // one shared blocked rect
+      blocks.push(r);
+      coastal.northEnd = { bollards: 7, layout: [131.5, 89], rect: [r.minX, r.minZ, r.maxX, r.maxZ] };
+    }
+    for (const tp of markings.tactilePads) {
+      const cs = Math.cos(tp[2]), sn = Math.sin(tp[2]), c3 = hex(0xd8c43c);
+      const P = (lx, lz2) => { // v21: per-corner terrain (was a flat plane - 6 corners floated > 6 cm)
+        const wx = tp[0] + lx * cs - lz2 * sn, wz = tp[1] + lx * sn + lz2 * cs;
+        return [lw(wx), terrainH(lw(wx), lz(wz)) + 0.24, lz(wz)];
+      };
+      for (const p of [P(-0.5, -0.3), P(0.5, -0.3), P(-0.5, 0.3), P(0.5, 0.3)]) { pos.push(...p); norm.push(0, 1, 0); col.push(...c3); }
+      idx.push(vc, vc + 2, vc + 1, vc, vc + 3, vc + 2); vc += 4;
+    }
     {
       const b = box(596, 170, 0, 0.15, 5, 0.04, 0.39, 0x9d9a92); // concrete, full pad width
       blocks.push(aabbOf(b));
@@ -1178,7 +1261,64 @@ function createMap({ THREE, scene, GLTFLoader }) {
     obj.position.set(x - c.x, terrainH(x, z) - 0.15 - box.min.y, z - c.z); // prop sits on the terrain
     return obj;
   }
-
+  function bakeFarPrimitive(T, grp) {
+    grp.updateMatrixWorld(true);
+    const texBuckets = new Map(); // material.uuid -> { mat, pos:[], norm:[], uv:[] }
+    const flat = { pos: [], norm: [], col: [] };
+    const nm = new T.Matrix3();
+    const v = new T.Vector3();
+    grp.traverse((o) => {
+      if (!o.isMesh) return;
+      const geo = o.geometry;
+      const index = geo.index;
+      const posA = geo.attributes.position, normA = geo.attributes.normal, uvA = geo.attributes.uv;
+      const groups = geo.groups && geo.groups.length ? geo.groups
+        : [{ start: 0, count: index ? index.count : posA.count, materialIndex: 0 }];
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      nm.getNormalMatrix(o.matrixWorld);
+      for (const gd of groups) {
+        const m = mats[gd.materialIndex] || mats[0];
+        const isTex = !!(m && m.map);
+        let bk;
+        if (isTex) {
+          bk = texBuckets.get(m.uuid);
+          if (!bk) { bk = { mat: m, pos: [], norm: [], uv: [] }; texBuckets.set(m.uuid, bk); }
+        }
+        for (let i = gd.start; i < gd.start + gd.count; i++) {
+          const vi = index ? index.getX(i) : i;
+          v.fromBufferAttribute(posA, vi).applyMatrix4(o.matrixWorld);
+          if (isTex) {
+            bk.pos.push(v.x, v.y, v.z);
+            v.fromBufferAttribute(normA, vi).applyMatrix3(nm).normalize();
+            bk.norm.push(v.x, v.y, v.z);
+            if (uvA) bk.uv.push(uvA.getX(vi), uvA.getY(vi));
+          } else {
+            flat.pos.push(v.x, v.y, v.z);
+            v.fromBufferAttribute(normA, vi).applyMatrix3(nm).normalize();
+            flat.norm.push(v.x, v.y, v.z);
+            const c = (m && m.color) || { r: 1, g: 1, b: 1 };
+            flat.col.push(c.r, c.g, c.b);
+          }
+        }
+      }
+    });
+    grp.clear();
+    const addBaked = (pos, norm, extra, mat) => {
+      const g = new T.BufferGeometry();
+      g.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
+      g.setAttribute('normal', new T.Float32BufferAttribute(norm, 3));
+      if (extra) g.setAttribute(extra[0], new T.Float32BufferAttribute(extra[1], extra[2]));
+      g.computeBoundingSphere();
+      const mesh = new T.Mesh(g, mat);
+      mesh.matrixAutoUpdate = false;
+      grp.add(mesh);
+    };
+    for (const bk of texBuckets.values())
+      addBaked(bk.pos, bk.norm, bk.uv.length ? ['uv', bk.uv, 2] : null, bk.mat);
+    if (flat.pos.length)
+      addBaked(flat.pos, flat.norm, ['color', flat.col, 3],
+        new T.MeshLambertMaterial({ color: 0xffffff, vertexColors: true }));
+  }
   function swapToModels(GL) {
     const loader = new GL();
     for (const m of MODELS) {
@@ -1193,6 +1333,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
           old.traverse((o) => { // swap the dark near facade for the light far one (P3a: 2-material box)
             if (o.isMesh && Array.isArray(o.material)) o.material = [farSide, o.material[1]];
           });
+          bakeFarPrimitive(THREE, old); // BLD-FAR-BAKE: ~6 draws -> 2 per tower far level
           const lod = new THREE.LOD();
           lod.addLevel(obj, 0); lod.addLevel(old, 70); // towers: far level past 70 m
           scene.add(lod); freeze(lod);
@@ -1332,15 +1473,25 @@ function createMap({ THREE, scene, GLTFLoader }) {
     isBlocked, blockedAt: isBlocked,
     isRoadAt, taxiStops,
     starterHome: { x: lw(505), z: lz(309), name: 'Palm Court Bungalow' },
-    roadPaths: ROADS.map((r) => (r.cls ? { pts: r.pts, w: r.w, cls: r.cls } : { pts: r.pts, w: r.w }))
-      .concat(ALLEYS.map((r) => ({ pts: r.pts, w: r.w, cls: 'alley' }))), // v9: alleys carry the class
+    roadPaths: ROADS.map((r, i) => (r.cls ? { pts: r.pts, w: r.w, cls: r.cls, name: ROAD_NAMES[i] } : { pts: r.pts, w: r.w, name: ROAD_NAMES[i] })) // v22: +name
+      .concat(ALLEYS.map((r, i) => ({ pts: r.pts, w: r.w, cls: 'alley', name: 'Service Alley ' + (i + 1) }))) // v9: alleys carry the class
+      .map((r) => ({ ...r, limit: r.cls === 'alley' ? 20 : r.w >= 10 ? 60 : r.w === 8 ? 50 : r.w === 7 ? 40 : 30 })), // v21: km/h
     parkingLots, // v9: [{name,x,z,w,h,heading,layout,bays}] world coords, axis-aligned (heading 0),
     coastal, // v10: divided-stretch data (median rects world, guardrail, gantry) for tests/vehicles,
     turnout, // v11: Hillcrest viewpoint turnout { layout, w, h, mouth, barrier },
     laybys, // v13: bus lay-by bays { layout, w, h, street, stop },
     hillBenches: HILL_BENCHES.map(([nm, x0, y0, x1, y1], i) => ({ name: nm, layout: [(x0 + x1) / 2, (y0 + y1) / 2], w: x1 - x0, h: y1 - y0, padY: HILL_T[i].padY })), // v14
     hillsideSign, // v17: LOS SANTOS hillside letter row (layout data; mesh 'hillsideSign')
-    junctions: junctions.map((nd) => ({ x: nd.x, y: nd.y, maxHalf: nd.maxHalf, hwy: nd.hwy || nd.base === false, arms: nd.arms.map((a) => [a.dx, a.dy, a.w]) })), // hwy=true: dash-break only (highway + v9 alley junctions)
+    junctions: junctions.map((nd) => { // hwy=true: dash-break only (highway + v9 alley junctions)
+      const maxW = Math.max(...nd.arms.map((a) => a.w));
+      const hwy = nd.hwy || nd.base === false;
+      const allEq = nd.arms.every((a) => a.w === maxW); // v22: width-tied junction
+      const control = hwy ? 'none' : (allEq && nd.arms.length >= 3 ? 'all-way' : 'priority');
+      const priorityArm = control === 'priority' ? nd.arms.findIndex((a) => a.w === maxW) : null;
+      const yields = control === 'priority' ? nd.arms.map((a, i) => (a.w < maxW ? i : -1)).filter((i) => i >= 0) : [];
+      return { x: nd.x, y: nd.y, maxHalf: nd.maxHalf, hwy, arms: nd.arms.map((a) => [a.dx, a.dy, a.w]),
+        priorityArm, yields, control };
+    }),
     markings,
     addBlock(minX, minZ, maxX, maxZ) { blocks.push({ minX, minZ, maxX, maxZ }); },
     update(dt) {},
@@ -1676,10 +1827,13 @@ function buildParkedCars({ THREE: T, scene, map, count = 32, seed = 20261120, av
       placed.push(s);
     }
   }
-  for (const h of _hillcrestCars(map, keepClear, 3, placed)) {
+  const hill3 = _hillcrestCars(map, keepClear, 3, placed);
+  for (const h of hill3) {
     if (placed.some(p => Math.hypot(p.x - h.x, p.z - h.z) < 9)) continue;
     placed.push(h);
   }
+  const hill4 = _hillcrestCars(map, keepClear, 1, placed, hill3)[0];
+  if (hill4 && !placed.some(p => Math.hypot(p.x - hill4.x, p.z - hill4.z) < 9)) { hill4.topup = true; hill4.moped = true; placed.push(hill4); }
   const specials = [];
   const farFromPlaced = (s, hl) => placed.every(p => Math.hypot(p.x - s.x, p.z - s.z) > hl + 3.6)
     && specials.every(p => Math.hypot(p.x - s.x, p.z - s.z) > hl + 3.6);
@@ -1748,6 +1902,7 @@ function buildParkedCars({ THREE: T, scene, map, count = 32, seed = 20261120, av
   }
   const rnd2 = _mulberry32((seed ^ 0x5eed) >>> 0);
   const rnd3 = _mulberry32((seed ^ 0xbe4c) >>> 0); // v007a: dense angled-bay lots only
+  const rnd5 = _mulberry32((seed ^ 0xd3ed) >>> 0); // v011: herringbone top-up cars only (keeps boat moorings/paints byte-identical)
   const taken = placed.concat(specials); // {x,z,yaw,hl?,hw?}
   const lotCars = _lotFill(map, taken, rnd2, rnd3);
   const boats = _boatMoorings(map, taken.concat(lotCars), rnd2);
@@ -1756,17 +1911,18 @@ function buildParkedCars({ THREE: T, scene, map, count = 32, seed = 20261120, av
   const KINDS = ['sedan', 'sedan', 'sedan', 'hatch', 'sedan', 'van', 'hatch', 'sedan']; // weighted mix
   const ROOFS = ['#e8e6e0', '#e8e6e0', '#23272c', null, null]; // white / black / body-color roof, seeded
   const usedPaints = new Set();
-  const units = placed.map(s => ({ s, base: 'car' })).concat(specials.map(sp => ({ s: sp, base: sp.type })),
+  const units = placed.map(s => ({ s, base: s.moped ? 'moped' : 'car' })).concat(specials.map(sp => ({ s: sp, base: sp.type })),
     lotCars.map(s => ({ s, base: 'car' })), boats.map(s => ({ s, base: 'boat' })));
   units.forEach(({ s, base }) => {
-    const kind = KINDS[Math.floor((base === 'car' && s.lot ? rnd2() : rnd()) * KINDS.length)];
+    const kind = KINDS[Math.floor((s.herringbone || s.topup ? rnd5() : base === 'car' && s.lot ? rnd2() : rnd()) * KINDS.length)];
     const paint = base === 'cruiser' ? '#23272c' : base === 'bus' ? '#33506e'
       : base === 'lifeguard' ? '#e5bc45' : base === 'icecream' ? '#f0d9e2'
       : base === 'utility' ? '#e0a13c' : base === 'surfwagon' ? '#8fb8c9' // v008 liveries (fixed: no stream draws)
       : base === 'delivery' ? '#d9d5cc' // v010 delivery van (fixed: no stream draws)
+      : s.herringbone || s.topup ? PARKED_PAINTS[Math.floor(rnd5() * PARKED_PAINTS.length)]
       : (base === 'car' && s.lot) || base === 'boat' ? PARKED_PAINTS[Math.floor(rnd2() * PARKED_PAINTS.length)]
       : PARKED_PAINTS[Math.floor(rnd() * PARKED_PAINTS.length)];
-    const roofPick = (base === 'car' && s.lot) || base === 'boat' ? ROOFS[Math.floor(rnd2() * ROOFS.length)] : ROOFS[Math.floor(rnd() * ROOFS.length)];
+    const roofPick = s.herringbone || s.topup ? ROOFS[Math.floor(rnd5() * ROOFS.length)] : (base === 'car' && s.lot) || base === 'boat' ? ROOFS[Math.floor(rnd2() * ROOFS.length)] : ROOFS[Math.floor(rnd() * ROOFS.length)];
     const roof = base === 'lifeguard' ? '#c23b30' : (base === 'cruiser' || base === 'bus' || base === 'boat' || base === 'icecream') ? '#e8e6e0' : (roofPick || paint); // service liveries + boat decks: white/colour top
     usedPaints.add(paint);
     const car = base === 'bus' ? _busBase(T) : base === 'cruiser' ? _cruiserBase(T) : base === 'moped' ? _mopedBase(T)
@@ -1981,7 +2137,7 @@ function _rowHit(a, b, margin) {
   const dl = dx * fx + dz * fz, dw = Math.abs(dx * fz - dz * fx);
   return Math.abs(dl) < (a.hl || 2.15) + (b.hl || 2.15) + margin && dw < (a.hw || .95) + (b.hw || .95) + margin;
 }
-function _hillcrestCars(map, keepClear, want, avoid) {
+function _hillcrestCars(map, keepClear, want, avoid, spreadAvoid) {
   const CC = 300;
   if (!map.turnout || !map.turnout.mouth) return [];
   const mouth = { x: map.turnout.mouth[0] - CC, z: map.turnout.mouth[1] - CC };
@@ -2016,7 +2172,9 @@ function _hillcrestCars(map, keepClear, want, avoid) {
       if (Math.hypot(x - mouth.x, z - mouth.z) < 10) continue; // turnout mouth stays clear
       if (Math.abs(x - pad.x) < pad.w / 2 + 2 && Math.abs(z - pad.z) < pad.h / 2 + 2) continue; // turnout pad
       if (_inJunctionBand(bands, x, z)) continue;
+      if ((map.hillBenches || []).some(b => Math.abs(x - (b.layout[0] - CC)) < b.w / 2 + 2.5 && Math.abs(z - (b.layout[1] - CC)) < b.h / 2 + 2.5)) continue; // v012: bench pads + margin (bench furniture is not in blocks[]; v011 three verified clear, so they do not move)
       if (avoid && avoid.some(p => Math.hypot(p.x - x, p.z - z) < 9)) continue; // clear of the generic fill
+      if (spreadAvoid && spreadAvoid.some(p => Math.hypot(p.x - x, p.z - z) < 14)) continue; // v012: 14 m spread vs prior residents
       if (!parkedCarFits(map, x, z, yaw, keepClear)) continue;
       if (out.some(p => Math.hypot(p.x - x, p.z - z) < 14)) continue; // spread along the legs
       out.push({ x, z, yaw });
@@ -2038,7 +2196,7 @@ function _bayFits(map, lot, x, z, yaw, hl = 2.15, hw = .95) {
   }
   return true;
 }
-const LOT_DENSE = { match: /beachfront/i, occupancy: .75, maxUnits: 9 };
+const LOT_DENSE = { match: /beachfront/i, occupancy: .75, maxUnits: 9, herringbone: true }; // v011: herringbone top-up toward 12/12 (TRIAL - breaks the 70-unit cap: 73; pending coordinator ruling)
 
 function _lotFill(map, taken, rnd, rnd3) {
   const out = [];
@@ -2049,13 +2207,14 @@ function _lotFill(map, taken, rnd, rnd3) {
     if (LOT_DENSE.match.test(lot.name || '')) {
       const A45 = Math.SQRT1_2, yaw = Math.PI * .75;
       const want = Math.min(Math.round((lot.bays || 0) * LOT_DENSE.occupancy), LOT_DENSE.maxUnits);
+      const wantAll = LOT_DENSE.herringbone ? (lot.bays || 0) : want; // v011: aim at every painted bay; the 45-deg stalls fill what they can, herringbone tops up
       const slots = [];
       for (let k = 0; k < (lot.bays || 0); k++)
         slots.push({ sx: minX + 2.2, sz: lot.z - lot.h / 2 + 2.0 + 2.9 * k + 1.45 }); // stripe-k anchor (v13: 2.9 m pitch)
       for (let i = slots.length - 1; i > 0; i--) { const j = Math.floor(rnd3() * (i + 1)); const t = slots[i]; slots[i] = slots[j]; slots[j] = t; }
       let n = 0;
       for (const s of slots) {
-        if (n >= want) break;
+        if (n >= wantAll) break;
         const arch = n === 0 ? (li % 2 ? 'panelvan' : 'pickup') : null; // forced work vehicle, then commuters
         const hl = arch === 'panelvan' ? 2.45 : arch === 'pickup' ? 2.4 : 2.15;
         const hw = arch ? .98 : .95;
@@ -2063,8 +2222,18 @@ function _lotFill(map, taken, rnd, rnd3) {
         const spot = { x: s.sx + A45 * (hl + .9 + jit), z: s.sz + A45 * (hl + .9 + jit), yaw: yaw + (rnd3() * .05 - .025), lot: lot.name, arch, hl, hw };
         if (!_bayFits(map, lot, spot.x, spot.z, spot.yaw, hl, hw)) continue;
         if (taken.some(p => _aabbHit(p, spot, .45)) || out.some(p => p.lot === lot.name && _rowHit(p, spot, .05))) continue;
+        if (n >= want) spot.topup = true; // v011: bays beyond the v010 count draw from the rnd5 stream, keeping boat paints byte-identical
         out.push(spot);
         n++;
+      }
+      if (LOT_DENSE.herringbone) {
+        for (let hx = minX + 2.15 + .3; hx + 2.15 + .3 <= maxX && n < wantAll; hx += 4.85) {
+          const spot = { x: hx, z: maxZ - 1.2, yaw: Math.PI / 2, lot: lot.name, arch: null, hl: 2.15, hw: .95, herringbone: true };
+          if (!_bayFits(map, lot, spot.x, spot.z, spot.yaw, 2.15, .95)) continue;
+          if (taken.some(p => _aabbHit(p, spot, .45)) || out.some(p => p.lot === lot.name && _rowHit(p, spot, .05))) continue;
+          out.push(spot);
+          n++;
+        }
       }
       li++;
       continue;
@@ -2421,6 +2590,54 @@ function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onMode
  const twoW=(v)=>(v.tune&&v.tune.leanMax>0); // two-wheeler check (was hardcoded key==='bike')
  const vehicles=[car,sedan,bike,...extra];
  const shellMat=new T.MeshLambertMaterial({vertexColors:true}); // ONE shared shell material, no textures (same pattern as vehicles.js parkedCars bake)
+ {
+  const isWheelPivot = (o) => o.isGroup && (o.name === 'wheel' ||
+    o.children.some((c) => c.isMesh && c.geometry && c.geometry.type === 'TorusGeometry'));
+  const bakeInto = (root, skipSet, name) => {
+    const p = root.position.clone(), q = root.quaternion.clone(), s = root.scale.clone();
+    root.position.set(0, 0, 0); root.quaternion.identity(); root.scale.set(1, 1, 1);
+    root.updateMatrixWorld(true); // root at origin: matrixWorld == root-relative
+    const pos = [], nor = [], col = [];
+    const C = new T.Color();
+    const victims = [];
+    root.traverse((o) => {
+      if (!o.isMesh || o.name === 'veh:shell') return;
+      for (let a = o.parent; a && a !== root; a = a.parent) if (skipSet.has(a)) return; // inside a skipped subtree
+      victims.push(o);
+      const g = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone();
+      g.applyMatrix4(o.matrixWorld);
+      C.set((o.material && o.material.color) ? o.material.color : 0xffffff);
+      const pa = g.attributes.position.array, na = g.attributes.normal ? g.attributes.normal.array : null;
+      for (let i = 0; i < pa.length; i += 3) {
+        pos.push(pa[i], pa[i + 1], pa[i + 2]);
+        if (na) nor.push(na[i], na[i + 1], na[i + 2]);
+        col.push(C.r, C.g, C.b);
+      }
+      g.dispose();
+    });
+    root.position.copy(p); root.quaternion.copy(q); root.scale.copy(s);
+    root.updateMatrixWorld(true);
+    for (const o of victims) { o.removeFromParent(); o.geometry.dispose(); }
+    if (!pos.length) return null;
+    const merged = new T.BufferGeometry();
+    merged.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
+    if (nor.length === pos.length) merged.setAttribute('normal', new T.Float32BufferAttribute(nor, 3));
+    merged.setAttribute('color', new T.Float32BufferAttribute(col, 3));
+    const m = new T.Mesh(merged, shellMat);
+    m.name = name;
+    root.add(m);
+    return m;
+  };
+  for (const v of vehicles) {
+    if (v.key === 'taxi') continue; // GLB taxi is already 5 draws (body + 4 wheel meshes)
+    const pivots = [];
+    v.mesh.traverse((o) => { if (isWheelPivot(o)) pivots.push(o); });
+    const pset = new Set(pivots);
+    for (const pv of pivots) bakeInto(pv, new Set(), 'veh:wheelbake'); // wheel stays one spinnable pivot
+    if (v.leanGroup) { bakeInto(v.leanGroup, pset, 'veh:bodybake'); pset.add(v.leanGroup); } // lean-relative: leaning unaffected
+    bakeInto(v.mesh, pset, 'veh:bodybake');
+  }
+ }
  for(const v of vehicles){if(v.key==='taxi')continue; // loadModels() clears the taxi's mesh children and swaps in the GLB - a shell child would be discarded; taxi is only 5 prims anyway
   v.parts=v.mesh.children.slice();v.shell=buildVehShell(T,v.mesh,shellMat);v.mesh.add(v.shell);} // VEH-LOD (gfxfps r5)
  const player={x:ps.x??0,z:ps.z??8,y:0,yaw:ps.heading??0,mesh:pm,inCar:false};
@@ -3143,6 +3360,44 @@ function createProps({ THREE, scene, map }) {
       break;
     }
   }
+  { // E1 junctions: map.junctions nodes on the E1 polyline; for each, IF one of my shelters sits
+    const e1 = roads.find((r) => r.pts.length === 2 && r.pts.every((p) => Math.abs(p[0] - 123) < 6) && r.len > 100); // roads pts are world coords here
+    if (e1) {
+      const ax1 = e1.pts[0][0], az1 = e1.pts[0][1], bx1 = e1.pts[1][0], bz1 = e1.pts[1][1];
+      const ddx = bx1 - ax1, ddz = bz1 - az1, L2 = ddx * ddx + ddz * ddz;
+      const segD = (px, pz) => {
+        let t = L2 ? ((px - ax1) * ddx + (pz - az1) * ddz) / L2 : 0; t = Math.max(0, Math.min(1, t));
+        return Math.hypot(ax1 + t * ddx - px, az1 + t * ddz - pz);
+      };
+      for (const J of junctions.filter((jj) => segD(jj.x, jj.z) < 8)) {
+        const sh = placements.find((p) => p.type === 'shelter' && Math.hypot(p.x - J.x, p.z - J.z) < 22);
+        if (!sh) continue;
+        const hasBench = placements.some((p) => p.type === 'bench' && Math.hypot(p.x - sh.x, p.z - sh.z) < 4);
+        const hasBin = placements.some((p) => p.type === 'bin' && Math.hypot(p.x - sh.x, p.z - sh.z) < 4);
+        const ax = Math.cos(sh.yaw), az = -Math.sin(sh.yaw); // shelter long axis (local X)
+        if (!hasBench) {
+          for (const sgn of [1, -1]) {
+            const x = sh.x + ax * sgn * 2.6, z = sh.z + az * sgn * 2.6;
+            if (!free(x, z, 0.5, 2.5)) continue;
+            put('bench', x, z, sh.yaw, 0.5, 2.5);
+            break;
+          }
+        }
+        if (!hasBin) {
+          outerBin: for (const d of [3.9, 5.2, 2.6]) {
+            for (const sgn of [-1, 1]) {
+              for (const perp of [0, 2.2, -2.2]) {
+                const x = sh.x + ax * sgn * d + -az * perp, z = sh.z + az * sgn * d + ax * perp;
+                if (!free(x, z, 0.35, 2.5)) continue;
+                put('bin', x, z, Math.random() * Math.PI * 2, 0.35, 2.5);
+                break outerBin;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
   let metersPlaced = 0, secMeters = 0, standsPlaced = 0;
   const JUNCTIONS_PER_ROAD = roads.map((r) =>
     junctions.filter((J) => {
@@ -3445,7 +3700,7 @@ function createProps({ THREE, scene, map }) {
 
 // ===== adaptive-resolution.js =====
 
-function createAdaptiveResolution({ renderer, min = 0.6, max = 1.25, start = 1 }) { // v2 (coordinator, Nov 20): min 0.75 -> 0.6 so slow phones shed more pixels
+function createAdaptiveResolution({ renderer, min = 0.5, max = 1.25, start = 1 }) { // v3 (gfxfps round 8): floor 0.6 -> 0.5; one more shed step (0.55 -> 0.5) before quality collapse on slow phones
   let cur = start;
   let ema = 1 / 45; // mid-band start: steady state, not the first frames, picks the ratio
   let cooldown = 0;
@@ -3545,9 +3800,9 @@ function makeStatsProbe({ THREE, renderer, scene, adaptive }) {
     if (o.material && o.material.side === THREE.BackSide && o.material.fog === false) return 'sky/fx'; // gradient dome
     if (inHouses) return 'houses';
     if (inFallback) return 'map-fallback-bld';
-    if (inLOD || /^bld:/.test((top && top.name) || '')) return 'buildings-glb';
-    if (/^props:/.test(n)) return 'props';
-    if (inParked) return 'parked-cars';
+    if (/^props:/.test(n)) return 'props'; // CCINFO-BUCKETS (gfxfps round 8): name/group claims
+    if (inParked) return 'parked-cars';    // before the LOD claim - round-7 fog-cull wraps prop
+    if (inLOD || /^bld:/.test((top && top.name) || '')) return 'buildings-glb'; // and parked chunks in LODs; they are not buildings
     if (inVeh) return 'vehicles';
     if (o === top) return 'map-statics'; // unnamed scene-root meshes: terrain, ocean, roads, pier, job markers
     return 'peds+actors+other';
