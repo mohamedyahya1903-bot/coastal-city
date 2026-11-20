@@ -42,69 +42,77 @@
 import * as THREE from 'three';
 
 // ===== map.js =====
-// map.js — Solana Bay trial city (BUILDER 2). Contract v1.1 - API unchanged from the stub.
-// Original layout + names throughout (inspired coastal-city arrangement, nothing copied).
-// From the approved-pending trial drawing solana-bay-trial-map-v1.png / layout JSON v1:
-// ocean + Sunset Strand beach west, boardwalk shops + Pelican Pier, Downtown Solana core,
-// Palm Court houses east, Bayshore Highway north with one ramp, Fuel Stop, Seaside Park.
-// Owner 10:13 PM: no plain box look - every building gets structure: textured facades with
-// window grids + door, roof trim, and rounded roof pieces (domes, pyramids, cylinders).
-// Still low-poly + one merged mesh for all roads/dashes for the Galaxy M02s budget.
-// v2: buildings/props swap to Kenney CC0 GLBs (assets/models/) when a GLTFLoader is
-// available (arg or importmap 'three/addons/'); primitive fallback stays otherwise.
-// v6 (owner via lead Nov 19): starter bungalow + garage on the Palm Court street (Forum-Drive
-// style), procedural original geometry, driveway the starter white car can park on.
-// v7 (coordinator, Nov 20, standing work 1 - closest-version Los Santos layout): roads are
-// centerline paths, so curved/winding/diagonal streets are possible. First new layout: winding
-// Hillcrest Road climb (Palm Court -> Bayshore Highway) + denser Southside residential streets.
-// Taxi stops, spawns and gameplay anchors unchanged and still road-safe.
-// v7b (builder "roads", Nov 20, Phase A continued - standing work 1):
-//  - Boardwalk is now a curved coastal boulevard hugging the bay (Vespucci/Del-Perro-style arc):
-//    bulges toward the water mid-bay (layout x down to ~119.5), comes back to x=130 at the pier
-//    so the Pelican Pier stop (132.5,300) stays 2.5 m off centerline and the pier stays walkable.
-//  - East-west streets extended west to meet the arc (H200 to x=112, H280 to x=118, H360/H440 to x=124).
-//  - New diagonal downtown avenue: boardwalk (132,336) -> V200/H200 corner (204,200), angled
-//    skyline-street through the shop strip. Shop 2 moved to (160,390)-(186,412) to make room
-//    (LOTS_L pad + building() call moved together; nine-lot tower district untouched).
-//  - Bayshore Highway now a gentle curve sweeping north around the eastern hills (y 80 -> 66 mid
-//    -> 84 east). Ramp (500,80) and Hillcrest junction (580,84) stay connected; Bayshore Fuel
-//    stop (480,84.5) still 4.5 m off centerline (hwy w=14). North tips of V200/V280/V360/V440
-//    extended to meet the curved highway centerline.
-//  - Two short Southside connectors: x=310 (H440 -> south edge) and x=558 (H200 -> H280).
-// v7c (builder "roads", Nov 20 round 2 - standing work 1, Los-Santos district reshaping):
-//  - Hillcrest Road upper stretch -> 3 curved switchbacks (Vinewood-hills feel), max grade
-//    7.3%, endpoints unchanged (Palm Court 500,200 <-> highway junction 580,84).
-//  - 2 Southside cul-de-sacs with turning-circle loops: Pelican Court (off V310) and
-//    Grove Court (off V245).
-//  - Downtown grid tightening: 2 narrow secondary streets (w=6) in the tower-lot gaps
-//    (x=248 and y=248), 1 m clear of every tower footprint; nine-lot cluster untouched.
-//  - Optional marina-front pier-approach refinement: SKIPPED (pier approach already curved
-//    in v7b; left stable to protect the Pelican Pier stop and houses/props placements).
-// Coordinator notes:
-//  - Road moves for placement re-check: ONLY Hillcrest Road changed shape (same endpoints).
-//    4 roads ADDED (2 cul-de-sacs, 2 downtown secondaries). No existing residential street moved.
-//  - houses.js: its skipRoad() Boardwalk match (2 pts at x=130) has been stale since v7b's arc;
-//    its LOTS_L copy still lists the v7a Shop 2 (160,240-262) / Shop 4 (160,360-382) pads -
-//    v7b moved them to (160,392-414) and (160,366-388). Live map.isBlocked rejects overlaps
-//    with the real shops, but houses.js should re-sync its copy from map.js LOTS_L.
-//  - houses.js zoneAt(): any road with >2 pts counts as "winding" -> villa zone, so the two
-//    new cul-de-sac loops can attract villa archetypes in Southside. Placements validate
-//    against live geometry (nothing breaks); if Grove-Street bungalows are wanted there,
-//    zone by location before the winding check.
-//  - map API unchanged: groundAt, isBlocked, isRoadAt, roadPaths, addBlock, taxiStops,
-//    spawnPoints, starterHome, update(dt).
-// v3 (owner via lead Nov 19): real elevation - analytic terrain, hills east, rise north,
-// roads + highway draped on it (grades verified <=9%, drivable at 19 m/s), building lots
-// flattened into pads, ground = one subdivided vertex-colored mesh. groundAt = real height.
-// Coordinates: Y-up meters, y=0 at sea level, X east, -Z north. Layout (600x600, y south)
-// converts as world.x = layout.x - 300, world.z = layout.y - 300. Heading 0 = north.
+function buildFoam(THREE, { shoreX = -218, zMin = -320, zMax = 320 } = {}) {
+  const NX = 4, NZ = 110, W = 9; // strip spans x in [shoreX - 3.5, shoreX + 3.5]
+  const pos = [], uv = [], idx = [];
+  for (let j = 0; j <= NZ; j++) {
+    const z = zMin + (zMax - zMin) * (j / NZ);
+    for (let i = 0; i <= NX; i++) {
+      const u = i / NX;
+      pos.push(shoreX - W / 2 + W * u, 0.03, z); // hugs the sand/water seam (sand y=0, water y=-0.25)
+      uv.push(u, j / NZ);
+    }
+  }
+  for (let j = 0; j < NZ; j++) for (let i = 0; i < NX; i++) {
+    const a = j * (NX + 1) + i, b = a + 1, c = a + NX + 1, d = c + 1;
+    idx.push(a, c, b, b, c, d); // up-facing (ccw from +Y)
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geo.setIndex(idx);
+  geo.computeBoundingBox();
+  geo.computeBoundingSphere(); // exact shoreline bounds: frustum culls it when looking inland
+  const cv = document.createElement('canvas'); cv.width = 64; cv.height = 64;
+  const cx = cv.getContext('2d');
+  const img = cx.createImageData(64, 64);
+  for (let y = 0; y < 64; y++) {
+    for (let x = 0; x < 64; x++) {
+      const u = x / 63; // 0 = water side, 1 = sand side
+      const streak = 0.6 + 0.4 * Math.sin(y * 1.7 + Math.sin(y * 0.31) * 5.0); // wavy along-shore streaks
+      const a = Math.pow(Math.max(0, 1 - u), 1.4) * streak + 0.25 * Math.pow(Math.max(0, 1 - Math.abs(u - 0.35) * 3), 2);
+      const o = (y * 64 + x) * 4;
+      const v = Math.max(0, Math.min(255, Math.round(a * 255)));
+      img.data[o] = img.data[o + 1] = img.data[o + 2] = v; // alphaMap reads the GREEN channel
+      img.data[o + 3] = 255;
+    }
+  }
+  cx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(cv);
+
+  const uTime = { value: 0 };
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xf4fbff, alphaMap: tex, transparent: true, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, // sits on the sand plane
+  });
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = uTime;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nuniform float uTime;')
+      .replace('#include <begin_vertex>', [
+        '#include <begin_vertex>',
+        'float foamEdge = 1.0 - uv.x;', // water side breathes, sand side stays pinned
+        'transformed.x += sin(transformed.z * 0.09 + uTime * 1.4) * 1.1 * foamEdge;',
+      ].join('\n'));
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform float uTime;')
+      .replace('#include <color_fragment>', [
+        '#include <color_fragment>',
+        'float foamPulse = 0.6 + 0.4 * sin(vAlphaMapUv.y * 80.0 - uTime * 2.0);',
+        'diffuseColor.a *= (0.45 + 0.55 * foamPulse);',
+      ].join('\n'));
+  };
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.name = 'fx:foam';
+  mesh.renderOrder = 2; // after sand/water, before HUD-ish overlays
+  mesh.onBeforeRender = () => { uTime.value = performance.now() / 1000; };
+  return mesh;
+}
 
 function createMap({ THREE, scene, GLTFLoader }) {
   const C = 300; // layout -> world offset
   const lw = (lx) => lx - C;
   const lz = (ly) => ly - C;
-
-  // ---- merged flat quads: ALL ground planes, roads and dashes in a handful of draws ----
   const matWater = new THREE.MeshLambertMaterial({ color: 0x2e6f9e });
   const matRoad  = new THREE.MeshLambertMaterial({ color: 0x3a3e44 });
   const matHwy   = new THREE.MeshLambertMaterial({ color: 0x33373d });
@@ -114,8 +122,6 @@ function createMap({ THREE, scene, GLTFLoader }) {
   const matDrive = new THREE.MeshLambertMaterial({ color: 0x9d9a92 }); // bungalow driveway concrete
 
   const S = new THREE.Group(); S.name = 'fallbackBuildings'; scene.add(S); // primitive buildings until GLBs land
-
-  // ---- terrain (owner via lead Nov 19: real elevation - hills, sloped districts, sloped highway) ----
   const smooth = (t) => { t = t < 0 ? 0 : t > 1 ? 1 : t; return t * t * (3 - 2 * t); };
   const BEACH_X = lw(122); // west of here land fades to flat sand
   const LOTS_L = [ // building pads [name, x0,y0,x1,y1, heightCap] (layout coords)
@@ -149,12 +155,9 @@ function createMap({ THREE, scene, GLTFLoader }) {
     }
     return h;
   }
-
-  // ocean: flat plane west of the beach
   const ocean = new THREE.Mesh(new THREE.PlaneGeometry(300, 680), matWater);
   ocean.rotation.x = -Math.PI / 2; ocean.position.set(-368, -0.25, 0); scene.add(ocean);
-
-  // ground: one subdivided terrain-following mesh, vertex colors (sand / grass / park), one draw call
+  scene.add(buildFoam(THREE, { shoreX: ocean.position.x + 150 }));
   {
     const X0 = -218, X1 = 320, Z0 = -320, Z1 = 320, NX = 60, NZ = 72; // ~8.6k tris (was 15.4k)
     const pos = [], col = [], idx = [];
@@ -176,8 +179,6 @@ function createMap({ THREE, scene, GLTFLoader }) {
     g.setIndex(idx); g.computeVertexNormals();
     const groundMesh = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ vertexColors: true })); scene.add(groundMesh);
   }
-
-  // Pelican Pier: walkable deck out over the water
   const pier = new THREE.Mesh(new THREE.BoxGeometry(102, 0.4, 16), matPier);
   pier.position.set(lw(71), 0.2, lz(300)); scene.add(pier);
   { // P3b (gfxfps v1): pier posts as one InstancedMesh (10 draws -> 1)
@@ -190,12 +191,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
     posts.instanceMatrix.needsUpdate = true;
     scene.add(posts);
   }
-
-  // ---- roads (v7: centerline paths - curved/winding/diagonal streets now possible) ----
-  // Every street is a path of layout-coord points [[x,y],...]; straight streets use 2 points.
   const ROADS = [
-    // v7b: Boardwalk - curved coastal boulevard hugging the bay (Vespucci/Del-Perro-style arc).
-    // On land (x >= ~112), x=130 at the pier so the Pelican Pier stop stays 2.5 m off centerline.
     { pts: [[134,78],[132,91.5],[130,105],[127.5,120],[125,135],[123,150],[121,165],[120.3,180],[119.5,195],[119.8,210],[120,225],[121,240],[122,255],[123.5,266.5],[125,278],[128,291],[130,300],[131,314],[132,332],[132.2,343.5],[132.3,355],[132.4,367.5],[132.5,380],[132.7,392.5],[132.8,405],[132.9,417.5],[133,430],[133.2,442.5],[133.4,455],[133.6,467.5],[133.8,480],[133.9,490],[134,500],[134,520]], w: 8 },
     { pts: [[200,74],[200,480]], w: 8 },  // v7b: north tip extended to the curved highway
     { pts: [[280,69],[280,480]], w: 8 },  // v7b: north tip extended to the curved highway
@@ -206,40 +202,138 @@ function createMap({ THREE, scene, GLTFLoader }) {
     { pts: [[118,280],[560,280]], w: 8 }, // v7b: west end extended to meet the boardwalk arc
     { pts: [[124,360],[560,360]], w: 8 }, // v7b: west end extended to meet the boardwalk arc
     { pts: [[124,440],[560,440]], w: 8 }, // v7b: west end extended to meet the boardwalk arc
-    // v7b: diagonal downtown avenue (angled skyline-street), boardwalk -> V200/H200 corner
     { pts: [[132,336],[139.5,323.5],[147,311],[152,300],[157,289],[163.5,280.5],[170,272],[176,263],[182,254],[187,246],[192,238],[195.5,230],[199,222],[203,210],[204,200]], w: 8 },
-    // v7 (Phase A, standing work 1): Southside - denser South-Los-Santos-style residential blocks
     { pts: [[245,440],[245,520]], w: 7 },
     { pts: [[375,440],[375,520]], w: 7 },
     { pts: [[130,500],[440,500]], w: 7 },
-    // v7b: short Southside connectors for more varied block sizes
     { pts: [[310,440],[310,520]], w: 7 },
     { pts: [[558,200],[558,280]], w: 7 },
-    // v7 (Phase A): Hillcrest Road - winding Vinewood-Hills-style climb, Palm Court -> highway
-    // v7c (round 2): upper stretch reworked into 3 curved switchbacks through the gentle
-    // corridors of the eastern hill: the final climb runs east of the Fuel Stop pad
-    // (x 561-565, 3.7 m clear of the lot) through the 6-7% corridor, avoiding the steep
-    // pocket at x 550-556, y 100-130. Max grade 7.6% (was 6.2%). Same endpoints:
-    // Palm Court (500,200) and the highway junction (580,84).
     { pts: [[500,200],[514,198],[528,196],[542,192],[556,188],[565.5,183],[575,178],[582,170],[574,164],[566,158],[553,155],[540,152],[530,150],[520,148],[532,141],[548,137],[561,132],[565,124],[564,116],[562,108],[561,100],[562,93],[566,88],[573,85],[580,84]], w: 7 },
-    // v7c (round 2): Southside cul-de-sacs (Grove-Street feel) - short dead-end courts,
-    // each ending in a turning-circle arc loop (center r=7 octagon, w=7)
     { pts: [[310,472],[339,472],[341,467],[346,465],[351,467],[353,472],[351,477],[346,479],[341,477],[339,472]], w: 7 }, // Pelican Court, off V310 east
     { pts: [[245,470],[225,470],[223,465],[218,463],[213,465],[211,470],[213,475],[218,477],[223,475],[225,470]], w: 7 }, // Grove Court, off V245 west
-    // v7c (round 2): downtown grid tightening - two narrow secondary streets in the gaps
-    // between the tower lots (1 m clear of every footprint) so the district reads as blocks
     { pts: [[248,200],[248,360]], w: 6 }, // between tower columns 1 and 2
     { pts: [[200,248],[360,248]], w: 6 }, // between tower rows 1 and 2
   ];
-  // v7b: Bayshore Highway - gentle curve sweeping north around the eastern hills; still meets
-  // the ramp (x=500), the Hillcrest junction (580,84) and the Bayshore Fuel stop (480,84.5).
   const HWY = { pts: [[126,80],[144.5,79],[163,78],[181.5,77],[200,76],[218,74.8],[236,73.6],[254,72.4],[272,71.2],[290,70],[308,69.2],[326,68.4],[344,67.6],[362,66.8],[380,66],[395,67.5],[410,69],[425,70.5],[440,72],[453.3,74.7],[466.7,77.3],[480,80],[495,81],[510,82],[525,83],[540,84],[560,84],[580,84]], w: 14 };
   const DRIVES = [{ pts: [[497,284],[497,304]], w: 6 }]; // bungalow driveway (drivable, no dashes)
+  const ALLEYS = [ // w=6 two-way service alleys behind the downtown blocks (drivable, no dashes)
+    { pts: [[208,200],[208,360]], w: 6 }, // A1 N-S behind Tower col 1 / Office 1 (1 m clear of pads)
+    { pts: [[200,208],[360,208]], w: 6 }, // A2 E-W behind Tower row 1 (1 m clear of pads + H200 edge)
+    { pts: [[200,330],[360,330]], w: 6 }, // A3 E-W behind the Office row (3 m clear of pads)
+  ];
+  const PARKING = [ // surface parking lots [name, x0,y0,x1,y1] (layout coords, axis-aligned)
+    ['Tower Lot',     328,212,352,240], // serves Towers 5/6 - kerb cuts east (V360) + south (H248); north edge 1 m clear of alley A2
+    ['Office Lot',    328,256,352,290], // serves Offices 1-3 - kerb cuts north (H248) + east (V360)
+    ['Apartment Lot', 368,254,408,286], // serves Apartments 1/2 - kerb cut west (V360)
+  ];
+  const PARK_W = PARKING.map(([, x0, y0, x1, y1]) => ({ minX: lw(x0), maxX: lw(x1), minZ: lz(y0), maxZ: lz(y1) })); // world rects for isRoadAt
+  DRIVES.push(
+    { pts: [[349,218],[360,218]], w: 6 }, // Tower Lot  -> V360
+    { pts: [[340,238],[340,248]], w: 6 }, // Tower Lot  -> H248
+    { pts: [[340,258],[340,248]], w: 6 }, // Office Lot -> H248
+    { pts: [[349,268],[360,268]], w: 6 }, // Office Lot -> V360
+    { pts: [[370,268],[360,268]], w: 8 }); // Apartment Lot -> V360
+  const segsOf = (r) => { const out = []; for (let i = 0; i < r.pts.length - 1; i++) out.push([r.pts[i], r.pts[i + 1]]); return out; };
+  const SURF = ROADS.map((r, i) => ({ r, hwy: false, id: i })).concat([{ r: HWY, hwy: true, id: ROADS.length }])
+    .concat(ALLEYS.map((r, k) => ({ r, hwy: false, alley: true, id: ROADS.length + 1 + k }))); // v9
+  function segX(a, b, c, d) { // proper (interior) segment crossing -> point or null
+    const rx = b[0] - a[0], ry = b[1] - a[1], sx = d[0] - c[0], sy = d[1] - c[1];
+    const den = rx * sy - ry * sx; if (Math.abs(den) < 1e-9) return null;
+    const t = ((c[0] - a[0]) * sy - (c[1] - a[1]) * sx) / den, u = ((c[0] - a[0]) * ry - (c[1] - a[1]) * rx) / den;
+    if (t < 1e-4 || t > 1 - 1e-4 || u < 1e-4 || u > 1 - 1e-4) return null;
+    return [a[0] + t * rx, a[1] + t * ry];
+  }
+  function nearSeg(r, p) { // nearest centerline segment: distance + unit direction
+    let m = 1e9, dir = null;
+    for (const [a, b] of segsOf(r)) {
+      const dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
+      let t = L2 ? ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2 : 0; t = Math.max(0, Math.min(1, t));
+      const dd = Math.hypot(a[0] + t * dx - p[0], a[1] + t * dy - p[1]);
+      if (dd < m) { m = dd; dir = [dx / Math.sqrt(L2), dy / Math.sqrt(L2)]; }
+    }
+    return { d: m, dir };
+  }
+  const rawNodes = [];
+  function addNode(x, y, arms, base) {
+    for (const nd of rawNodes) {
+      if (Math.hypot(nd.x - x, nd.y - y) < 14) { // same junction: merge arms (dedupe by road + direction)
+        for (const a of arms) {
+          if (!nd.arms.some((b) => (base === false || b.rd === a.rd) && b.dx * a.dx + b.dy * a.dy > 0.94)) nd.arms.push(a);
+        }
+        return;
+      }
+    }
+    rawNodes.push({ x, y, arms: arms.slice(), base: !!base });
+  }
+  for (let i = 0; i < SURF.length; i++) for (let j = i + 1; j < SURF.length; j++) {
+    const A = SURF[i], B = SURF[j];
+    if (A.alley || B.alley) continue; // v9: alley pairs run in the alley phase below
+    for (const sa of segsOf(A.r)) for (const sb of segsOf(B.r)) {
+      const p = segX(sa[0], sa[1], sb[0], sb[1]);
+      if (!p) continue;
+      const la = Math.hypot(sa[1][0] - sa[0][0], sa[1][1] - sa[0][1]), lb = Math.hypot(sb[1][0] - sb[0][0], sb[1][1] - sb[0][1]);
+      const ua = [(sa[1][0] - sa[0][0]) / la, (sa[1][1] - sa[0][1]) / la], ub = [(sb[1][0] - sb[0][0]) / lb, (sb[1][1] - sb[0][1]) / lb];
+      addNode(p[0], p[1], [
+        { dx: ua[0], dy: ua[1], w: A.r.w, hwy: A.hwy, rd: A.id }, { dx: -ua[0], dy: -ua[1], w: A.r.w, hwy: A.hwy, rd: A.id },
+        { dx: ub[0], dy: ub[1], w: B.r.w, hwy: B.hwy, rd: B.id }, { dx: -ub[0], dy: -ub[1], w: B.r.w, hwy: B.hwy, rd: B.id }], true);
+    }
+  }
+  ROADS.forEach((r, i) => { // T junctions: an endpoint landing on another road
+    for (const e of [0, r.pts.length - 1]) {
+      const p = r.pts[e];
+      for (const o of SURF) {
+        if (o.id === i || o.alley) continue; // v9: alley surfaces join in the alley phase
+        const { d, dir } = nearSeg(o.r, p);
+        if (d <= o.r.w / 2 - 0.5) {
+          const nb = r.pts[e === 0 ? 1 : r.pts.length - 2];
+          const L = Math.hypot(nb[0] - p[0], nb[1] - p[1]);
+          addNode(p[0], p[1], [
+            { dx: (nb[0] - p[0]) / L, dy: (nb[1] - p[1]) / L, w: r.w, hwy: false, rd: i },
+            { dx: dir[0], dy: dir[1], w: o.r.w, hwy: o.hwy, rd: o.id }, { dx: -dir[0], dy: -dir[1], w: o.r.w, hwy: o.hwy, rd: o.id }], true);
+          break;
+        }
+      }
+    }
+  });
+  const armOf = (o, dx, dy) => ({ dx, dy, w: o.r.w, hwy: o.hwy, alley: !!o.alley, rd: o.id });
+  for (let i = 0; i < SURF.length; i++) for (let j = i + 1; j < SURF.length; j++) {
+    const A = SURF[i], B = SURF[j];
+    if (!A.alley && !B.alley) continue;
+    for (const sa of segsOf(A.r)) for (const sb of segsOf(B.r)) {
+      const p = segX(sa[0], sa[1], sb[0], sb[1]);
+      if (!p) continue;
+      const la = Math.hypot(sa[1][0] - sa[0][0], sa[1][1] - sa[0][1]), lb = Math.hypot(sb[1][0] - sb[0][0], sb[1][1] - sb[0][1]);
+      const ua = [(sa[1][0] - sa[0][0]) / la, (sa[1][1] - sa[0][1]) / la], ub = [(sb[1][0] - sb[0][0]) / lb, (sb[1][1] - sb[0][1]) / lb];
+      addNode(p[0], p[1], [armOf(A, ua[0], ua[1]), armOf(A, -ua[0], -ua[1]), armOf(B, ub[0], ub[1]), armOf(B, -ub[0], -ub[1])], false);
+    }
+  }
+  ALLEYS.forEach((r, k) => { // alley mouths: endpoints landing on another surface
+    const id = ROADS.length + 1 + k;
+    for (const e of [0, r.pts.length - 1]) {
+      const p = r.pts[e];
+      for (const o of SURF) {
+        if (o.id === id) continue;
+        const { d, dir } = nearSeg(o.r, p);
+        if (d <= o.r.w / 2 - 0.5) {
+          const nb = r.pts[e === 0 ? 1 : r.pts.length - 2];
+          const L = Math.hypot(nb[0] - p[0], nb[1] - p[1]);
+          addNode(p[0], p[1], [armOf({ r, alley: true, id }, (nb[0] - p[0]) / L, (nb[1] - p[1]) / L),
+            armOf(o, dir[0], dir[1]), armOf(o, -dir[0], -dir[1])], false);
+          break;
+        }
+      }
+    }
+  });
 
-  // roads + highway drape the terrain: path pieces subdivided to <=step m, offset by halfW,
-  // sampling terrainH, so every street follows the hills (grades verified <=9%)
+  const junctions = rawNodes.filter((nd) => nd.arms.length >= 3);
+  for (const nd of junctions) { // v8: drop phantom arms - a T/corner road only continues where asphalt exists
+    nd.maxHalf = Math.max(...nd.arms.map((a) => a.w / 2));
+    nd.arms = nd.arms.filter((a) => isRoadAt(lw(nd.x + a.dx * (nd.maxHalf + 3.2)), lz(nd.y + a.dy * (nd.maxHalf + 3.2))));
+    nd.hwy = nd.arms.some((a) => a.hwy);
+  }
+  const breakZones = junctions.map((nd) => ({ x: nd.x, y: nd.y, rad: nd.maxHalf + 1.8 })); // centre dashes skip the junction box
   const strips = [];
-  function strip(r, mat, halfW, off, step, dashLen, dashPitch) {
+  function strip(r, mat, halfW, off, step, dashLen, dashPitch, zones) { // v8: zones = centre-dash break boxes at junctions
     const qs = [];
     for (let i = 0; i < r.pts.length - 1; i++) {
       const ax = r.pts[i][0], ay = r.pts[i][1], bx = r.pts[i + 1][0], by = r.pts[i + 1][1];
@@ -248,6 +342,12 @@ function createMap({ THREE, scene, GLTFLoader }) {
       const nx = uy * halfW, ny = -ux * halfW; // winding matches the merge code's up-facing convention
       if (dashLen) { // dashed centerline: dashLen metres every dashPitch metres
         for (let d0 = 6; d0 + dashLen <= segLen - 2; d0 += dashPitch) {
+          if (zones) { // v8: drop dashes inside junction boxes (centre-line break)
+            const mx = ax + ux * (d0 + dashLen / 2), my = ay + uy * (d0 + dashLen / 2);
+            let inside = false;
+            for (const z of zones) { if ((mx - z.x) * (mx - z.x) + (my - z.y) * (my - z.y) < z.rad * z.rad) { inside = true; break; } }
+            if (inside) continue;
+          }
           qs.push(quad(lw(ax + ux * d0) + uy * halfW, lz(ay + uy * d0) - ux * halfW,
                        lw(ax + ux * (d0 + dashLen)) + uy * halfW, lz(ay + uy * (d0 + dashLen)) - ux * halfW,
                        lw(ax + ux * (d0 + dashLen)) - uy * halfW, lz(ay + uy * (d0 + dashLen)) + ux * halfW,
@@ -270,10 +370,86 @@ function createMap({ THREE, scene, GLTFLoader }) {
             x2, terrainH(x2, z2) + off, z2, x3, terrainH(x3, z3) + off, z3];
   }
   for (const r of ROADS) strip(r, matRoad, r.w / 2, 0.04, 8, 0, 0);
+  for (const a of ALLEYS) strip(a, matRoad, a.w / 2, 0.04, 8, 0, 0); // v9: alley asphalt (no dashes)
   strip(HWY, matHwy, HWY.w / 2, 0.05, 8, 0, 0);
   for (const d of DRIVES) strip(d, matDrive, d.w / 2, 0.045, 4, 0, 0);
-  for (const r of ROADS) strip(r, matLine, 0.2, 0.08, 8, 3, 12);
-  strip(HWY, matHwyLn, 0.2, 0.09, 8, 4, 16);
+  for (const r of ROADS) strip(r, matLine, 0.2, 0.08, 8, 3, 12, breakZones); // v8: junction breaks
+  strip(HWY, matHwyLn, 0.2, 0.09, 8, 4, 16, breakZones);
+  const markings = { crosswalks: [], stopLines: 0, kerbs: 0, arrows: 0 }; // crosswalks: layout [x,y] centres
+  const offMark = 0.07; // above the asphalt (0.04-0.05), just under the dashes (0.08)
+  const markLine = [], markKerb = [];
+  function flatQuad(cx, cy, ux, uy, hl, hw, off) { // layout centre, unit axis u, half-len along u, half-wid across; up-facing (strip winding)
+    if (off === undefined) off = offMark;
+    const nx = uy, ny = -ux;
+    return quad(lw(cx - ux * hl + nx * hw), lz(cy - uy * hl + ny * hw),
+                lw(cx + ux * hl + nx * hw), lz(cy + uy * hl + ny * hw),
+                lw(cx + ux * hl - nx * hw), lz(cy + uy * hl - ny * hw),
+                lw(cx - ux * hl - nx * hw), lz(cy - uy * hl - ny * hw), off);
+  }
+  const rot = (ux, uy, t) => [ux * Math.cos(t) - uy * Math.sin(t), ux * Math.sin(t) + uy * Math.cos(t)];
+  for (const nd of junctions) {
+    if (nd.hwy || nd.base === false) continue; // highways + v9 alley junctions: dash breaks only
+    for (const a of nd.arms) {
+      const ux = a.dx, uy = a.dy, nx = uy, ny = -ux;
+      markLine.push(flatQuad(nd.x + ux * (nd.maxHalf + 0.9), nd.y + uy * (nd.maxHalf + 0.9), ux, uy, 0.28, a.w / 2 - 0.3));
+      markings.stopLines++;
+      const dCross = nd.maxHalf + 3.2;
+      const bars = Math.max(3, Math.floor((a.w - 0.8) / 1.15));
+      for (let k = 0; k < bars; k++) {
+        const off = (k - (bars - 1) / 2) * 1.15;
+        markLine.push(flatQuad(nd.x + ux * dCross + nx * off, nd.y + uy * dCross + ny * off, ux, uy, 1.15, 0.3));
+      }
+      markings.crosswalks.push([nd.x + ux * dCross, nd.y + uy * dCross]);
+      for (const sgn of [1, -1]) {
+        const bx = nd.x + ux * dCross + nx * sgn * (a.w / 2 + 0.75), by = nd.y + uy * dCross + ny * sgn * (a.w / 2 + 0.75);
+        const cxo = [bx + nx * sgn * 0.6, by + ny * sgn * 0.6], cxi = [bx - nx * sgn * 0.6, by - ny * sgn * 0.6];
+        const P = (lx, ly, h) => [lw(lx), terrainH(lw(lx), lz(ly)) + h, lz(ly)];
+        markKerb.push([].concat(
+          P(cxo[0] - ux * 1.2, cxo[1] - uy * 1.2, 0.22), P(cxo[0] + ux * 1.2, cxo[1] + uy * 1.2, 0.22),
+          P(cxi[0] + ux * 1.2, cxi[1] + uy * 1.2, 0.05), P(cxi[0] - ux * 1.2, cxi[1] - uy * 1.2, 0.05)));
+        markings.kerbs++;
+      }
+      if (a.w === 6 && !a.alley) { // v9: no arrows on alley approaches
+        const dA = nd.maxHalf + 7.4;
+        const axc = nd.x + ux * dA, ayc = nd.y + uy * dA;
+        markLine.push(flatQuad(axc, ayc, ux, uy, 1.15, 0.26)); // stem
+        const w1 = rot(-ux, -uy, 0.62), w2 = rot(-ux, -uy, -0.62); // chevron wings toward the junction
+        markLine.push(flatQuad(axc - ux * 1.35 + nx * 0.42, ayc - uy * 1.35 + ny * 0.42, w1[0], w1[1], 0.8, 0.26));
+        markLine.push(flatQuad(axc - ux * 1.35 - nx * 0.42, ayc - uy * 1.35 - ny * 0.42, w2[0], w2[1], 0.8, 0.26));
+        markings.arrows++;
+      }
+    }
+  }
+  const markRoad = []; // lot asphalt -> matRoad batch (0 new draws)
+  for (const [, x0, y0, x1, y1] of PARKING) {
+    markRoad.push(flatQuad((x0 + x1) / 2, (y0 + y1) / 2, 1, 0, (x1 - x0) / 2, (y1 - y0) / 2, 0.04)); // asphalt pad
+    const nBay = Math.floor((x1 - x0 - 1) / 2.6); // 2.6 m bay pitch along the north + south edges
+    for (let k = 0; k <= nBay; k++) {
+      const bx = x0 + 0.5 + k * 2.6;
+      if (bx > x1 - 0.4) break;
+      markLine.push(flatQuad(bx, y0 + 2.4, 0, 1, 2.4, 0.06)); // north-edge bay stripe
+      markLine.push(flatQuad(bx, y1 - 2.4, 0, 1, 2.4, 0.06)); // south-edge bay stripe
+    }
+  }
+  for (const [ax, ay, ux, uy] of [[208,205,1,0],[208,355,1,0],[205,208,0,1],[355,208,0,1],[205,330,0,1],[355,330,0,1]]) {
+    markKerb.push(flatQuad(ax, ay, ux, uy, 4, 1, 0.06)); // 8 x 2 m mouth apron
+  }
+  const fronts = [ // [x0,y0,x1,y1] walk quads (layout), pre-split around the cuts
+    [352,212,354,215],[352,221,354,240],[328,240,337,242],[343,240,352,242], // Tower Lot E + S
+    [328,254,337,256],[343,254,352,256],[352,256,354,265],[352,271,354,290], // Office Lot N + E
+    [366,254,368,265],[366,271,368,286], // Apartment Lot W
+  ];
+  for (const [x0, y0, x1, y1] of fronts) {
+    markKerb.push(flatQuad((x0 + x1) / 2, (y0 + y1) / 2, Math.abs(x1 - x0) > Math.abs(y1 - y0) ? 1 : 0,
+      Math.abs(x1 - x0) > Math.abs(y1 - y0) ? 0 : 1, Math.max(x1 - x0, y1 - y0) / 2, Math.min(x1 - x0, y1 - y0) / 2, 0.06));
+  }
+  strips.push({ mat: matRoad, qs: markRoad });
+  const parkingLots = PARKING.map(([nm, x0, y0, x1, y1]) => ({ // world-coords registration (vehicles builder)
+    name: nm, x: lw((x0 + x1) / 2), z: lz((y0 + y1) / 2), w: x1 - x0, h: y1 - y0, heading: 0,
+    layout: [(x0 + x1) / 2, (y0 + y1) / 2], bays: 2 * (Math.floor((x1 - x0 - 1) / 2.6) + 1) }));
+  strips.push({ mat: matLine, qs: markLine });
+  strips.push({ mat: matDrive, qs: markKerb });
+
   { // merge strip segments into one mesh per material
     const byMat = new Map(); const stripMeshes = [];
     for (const s of strips) {
@@ -299,8 +475,6 @@ function createMap({ THREE, scene, GLTFLoader }) {
       const sm = new THREE.Mesh(g, mat); scene.add(sm); stripMeshes.push(sm);
     }
   }
-
-  // ---- facade textures: drawn once on canvas, window grid + entrance (original art) ----
   function facadeTex(w, h, kind) {
     const pxm = 8, cw = Math.min(256, Math.max(64, Math.round(w * pxm)));
     const ch = Math.min(512, Math.max(64, Math.round(h * pxm)));
@@ -321,7 +495,6 @@ function createMap({ THREE, scene, GLTFLoader }) {
         g.beginPath(); g.roundRect(x0, y0, ww, wh * 0.35, 2); g.fill();
       }
     }
-    // F3a (gfxfps v1): sparse warm-lit windows on tall kinds (~9%, deterministic)
     if (kind === 'tower' || kind === 'office' || kind === 'apartment') {
       for (let f = 0; f < floors; f++) {
         for (let c = 0; c < cols; c++) {
@@ -334,12 +507,10 @@ function createMap({ THREE, scene, GLTFLoader }) {
         }
       }
     }
-    // ground floor: entrance door + lintel
     const dw = Math.min(cw * 0.22, 26), dx = (cw - dw) / 2, dh = Math.min(wy * 0.9, 30);
     g.fillStyle = '#2c343c'; g.fillRect(dx - 2, ch - dh - 2, dw + 4, dh + 2);
     g.fillStyle = '#4a3828'; g.fillRect(dx, ch - dh, dw, dh);
     g.fillStyle = 'rgba(160,210,235,0.5)'; g.fillRect(dx + 2, ch - dh + 2, dw - 4, dh * 0.4);
-    // F3b (gfxfps v1): baked base darkening, grounds the building (not a shadow map)
     const aoH = Math.min(44, ch * 0.18);
     const ao = g.createLinearGradient(0, ch, 0, ch - aoH);
     ao.addColorStop(0, 'rgba(16,20,26,0.5)');
@@ -349,8 +520,6 @@ function createMap({ THREE, scene, GLTFLoader }) {
     t.colorSpace = THREE.SRGBColorSpace;
     return t;
   }
-
-  // P4 (gfxfps v1): same-kind buildings share facade textures in 2 m buckets
   const facadeCache = new Map();
   function facadeTexCached(w, h, kind) {
     const key = kind + '|' + Math.round(w / 2) * 2 + 'x' + Math.round(h / 2) * 2;
@@ -365,8 +534,6 @@ function createMap({ THREE, scene, GLTFLoader }) {
   const awnMat  = new THREE.MeshLambertMaterial({ color: 0xc94f4f });
   const domeMat = new THREE.MeshLambertMaterial({ color: 0x7fb7c9 });
   const pentMat = new THREE.MeshLambertMaterial({ color: 0x8d9db0 });
-
-  // face: which side the entrance is on ('n' = -z north street, 'w' = -x boardwalk)
   function building(name, x0, y0, x1, y1, floors, kind, face, roof) {
     const w = x1 - x0, d = y1 - y0, h = floors * 3;
     const cx = lw((x0 + x1) / 2), cz = lz((y0 + y1) / 2);
@@ -380,15 +547,12 @@ function createMap({ THREE, scene, GLTFLoader }) {
     geo.addGroup(24, 12, 0); // pz, nz -> facade
     const m = new THREE.Mesh(geo, [side, roofMat]);
     m.position.set(cx, gy + h / 2, cz); g.add(m);
-    // roof trim slab (cornice)
     const trim = new THREE.Mesh(new THREE.BoxGeometry(w + 0.8, 0.6, d + 0.8), trimMat);
     trim.position.set(cx, gy + h + 0.3, cz); g.add(trim);
-    // entrance door (proud of the facade)
     const dw2 = Math.min(2.2, w * 0.25);
     const door = new THREE.Mesh(new THREE.BoxGeometry(face === 'w' ? 0.35 : dw2, 2.4, face === 'w' ? dw2 : 0.35), doorMat);
     door.position.set(face === 'w' ? lw(x0) - 0.15 : cx, gy + 1.2, face === 'w' ? cz : lz(y0) - 0.15);
     g.add(door);
-    // roof structure (rounded, low-poly)
     if (roof === 'dome') {
       const dome = new THREE.Mesh(new THREE.SphereGeometry(Math.min(w, d) * 0.38, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2), domeMat);
       dome.position.set(cx, gy + h + 0.6, cz); g.add(dome);
@@ -411,7 +575,6 @@ function createMap({ THREE, scene, GLTFLoader }) {
   }
 
   const blocks = [];
-  // Downtown Solana (n = entrance on the north street side)
   building('Tower 1', 212, 212, 244, 244, 12, 'tower', 'n', 'pent');
   building('Tower 2', 252, 212, 276, 240, 9,  'tower', 'n', null);
   building('Tower 3', 212, 252, 240, 276, 14, 'tower', 'n', 'dome');
@@ -421,13 +584,11 @@ function createMap({ THREE, scene, GLTFLoader }) {
   building('Office 1', 212, 292, 244, 324, 6, 'office', 'n', null);
   building('Office 2', 252, 292, 276, 324, 5, 'office', 'n', null);
   building('Office 3', 292, 292, 324, 324, 6, 'office', 'n', null);
-  // Boardwalk shops (entrances face west to the boardwalk), red awnings
   building('Shop 1', 160, 210, 186, 232, 2, 'shop', 'w', 'awning');
   building('Shop 2', 160, 392, 186, 414, 2, 'shop', 'w', 'awning'); // v7b: moved south (was y 240-262) to make room for the diagonal avenue
   building('Cafe',   160, 296, 186, 318, 2, 'shop', 'w', 'awning'); // nudged south of H280 (v4)
   building('Shop 3', 160, 330, 186, 352, 2, 'shop', 'w', 'awning');
   building('Shop 4', 160, 366, 186, 388, 2, 'shop', 'w', 'awning'); // v7b: nudged 6 m south - in v7a it overlapped H360 (y 356-364) and blocked the street
-  // Palm Court houses (hip roofs)
   building('House 1', 460, 220, 480, 238, 1, 'house', 'n', 'hip');
   building('House 2', 495, 220, 515, 238, 1, 'house', 'n', 'hip');
   building('House 3', 530, 220, 550, 238, 1, 'house', 'n', 'hip');
@@ -436,10 +597,8 @@ function createMap({ THREE, scene, GLTFLoader }) {
   building('House 6', 460, 380, 480, 398, 1, 'house', 'n', 'hip');
   building('House 7', 495, 380, 515, 398, 1, 'house', 'n', 'hip');
   building('House 8', 530, 380, 550, 398, 1, 'house', 'n', 'hip');
-  // Apartments
   building('Apartments 1', 380, 210, 410, 250, 4, 'apartment', 'n', null);
   building('Apartments 2', 380, 290, 410, 330, 4, 'apartment', 'n', null);
-  // Fuel Stop: kiosk + rounded canopy on two posts
   building('Fuel Stop', 520, 100, 556, 130, 1, 'gas', 'n', null);
   {
     const cx = lw(538), cz = lz(97);
@@ -479,9 +638,6 @@ function createMap({ THREE, scene, GLTFLoader }) {
     discs.renderOrder = 1;
     scene.add(discs);
   }
-
-
-  // ---- Starter Bungalow (v6): procedural original - walls, hip roof, garage, driveway ----
   {
     const HX0 = lw(500), HX1 = lw(512), HZ0 = lz(304), HZ1 = lz(312); // house 12x8
     const GX0 = lw(494), GX1 = lw(500), GZ0 = lz(304), GZ1 = lz(310); // garage 6x6
@@ -492,7 +648,6 @@ function createMap({ THREE, scene, GLTFLoader }) {
     const roofB  = new THREE.MeshLambertMaterial({ color: 0x7a5c48 });
     const glass  = new THREE.MeshLambertMaterial({ color: 0x2a3d52 });
     const doorW  = new THREE.MeshLambertMaterial({ color: 0x6b4a2e });
-    // house walls + hip roof
     const hw = new THREE.Mesh(new THREE.BoxGeometry(HX1 - HX0, 3, HZ1 - HZ0), stucco);
     hw.position.set(gcx, gy + 1.5, gcz); bg.add(hw);
     const hip = new THREE.Mesh(new THREE.ConeGeometry(Math.hypot(HX1 - HX0, HZ1 - HZ0) / 2 * 0.95, 2.4, 4, 1), roofB);
@@ -501,7 +656,6 @@ function createMap({ THREE, scene, GLTFLoader }) {
     hip.position.set(gcx, gy + 3 + 1.2, gcz); bg.add(hip);
     const eave = new THREE.Mesh(new THREE.BoxGeometry(HX1 - HX0 + 0.8, 0.25, HZ1 - HZ0 + 0.8), roofB);
     eave.position.set(gcx, gy + 3, gcz); bg.add(eave);
-    // garage + flat roof + roll-up door on the street (north) face
     const gw = new THREE.Mesh(new THREE.BoxGeometry(GX1 - GX0, 2.6, GZ1 - GZ0), stucco);
     gw.position.set((GX0 + GX1) / 2, gy + 1.3, (GZ0 + GZ1) / 2); bg.add(gw);
     const gtrim = new THREE.Mesh(new THREE.BoxGeometry(GX1 - GX0 + 0.6, 0.3, GZ1 - GZ0 + 0.6), roofB);
@@ -518,7 +672,6 @@ function createMap({ THREE, scene, GLTFLoader }) {
       const door = new THREE.Mesh(new THREE.BoxGeometry(5.2, 2.1, 0.15), new THREE.MeshLambertMaterial({ map: t }));
       door.position.set((GX0 + GX1) / 2, gy + 1.05, GZ0 - 0.08); bg.add(door); // faces the street (north)
     }
-    // front door + two windows on the street face
     const fd = new THREE.Mesh(new THREE.BoxGeometry(1.1, 2.2, 0.15), doorW);
     fd.position.set(HX0 + 2.2, gy + 1.1, HZ0 - 0.08); bg.add(fd);
     for (const wx of [HX0 + 5.5, HX0 + 9]) {
@@ -527,19 +680,13 @@ function createMap({ THREE, scene, GLTFLoader }) {
       const wf = new THREE.Mesh(new THREE.BoxGeometry(1.9, 1.5, 0.06), stucco);
       wf.position.set(wx, gy + 1.7, HZ0 - 0.04); bg.add(wf);
     }
-    // porch slab
     const porch = new THREE.Mesh(new THREE.BoxGeometry(4, 0.18, 2.4), matDrive);
     porch.position.set(HX0 + 2.2, gy + 0.09, HZ0 - 1.3); bg.add(porch);
     scene.add(bg);
     blocks.push({ minX: HX0, maxX: HX1, minZ: HZ0, maxZ: HZ1 });
     blocks.push({ minX: GX0, maxX: GX1, minZ: GZ0, maxZ: GZ1 });
   }
-
-  // ---- Kenney CC0 model swap (owner 10:25 PM: real 3D models; coordinator: GLTFLoader in importmap) ----
-  // Every building keeps its primitive fallback in group S until its GLB lands, then swaps.
-  // Assets: assets/models/{commercial,suburban,roads}/*.glb (+ Textures/colormap.png), all Kenney CC0 1.0.
   const MODEL_BASE = 'assets/models/';
-  // key = building() name; f = glb under MODEL_BASE; rot = rotY; lod = low-detail partner
   const MODELS = [
     { k: 'Tower 1', f: 'commercial/building-skyscraper-a', rot: Math.PI, lod: 'primitive' },
     { k: 'Tower 2', f: 'commercial/building-skyscraper-b', rot: Math.PI, lod: 'primitive' },
@@ -647,7 +794,6 @@ function createMap({ THREE, scene, GLTFLoader }) {
         }
       }, undefined, () => {}); // load failed: primitive fallback stays
     }
-    // street props (no fallback; small and cheap)
     const PROPS = [];
     for (const x of [-100, -20, 60, 140]) for (const z of [-100, -20, 60, 140])
       PROPS.push(['roads/light-curved', x + 5.5, z + 5.5, Math.PI, 6]);
@@ -658,7 +804,6 @@ function createMap({ THREE, scene, GLTFLoader }) {
       ['roads/dumpster', -137, -30, Math.PI / 2, 1.6], ['roads/dumpster', -137, 50, Math.PI / 2, 1.6],
       ['suburban/planter', -160, -40, 0, 0.9], ['suburban/planter', -160, -10, 0, 0.9],
       ['suburban/planter', -160, 20, 0, 0.9], ['suburban/planter', -160, 50, 0, 0.9],
-      // Seaside Park trees + Palm Court greenery (no palm model in the kits - gap noted)
       ['suburban/tree-large', -70, 80, 0, 6], ['suburban/tree-small', -40, 75, 1, 4],
       ['suburban/tree-large', -10, 85, 2, 6.5], ['suburban/tree-small', 20, 78, 0, 4],
       ['suburban/tree-large', 35, 100, 1, 6], ['suburban/tree-small', -55, 110, 2, 4.5],
@@ -666,7 +811,6 @@ function createMap({ THREE, scene, GLTFLoader }) {
       ['suburban/tree-small', 160, -55, 0, 4.5], ['suburban/tree-large', 215, -55, 1, 6],
       ['suburban/tree-small', 160, 100, 2, 4.5], ['suburban/tree-large', 215, 100, 0, 6],
     );
-    // P5 (gfxfps v1): load each unique prop GLB once, clone per placement
     const propProtos = {}; // f -> Promise of lodify'd template scene
     function propProto(f) {
       if (!propProtos[f]) {
@@ -686,23 +830,15 @@ function createMap({ THREE, scene, GLTFLoader }) {
       });
     }
     for (const [f, x, z, rot, h] of PROPS) placeProp(f, x, z, rot, h);
-    // Mohamed's six props (palm, streetlight, bench, bin, hydrant, traffic light) - GLB zip pending;
-    // each load silently skips until assets/models/props/<name>.glb exists (v4 pre-wiring)
     const PROPS2 = [
-      // palms along the boardwalk west side (fills the no-palm gap in the Kenney kits)
       ['props/palm', -178, -180, 0, 7], ['props/palm', -178, -140, 1.2, 6.5], ['props/palm', -178, -100, 2.1, 7],
       ['props/palm', -178, -60, 0.6, 6], ['props/palm', -178, 20, 1.7, 7], ['props/palm', -178, 60, 2.9, 6.5],
       ['props/palm', -178, 100, 0.4, 7], ['props/palm', -178, 140, 1.1, 6], ['props/palm', -178, 180, 2.4, 7],
-      // benches: pier entrance, Seaside Park, Palm Court
       ['props/bench', -150, -12, Math.PI / 2, 1], ['props/bench', -40, 95, 0, 1], ['props/bench', 15, 90, Math.PI, 1],
       ['props/bench', 190, 30, Math.PI / 2, 1],
-      // bins by the shops and downtown corners
       ['props/bin', -146, 26, 0, 1], ['props/bin', -146, 66, 0, 1], ['props/bin', -66, -26, 0, 1],
-      // hydrants downtown
       ['props/hydrant', -66, 14, 0, 0.8], ['props/hydrant', 14, -26, 0, 0.8],
-      // streetlights on the downtown corners not covered by the roads kit
       ['props/streetlight', -24, 54, Math.PI, 5.5], ['props/streetlight', 66, -26, 0, 5.5],
-      // traffic light at the H280 x V280 junction (the roads-kit lights cover two other junctions)
       ['props/traffic_light', -24, -104, Math.PI / 2, 4.2],
     ];
     for (const [f, x, z, rot, h] of PROPS2) placeProp(f, x, z, rot, h); // zip pending: skips silently
@@ -713,17 +849,11 @@ function createMap({ THREE, scene, GLTFLoader }) {
       .then((m) => swapToModels(m.GLTFLoader))
       .catch(() => {}); // no loader wired: stay on primitives
   }
-
-  // P2 (gfxfps v1): freeze every static map object - none ever move; a future module that
-  // moves one must re-enable matrixAutoUpdate on it. Map is created before actors, so the
-  // scene holds only map statics at this point. Async GLB/prop adds freeze themselves above.
   function freeze(root) {
     root.updateMatrixWorld(true);
     root.traverse((o) => { o.matrixAutoUpdate = false; });
   }
   freeze(scene);
-
-  // ---- API ----
   const WATER_X = lw(82);
   const PIER = { minX: lw(20), maxX: lw(122), minZ: lz(292), maxZ: lz(308) };
   const onPier = (x, z) => x >= PIER.minX && x <= PIER.maxX && z >= PIER.minZ && z <= PIER.maxZ;
@@ -738,8 +868,6 @@ function createMap({ THREE, scene, GLTFLoader }) {
     if (x < -C || x > C || z < -C || z > C) return true;        // world edge
     return false;
   }
-
-  // v7: point-to-segment distance against every path piece (works for straight + curved)
   function roadHit(r, x, z) {
     const h = r.w / 2;
     for (let i = 0; i < r.pts.length - 1; i++) {
@@ -755,10 +883,10 @@ function createMap({ THREE, scene, GLTFLoader }) {
   function isRoadAt(x, z) {
     for (const r of ROADS) if (roadHit(r, x, z)) return true;
     for (const d of DRIVES) if (roadHit(d, x, z)) return true;
+    for (const a of ALLEYS) if (roadHit(a, x, z)) return true; // v9 alleys
+    for (const p of PARK_W) if (x >= p.minX && x <= p.maxX && z >= p.minZ && z <= p.maxZ) return true; // v9 lots
     return roadHit(HWY, x, z);
   }
-
-  // Named, road-safe taxi stops (original names), all >>20 m apart, 2.5 m off centerline
   const taxiStops = [
     { x: lw(132.5), z: lz(300), name: 'Pelican Pier' },
     { x: lw(282.5), z: lz(240), name: 'Downtown Solana' },
@@ -777,10 +905,11 @@ function createMap({ THREE, scene, GLTFLoader }) {
     isBlocked, blockedAt: isBlocked,
     isRoadAt, taxiStops,
     starterHome: { x: lw(505), z: lz(309), name: 'Palm Court Bungalow' },
-    // v7a (coordinator, additive): road centerlines in LAYOUT coords [[x,y],...] with width w,
-    // for placement modules (houses, props, pedestrians). Convert world = layout - 300.
-    roadPaths: ROADS.map((r) => ({ pts: r.pts, w: r.w })),
-    // v7a: register an extra collision footprint (world coords), e.g. a placed house.
+    roadPaths: ROADS.map((r) => ({ pts: r.pts, w: r.w }))
+      .concat(ALLEYS.map((r) => ({ pts: r.pts, w: r.w, cls: 'alley' }))), // v9: alleys carry the class
+    parkingLots, // v9: [{name,x,z,w,h,heading,layout,bays}] world coords, axis-aligned (heading 0)
+    junctions: junctions.map((nd) => ({ x: nd.x, y: nd.y, maxHalf: nd.maxHalf, hwy: nd.hwy || nd.base === false, arms: nd.arms.map((a) => [a.dx, a.dy, a.w]) })), // hwy=true: dash-break only (highway + v9 alley junctions)
+    markings,
     addBlock(minX, minZ, maxX, maxZ) { blocks.push({ minX, minZ, maxX, maxZ }); },
     update(dt) {},
   };
@@ -803,32 +932,6 @@ function createControls({container=document.body,onInteract=()=>{}}={}) {
 
 
 // ===== vehicles.js =====
-// js/vehicles.js — VEHICLE VARIETY module (GTA builder: vehicles). v001.
-// Original designs only: no real-world brands, no GTA vehicle names or models.
-//
-// COORDINATOR NOTES
-// - Heading convention: this module matches the SHIPPED actors.js exactly: a vehicle's
-//   FRONT is local -Z (taxi lamps sit at z=-1.82; motion at yaw=0 is -Z with
-//   rotation.y=-yaw). The role brief said "forward = +Z", but the existing code and all
-//   three shipped vehicles use front=-Z, so -Z wins for drop-in compatibility. Every type
-//   below is built front=-Z and needs no rotation in the wiring.
-// - Expected wiring (coordinator-owned): an addVehicle(typeKey, {x,z,heading})-style API
-//   in actors.js that finds the entry in VEHICLE_TYPES, calls entry.make(THREE), adds the
-//   returned group to the scene, and pushes a record
-//   { key, mesh, leanGroup: entry.twoWheeler ? mesh.userData.leanGroup : null,
-//     x, z, y:0, yaw: heading||0, speed:0, lean:0,
-//     label, foot, circleR, exitR, seatY, tune }
-//   into the vehicles array. make() is pure: it touches nothing outside its own group.
-// - Two-wheeler handling: actors.js currently hardcodes v.key==='bike' for lean, seat-back
-//   offset and rider pose. Generalize those checks to v.tune.leanMax > 0 (or a twoWheeler
-//   flag copied from the type entry) so the scooter leans and seats the rider correctly.
-// - Save/snapshot migration for the new keys (hatch, pickup, van, scooter) is
-//   coordinator-owned (actors snapshot v2 stores per-key records; unknown keys simply have
-//   no saved entry until first save).
-// - Materials: all types share one cached MeshLambertMaterial palette built from
-//   VEHICLE_PAINTS, so batchStatic merges across the whole vehicle and draw calls stay low.
-// - Wheel pivots are child Groups named 'wheel' (tire torus + rim cylinder inside) so the
-//   coordinator can spin them later; batchStatic leaves them untouched.
 
 const VEHICLE_PAINTS = {
   red:    '#b03a2e', // hatch body
@@ -854,8 +957,6 @@ function paints(THREE) {
   }
   return _mats;
 }
-
-// --- geometry helpers (same visual language as actors.js: hulls, rounded panels, torus tires) ---
 function mesh(T, parent, geo, mat, x = 0, y = 0, z = 0) {
   const o = new T.Mesh(geo, mat); o.position.set(x, y, z); parent.add(o); return o;
 }
@@ -873,7 +974,6 @@ function rounded(T, parent, w, h, d, mat, x, y, z, r = Math.min(w, h, d) * .3) {
   g.translate(0, 0, -(d - 2 * r) / 2);
   return mesh(T, parent, g, mat, x, y, z);
 }
-// hull: elliptical ring loft, rings = [z, halfWidth, centerY, halfHeight]
 function hull(T, parent, rings, mat) {
   const vs = [], ix = [], N = 12;
   for (const [z, w, cy, h] of rings) for (let i = 0; i < N; i++) {
@@ -890,7 +990,6 @@ function hull(T, parent, rings, mat) {
   g.setIndex(ix); g.computeVertexNormals();
   return mesh(T, parent, g, mat);
 }
-// Batch direct-child meshes by material; child Groups (wheel pivots, lean) stay movable.
 function batchStatic(T, group) {
   const buckets = new Map();
   for (const o of [...group.children]) if (o.isMesh) {
@@ -912,8 +1011,6 @@ function batchStatic(T, group) {
     mesh(T, group, joined, mat);
   }
 }
-// Wheel pivot: torus tire + rim cylinder, bottom of tire rests on y=0.
-// R = torus ring radius, tube = torus tube radius; pivot y = R + tube.
 function wheel(T, parent, x, z, R, tube, m, rimMat) {
   const outer = R + tube;
   const pivot = new T.Group(); pivot.name = 'wheel'; pivot.position.set(x, outer, z); parent.add(pivot);
@@ -922,8 +1019,6 @@ function wheel(T, parent, x, z, R, tube, m, rimMat) {
   rim.rotation.z = Math.PI / 2;
   return pivot;
 }
-
-// --- red hatch: compact hatchback, ~3.9 m long (own design, front = -Z) ---
 function makeHatch(T) {
   const m = paints(T), g = new T.Group(); g.name = 'Original red compact hatchback';
   hull(T, g, [[-1.9, .52, .56, .1], [-1.75, .74, .62, .18], [-1.15, .84, .68, .23], [1.25, .84, .68, .23], [1.78, .76, .63, .17], [1.9, .56, .58, .1]], m.red);
@@ -939,8 +1034,6 @@ function makeHatch(T) {
   batchStatic(T, g);
   return g;
 }
-
-// --- blue pickup: pickup truck with open bed, ~5.2 m long (own design, front = -Z) ---
 function makePickup(T) {
   const m = paints(T), g = new T.Group(); g.name = 'Original blue pickup truck';
   hull(T, g, [[-2.55, .55, .68, .12], [-2.35, .85, .76, .2], [2.3, .88, .78, .2], [2.52, .8, .74, .16], [2.58, .6, .68, .1]], m.blue); // chassis + bed floor
@@ -959,8 +1052,6 @@ function makePickup(T) {
   batchStatic(T, g);
   return g;
 }
-
-// --- cream van: delivery van, ~5.0 m long (own design, front = -Z) ---
 function makeVan(T) {
   const m = paints(T), g = new T.Group(); g.name = 'Original cream delivery van';
   hull(T, g, [[-2.45, .8, .9, .2], [-2.25, .94, 1.18, .56], [-1.8, .97, 1.24, .6], [1.85, .97, 1.24, .6], [2.3, .92, 1.12, .5], [2.46, .78, .86, .15]], m.cream); // tall rounded body
@@ -975,8 +1066,6 @@ function makeVan(T) {
   batchStatic(T, g);
   return g;
 }
-
-// --- teal scooter: step-through scooter, ~1.9 m long, lean-in riding (own design, front = -Z) ---
 function makeScooter(T) {
   const m = paints(T), g = new T.Group(); g.name = 'Original teal scooter';
   const lean = new T.Group(); lean.name = 'lean'; g.add(lean); g.userData.leanGroup = lean;
@@ -1001,8 +1090,6 @@ function makeScooter(T) {
   batchStatic(T, lean);
   return g;
 }
-
-// --- orange coupe: rounded 2-door sports coupe, ~4.5 m long (own design, front = -Z) ---
 function makeCoupe(T) {
   const m = paints(T), g = new T.Group(); g.name = 'Original orange sports coupe';
   hull(T, g, [[-2.25, .52, .52, .09], [-2.08, .76, .58, .17], [-1.45, .86, .62, .21], [1.45, .86, .62, .21], [2.0, .78, .58, .16], [2.25, .54, .52, .09]], m.orange);
@@ -1035,22 +1122,7 @@ const VEHICLE_TYPES = [
   { key: 'coupe', label: 'orange coupe', foot: [-1.5, 0, 1.5], circleR: 1.05, exitR: 1.75, seatY: .52,
     tune: { accel: 13, maxF: 26, maxR: 6, turn: 1.9, leanMax: 0 }, twoWheeler: false, make: makeCoupe },
 ];
-
-// ============================================================================
-// v002 — PARKED CARS (round 2): static, non-drivable kerbside/driveway set-dressing.
-// Placed from map.roadPaths at build time (never hardcoded coordinates, so roads
-// round-2 changes flow through automatically). One merged vertex-colored mesh:
-// 1 draw call, zero per-frame cost. Each car registers map.addBlock collision.
-// Coordinator wiring (main.js, AFTER createMap, before or after actors — any time):
-//   import { buildParkedCars } from './vehicles.js';
-//   const parked = buildParkedCars({ THREE, scene, map }); // parked.count cars placed
-// Parked cars are set-dressing: NOT in actors.vehicles, NOT in any save blob.
-// ============================================================================
-
-// 8 muted street colors (baked as vertex colors; no new materials per car).
 const PARKED_PAINTS = ['#b9bcbe', '#8a9094', '#33506e', '#6e3333', '#b3a586', '#3c5546', '#2a2e33', '#d8d6cf'];
-
-// Deterministic PRNG so the street looks identical on every load (seeded, no Math.random).
 function _mulberry32(seed) {
   let a = seed >>> 0;
   return () => {
@@ -1060,16 +1132,11 @@ function _mulberry32(seed) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-
-// One low-poly rounded parked-car archetype (~520 tris). kind scales it:
-// 'sedan' (street car), 'hatch' (shorter), 'van' (taller/longer). Parts are colored
-// via userData.c hex and baked into the shared vertex-colored merge by buildParkedCars.
 function _parkedBase(T, kind) {
   const g = new T.Group();
   const C = { glass: 0x2b3a47, rubber: 0x202733, lamp: 0xfff0b2, tail: 0xce594e, dark: 0x243247 };
   const tag = (o, c) => { o.userData.c = c; return o; };
   const m = (geo, c, x = 0, y = 0, z = 0) => { const o = new T.Mesh(geo, null); o.position.set(x, y, z); tag(o, c); g.add(o); return o; };
-  // hull body (N=10 keeps tris low)
   const rings = [[-2.1, .5, .55, .1], [-1.95, .72, .6, .17], [-1.3, .84, .66, .21], [1.35, .84, .66, .21], [1.95, .74, .6, .15], [2.1, .54, .55, .09]];
   const vs = [], ix = [], N = 10;
   for (const [z, w, cy, h] of rings) for (let i = 0; i < N; i++) { const a = i / N * Math.PI * 2; vs.push(Math.cos(a) * w, cy + Math.sin(a) * h, z); }
@@ -1077,7 +1144,6 @@ function _parkedBase(T, kind) {
   for (let i = 1; i < N - 1; i++) { ix.push(0, i + 1, i); const o = (rings.length - 1) * N; ix.push(o, o + i, o + i + 1); }
   const hg = new T.BufferGeometry(); hg.setAttribute('position', new T.Float32BufferAttribute(vs, 3)); hg.setIndex(ix); hg.computeVertexNormals();
   m(hg, 'BODY');
-  // glass canopy (N=8)
   const r2 = [[-.85, .5, .85, .05], [-.4, .58, 1.05, .18], [.6, .56, 1.05, .18], [1.0, .46, .85, .05]];
   const v2 = [], i2 = [], M = 8;
   for (const [z, w, cy, h] of r2) for (let i = 0; i < M; i++) { const a = i / M * Math.PI * 2; v2.push(Math.cos(a) * w, cy + Math.sin(a) * h, z); }
@@ -1094,23 +1160,27 @@ function _parkedBase(T, kind) {
     const t = m(new T.SphereGeometry(1, 6, 4), C.tail, x, .7, 2.03); t.scale.set(.17, .08, .07);
   }
   for (const z of [-2.08, 2.1]) { const b = m(new T.SphereGeometry(1, 6, 4), C.dark, 0, .48, z); b.scale.set(.55, .1, .09); } // bumper bars
+  { // contrast roof cap over the canopy (two-tone look; tagged ROOF for seeded roof color)
+    const r3 = [[-.42, .42, 1.2, .03], [-.2, .46, 1.24, .035], [.35, .44, 1.24, .035], [.5, .4, 1.18, .025]];
+    const v3 = [], i3 = [], K = 8;
+    for (const [z, w, cy, h] of r3) for (let i = 0; i < K; i++) { const a = i / K * Math.PI * 2; v3.push(Math.cos(a) * w, cy + Math.sin(a) * h, z); }
+    for (let j = 0; j < r3.length - 1; j++) for (let i = 0; i < K; i++) { const a = j * K + i, b = j * K + (i + 1) % K, c = a + K, d = b + K; i3.push(a, b, c, b, d, c); }
+    for (let i = 1; i < K - 1; i++) { i3.push(0, i + 1, i); const o = (r3.length - 1) * K; i3.push(o, o + i, o + i + 1); }
+    const rg = new T.BufferGeometry(); rg.setAttribute('position', new T.Float32BufferAttribute(v3, 3)); rg.setIndex(i3); rg.computeVertexNormals();
+    m(rg, 'ROOF');
+  }
   if (kind === 'hatch') g.scale.set(.94, .95, .82);
   else if (kind === 'van') g.scale.set(1.02, 1.3, 1.12);
   return g;
 }
-
-// Placement validity probe, exported for the coordinator's own tests.
-// Car = rectangle 4.3 x 1.9 m (scaled kinds stay inside it), center (x,z), heading yaw.
-// Rules: fully off every drive surface (corners + edge midpoints fail map.isRoadAt),
-// nothing blocking (map.isBlocked), clear of job anchors/taxi stops/spawns.
-function parkedCarFits(map, x, z, yaw, extraClear = []) {
-  const HL = 2.15, HW = .95; // half length/width incl. margin
+function parkedCarFits(map, x, z, yaw, extraClear = [], hl = 2.15, hw = .95) {
+  const HL = hl, HW = hw;
   const ca = Math.cos(yaw), sa = Math.sin(yaw); // local +Z forward maps to (sa,-ca) ... probe corners directly
   const pts = [];
   for (const [lx, lz] of [[-HW, -HL], [HW, -HL], [-HW, HL], [HW, HL], [0, -HL], [0, HL], [-HW, 0], [HW, 0]])
     pts.push([x + lx * ca - lz * sa, z + lx * sa + lz * ca]); // local (lx,lz) under mesh rotation.y=-yaw
   for (const [px, pz] of pts) { if (map.isRoadAt(px, pz)) return false; if (map.isBlocked(px, pz, .25)) return false; }
-  if (map.isBlocked(x, z, 1.1)) return false;
+  if (map.isBlocked(x, z, Math.min(1.1, hw + .15))) return false;
   for (const c of extraClear) { const d = Math.hypot(x - c.x, z - c.z); if (d < (c.r || 9)) return false; }
   return true;
 }
@@ -1123,15 +1193,10 @@ function buildParkedCars({ THREE: T, scene, map, count = 32, seed = 20261120, av
   if (sp.player) keepClear.push({ x: sp.player.x, z: sp.player.z, r: 10 });
   if (sp.car) keepClear.push({ x: sp.car.x, z: sp.car.z, r: 11 });      // starter car on its driveway
   if (map.starterHome) keepClear.push({ x: map.starterHome.x, z: map.starterHome.z, r: 15 }); // bungalow + garage + drive mouth
-
-  // Candidate kerb slots along every road path (roadPaths are LAYOUT coords: world = layout - 300).
-  // Arc-length resampling across whole paths (curved/winding/diagonal roads included), then
-  // round-robin across roads so no street eats the whole budget.
   const perRoad = [];
   for (const road of map.roadPaths || []) {
     const pts = road.pts.map(p => [p[0] - CC, p[1] - CC]); // world
     const w = road.w;
-    // cumulative arc length
     const cum = [0];
     for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
     const L = cum[cum.length - 1];
@@ -1159,8 +1224,12 @@ function buildParkedCars({ THREE: T, scene, map, count = 32, seed = 20261120, av
     }
     perRoad.push(list);
   }
-  // Round-robin one candidate per road per round, min spacing 9 m, up to count.
   const placed = [];
+  for (const b of _beachSpots(map, keepClear, 3)) {
+    if (placed.some(p => Math.hypot(p.x - b.x, p.z - b.z) < 9)) continue;
+    placed.push(b);
+  }
+  const beachCount = placed.length;
   let progressed = true;
   while (placed.length < count && progressed) {
     progressed = false;
@@ -1173,15 +1242,30 @@ function buildParkedCars({ THREE: T, scene, map, count = 32, seed = 20261120, av
       placed.push(s);
     }
   }
-
-  // Bake every placed car into ONE vertex-colored geometry (1 draw call).
+  const specials = [];
+  const farFromPlaced = (s, hl) => placed.every(p => Math.hypot(p.x - s.x, p.z - s.z) > hl + 3.6)
+    && specials.every(p => Math.hypot(p.x - s.x, p.z - s.z) > hl + 3.6);
+  const depot = (map.taxiStops || []).find(s => /Solana|Depot|Downtown/i.test(s.name)) || { x: -17.5, z: -60 };
+  const busSpot = _findSpotsNear(map, keepClear, depot.x, depot.z, 80, 5.6, 1.3, 1, farFromPlaced)[0];
+  if (busSpot) specials.push({ type: 'bus', ...busSpot, hl: 5.6, hw: 1.3 });
+  const cruiserSpot = _findSpotsNear(map, keepClear, -52, -52, 70, 2.3, 1.0, 1, farFromPlaced)[0]; // downtown civic core (between the secondary streets)
+  if (cruiserSpot) specials.push({ type: 'cruiser', ...cruiserSpot, hl: 2.3, hw: 1.0 });
+  const beachAnchor = placed[1] || { x: -178, z: -11 }; // middle v003 beach spot
+  for (const s of _findSpotsNear(map, keepClear, beachAnchor.x, beachAnchor.z, 40, 1.1, .45, 3, farFromPlaced))
+    specials.push({ type: 'moped', ...s, hl: 1.1, hw: .45 });
   const positions = [], normals = [], colors = [];
   const col = new T.Color(), M4 = new T.Matrix4(), NM = new T.Matrix3();
   const KINDS = ['sedan', 'sedan', 'sedan', 'hatch', 'sedan', 'van', 'hatch', 'sedan']; // weighted mix
-  placed.forEach((s, idx) => {
+  const ROOFS = ['#e8e6e0', '#e8e6e0', '#23272c', null, null]; // white / black / body-color roof, seeded
+  const usedPaints = new Set();
+  const units = placed.map(s => ({ s, base: 'car' })).concat(specials.map(sp => ({ s: sp, base: sp.type })));
+  units.forEach(({ s, base }) => {
     const kind = KINDS[Math.floor(rnd() * KINDS.length)];
-    const paint = PARKED_PAINTS[Math.floor(rnd() * PARKED_PAINTS.length)];
-    const car = _parkedBase(T, kind);
+    const paint = base === 'cruiser' ? '#23272c' : base === 'bus' ? '#33506e' : PARKED_PAINTS[Math.floor(rnd() * PARKED_PAINTS.length)];
+    const roofPick = ROOFS[Math.floor(rnd() * ROOFS.length)];
+    const roof = (base === 'cruiser' || base === 'bus') ? '#e8e6e0' : (roofPick || paint); // service liveries: white roof
+    usedPaints.add(paint);
+    const car = base === 'bus' ? _busBase(T) : base === 'cruiser' ? _cruiserBase(T) : base === 'moped' ? _mopedBase(T) : _parkedBase(T, kind);
     car.position.set(s.x, (map.groundAt ? map.groundAt(s.x, s.z) : 0), s.z);
     car.rotation.y = -s.yaw; // actors.js convention
     car.updateMatrixWorld(true);
@@ -1190,13 +1274,13 @@ function buildParkedCars({ THREE: T, scene, map, count = 32, seed = 20261120, av
       const geo = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone();
       geo.applyMatrix4(o.matrixWorld);
       const p = geo.attributes.position.array, n = geo.attributes.normal.array;
-      col.set(o.userData.c === 'BODY' ? paint : o.userData.c);
+      col.set(o.userData.c === 'BODY' ? paint : o.userData.c === 'ROOF' ? roof : o.userData.c);
       for (let i = 0; i < p.length; i += 3) { positions.push(p[i], p[i + 1], p[i + 2]); normals.push(n[i], n[i + 1], n[i + 2]); colors.push(col.r, col.g, col.b); }
       geo.dispose();
     });
-    // collision: world AABB of the rotated 4.3 x 1.9 footprint
+    const hl = s.hl || 2.15, hw = s.hw || .95;
     const ca = Math.abs(Math.cos(s.yaw)), sa = Math.abs(Math.sin(s.yaw));
-    const hx = ca * .95 + sa * 2.15, hz = sa * .95 + ca * 2.15;
+    const hx = ca * hw + sa * hl, hz = sa * hw + ca * hl;
     if (map.addBlock) map.addBlock(s.x - hx, s.z - hz, s.x + hx, s.z + hz);
   });
   const geo = new T.BufferGeometry();
@@ -1208,14 +1292,120 @@ function buildParkedCars({ THREE: T, scene, map, count = 32, seed = 20261120, av
   scene.add(meshObj);
   meshObj.updateMatrixWorld(true);
   meshObj.matrixAutoUpdate = false; // static like the frozen map statics
-  return { count: placed.length, mesh: meshObj, spots: placed.map(s => ({ x: +s.x.toFixed(1), z: +s.z.toFixed(1), yaw: +s.yaw.toFixed(2) })) };
+  return { count: units.length, mesh: meshObj, beachCount, distinctBodyColors: usedPaints.size,
+    specials: specials.map(s => ({ type: s.type, x: +s.x.toFixed(1), z: +s.z.toFixed(1), yaw: +s.yaw.toFixed(2) })),
+    spots: placed.concat(specials).map(s => ({ x: +s.x.toFixed(1), z: +s.z.toFixed(1), yaw: +s.yaw.toFixed(2) })) };
+}
+function _findSpotsNear(map, keepClear, ax, az, maxR, hl, hw, want, extraOk) {
+  const CC = 300, found = [];
+  for (const road of map.roadPaths || []) {
+    const pts = road.pts.map(p => [p[0] - CC, p[1] - CC]);
+    const cum = [0];
+    for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+    const L = cum[cum.length - 1];
+    for (let s = 6 + hl; s < L - 6 - hl; s += 4) {
+      let i = 1; while (i < cum.length - 1 && cum[i] < s) i++;
+      const t = (s - cum[i - 1]) / (cum[i] - cum[i - 1] || 1);
+      const ax2 = pts[i - 1][0], az2 = pts[i - 1][1], bx = pts[i][0], bz = pts[i][1];
+      const dx = bx - ax2, dz = bz - az2, len = Math.hypot(dx, dz) || 1;
+      const ux = dx / len, uz = dz / len, nx = -uz, nz = ux;
+      for (const side of [1, -1]) {
+        const off = road.w / 2 + hw + .45;
+        const x = ax2 + dx * t + nx * off * side, z = az2 + dz * t + nz * off * side;
+        if (Math.hypot(x - ax, z - az) > maxR) continue;
+        const yaw = Math.atan2(ux, -uz) + (side < 0 ? Math.PI : 0);
+        if (!parkedCarFits(map, x, z, yaw, keepClear, hl, hw)) continue;
+        const spot = { x, z, yaw };
+        if (extraOk && !extraOk(spot, hl)) continue;
+        if (found.some(p => Math.hypot(p.x - x, p.z - z) < 7)) continue;
+        found.push(spot);
+      }
+    }
+  }
+  found.sort((a, b) => Math.hypot(a.x - ax, a.z - az) - Math.hypot(b.x - ax, b.z - az));
+  return found.slice(0, want);
+}
+function _busBase(T) {
+  const g = new T.Group();
+  const m = (geo, c, x = 0, y = 0, z = 0) => { const o = new T.Mesh(geo, null); o.position.set(x, y, z); o.userData.c = c; g.add(o); return o; };
+  const loft = (rings, N, c) => {
+    const vs = [], ix = [];
+    for (const [z, w, cy, h] of rings) for (let i = 0; i < N; i++) { const a = i / N * Math.PI * 2; vs.push(Math.cos(a) * w, cy + Math.sin(a) * h, z); }
+    for (let j = 0; j < rings.length - 1; j++) for (let i = 0; i < N; i++) { const a = j * N + i, b = j * N + (i + 1) % N, cc = a + N, d = b + N; ix.push(a, b, cc, b, d, cc); }
+    for (let i = 1; i < N - 1; i++) { ix.push(0, i + 1, i); const o = (rings.length - 1) * N; ix.push(o, o + i, o + i + 1); }
+    const gg = new T.BufferGeometry(); gg.setAttribute('position', new T.Float32BufferAttribute(vs, 3)); gg.setIndex(ix); gg.computeVertexNormals();
+    return m(gg, c);
+  };
+  loft([[-5.4, .98, 1.15, .4], [-5.15, 1.2, 1.4, .75], [-4.6, 1.24, 1.45, .8], [4.4, 1.24, 1.45, .8], [5.1, 1.16, 1.35, .7], [5.4, .96, 1.1, .35]], 12, 'BODY');
+  loft([[-4.85, 1.28, 1.52, .1], [4.15, 1.28, 1.52, .1]], 10, 'ROOF'); // white waist stripe
+  loft([[-5.0, 1.08, 1.95, .22], [-4.45, 1.27, 2.1, .34], [3.9, 1.27, 2.1, .34], [4.5, 1.16, 2.0, .26], [5.05, 1.0, 1.8, .14]], 10, 0x546a80); // wrap-around window stripe
+  loft([[-4.2, 1.1, 2.5, .06], [-3.6, 1.15, 2.55, .07], [3.5, 1.15, 2.55, .07], [4.0, 1.06, 2.48, .05]], 8, 'ROOF');
+  for (const x of [-1.02, 1.02]) for (const z of [-3.4, 3.2]) { const w = m(new T.CylinderGeometry(.42, .42, .24, 10), 0x202733, x, .42, z); w.rotation.z = Math.PI / 2; }
+  for (const x of [-.72, .72]) { const l = m(new T.SphereGeometry(1, 8, 5), 0xfff0b2, x, .95, -5.32); l.scale.set(.24, .12, .08); const t2 = m(new T.SphereGeometry(1, 8, 5), 0xce594e, x, 1.0, 5.34); t2.scale.set(.2, .14, .07); }
+  { const b1 = m(new T.SphereGeometry(1, 8, 5), 0x243247, 0, .62, -5.42); b1.scale.set(.9, .14, .1); const b2 = m(new T.SphereGeometry(1, 8, 5), 0x243247, 0, .62, 5.42); b2.scale.set(.9, .14, .1); }
+  { const d = m(new T.SphereGeometry(1, 8, 5), 0x1c242e, 0, 2.0, -5.3); d.scale.set(.5, .18, .05); } // destination box
+  for (const x of [-1.3, 1.3]) { const mr = m(new T.SphereGeometry(1, 6, 4), 0x1c242e, x, 1.9, -4.9); mr.scale.set(.06, .12, .09); } // mirrors
+  { const door = m(new T.CylinderGeometry(.02, .02, 1.5, 6), 0x243247, 1.24, 1.15, -3.6); } // front door seam
+  return g;
+}
+function _cruiserBase(T) {
+  const g = _parkedBase(T, 'sedan'); // shared sedan silhouette
+  g.traverse(o => { if (o.isMesh && o.userData.c === 'BODY') o.userData.c = 0x23272c; });
+  const m = (geo, c, x = 0, y = 0, z = 0) => { const o = new T.Mesh(geo, null); o.position.set(x, y, z); o.userData.c = c; g.add(o); return o; };
+  { const band = m(new T.SphereGeometry(1, 10, 6), 0xe8e6e0, 0, .72, .1); band.scale.set(.87, .22, .75); } // white door band
+  { const base = m(new T.SphereGeometry(1, 6, 4), 0x1c242e, 0, 1.3, -.05); base.scale.set(.3, .045, .14); }
+  { const r = m(new T.SphereGeometry(1, 6, 4), 0xc0392b, -.15, 1.34, -.05); r.scale.set(.13, .05, .1); }
+  { const b = m(new T.SphereGeometry(1, 6, 4), 0x2e5f8a, .15, 1.34, -.05); b.scale.set(.13, .05, .1); }
+  { const pb = m(new T.SphereGeometry(1, 6, 4), 0x1c242e, 0, .5, -2.18); pb.scale.set(.5, .16, .08); } // push bar
+  return g;
+}
+function _mopedBase(T) {
+  const g = new T.Group();
+  const m = (geo, c, x = 0, y = 0, z = 0) => { const o = new T.Mesh(geo, null); o.position.set(x, y, z); o.userData.c = c; g.add(o); return o; };
+  for (const z of [-.55, .58]) { const w = m(new T.CylinderGeometry(.22, .22, .12, 8), 0x202733, 0, .22, z); w.rotation.z = Math.PI / 2; }
+  { const s = m(new T.SphereGeometry(1, 8, 5), 'BODY', 0, .5, .25); s.scale.set(.18, .16, .3); } // body
+  { const sh = m(new T.SphereGeometry(1, 8, 5), 'BODY', 0, .62, -.48); sh.scale.set(.14, .3, .16); } // leg shield
+  { const st = m(new T.SphereGeometry(1, 8, 5), 0x1c242e, 0, .68, .3); st.scale.set(.16, .07, .26); } // seat
+  { const bar = m(new T.CylinderGeometry(.025, .025, .44, 6), 0xc3cdcf, 0, 1.0, -.55); bar.rotation.z = Math.PI / 2; }
+  { const post = m(new T.CylinderGeometry(.025, .03, .42, 6), 0xc3cdcf, 0, .82, -.52); post.rotation.x = .3; }
+  for (const x of [-.2, .2]) { const gr = m(new T.SphereGeometry(1, 6, 4), 0x1c242e, x, 1.0, -.55); gr.scale.set(.04, .04, .07); }
+  { const l = m(new T.SphereGeometry(1, 6, 4), 0xfff0b2, 0, .88, -.62); l.scale.set(.07, .07, .05); }
+  { const t2 = m(new T.SphereGeometry(1, 6, 4), 0xce594e, 0, .6, .56); t2.scale.set(.05, .06, .04); }
+  return g;
+}
+function _beachSpots(map, keepClear, want) {
+  const CC = 300;
+  const arc = (map.roadPaths || []).reduce((a, b) => (b.pts.length > (a ? a.pts.length : 0) ? b : a), null);
+  if (!arc) return [];
+  const pts = arc.pts.map(p => [p[0] - CC, p[1] - CC]);
+  const cum = [0];
+  for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  const L = cum[cum.length - 1];
+  const out = [];
+  for (let s = 6; s < L - 6 && out.length < want; s += 5) {
+    let i = 1; while (i < cum.length - 1 && cum[i] < s) i++;
+    const t = (s - cum[i - 1]) / (cum[i] - cum[i - 1] || 1);
+    const ax = pts[i - 1][0], az = pts[i - 1][1], bx = pts[i][0], bz = pts[i][1];
+    const dx = bx - ax, dz = bz - az, len = Math.hypot(dx, dz) || 1;
+    const ux = dx / len, uz = dz / len, nx = -uz, nz = ux;
+    const sx = ax + dx * t, sz = az + dz * t;
+    if (sz < -35 || sz > 45) continue; // pier/beach band only
+    const sides = nx < 0 ? [1, -1] : [-1, 1];
+    for (const side of sides) {
+      const off = arc.w / 2 + 1.4;
+      const x = sx + nx * off * side, z = sz + nz * off * side;
+      const yaw = Math.atan2(ux, -uz) + (side < 0 ? Math.PI : 0);
+      if (!parkedCarFits(map, x, z, yaw, keepClear)) continue;
+      if (out.some(p => Math.hypot(p.x - x, p.z - z) < 12)) break; // beach spots spread out
+      out.push({ x, z, yaw });
+      break;
+    }
+  }
+  return out;
 }
 
 
 // ===== actors.js =====
-// Original primitive geometry. No external models, names, textures or paid dependencies.
-// v009: adds original white sport sedan (starter car, ~4.6 m) and green cruiser bike (~2.2 m,
-// lean-in riding). sedan parks at map.spawnPoints.car (map v6 driveway); taxi keeps actors.car.
 function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onModeChange=()=>{},vehicleTypes=[]}){
  const ground=(x,z)=>{const y=(map.groundAt||map.heightAt||(()=>0))(x,z);return Number.isFinite(y)?y:0;};
  const blocked=(x,z,r)=>!!((map.isBlocked||map.blockedAt||(()=>false))(x,z,r));
@@ -1226,7 +1416,6 @@ function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onMode
  function capsule(parent,x,y,z,r,len,mat){return mesh(parent,new T.CapsuleGeometry(r,len,4,8),mat,x,y,z);}
  function rounded(parent,w,h,d,mat,x,y,z,r=Math.min(w,h,d)*.3){r=Math.min(r,w*.45,h*.45,d*.45);const a=w/2-r,b=h/2-r,s=new T.Shape();s.moveTo(-a-r,-b);s.lineTo(-a-r,b);s.quadraticCurveTo(-a-r,b+r,-a,b+r);s.lineTo(a,b+r);s.quadraticCurveTo(a+r,b+r,a+r,b);s.lineTo(a+r,-b);s.quadraticCurveTo(a+r,-b-r,a,-b-r);s.lineTo(-a,-b-r);s.quadraticCurveTo(-a-r,-b-r,-a-r,-b);const g=new T.ExtrudeGeometry(s,{depth:Math.max(.005,d-2*r),bevelEnabled:true,bevelSegments:2,steps:1,bevelSize:r*.45,bevelThickness:r,curveSegments:3});g.translate(0,0,-(d-2*r)/2);return mesh(parent,g,mat,x,y,z);}
  function hull(parent,rings,mat){const vs=[],ix=[],N=12;for(const [z,w,cy,h]of rings)for(let i=0;i<N;i++){const a=i/N*Math.PI*2;vs.push(Math.cos(a)*w,cy+Math.sin(a)*h,z);}for(let j=0;j<rings.length-1;j++)for(let i=0;i<N;i++){const a=j*N+i,b=j*N+(i+1)%N,c=a+N,d=b+N;ix.push(a,b,c,b,d,c);}for(let i=1;i<N-1;i++){ix.push(0,i+1,i);const o=(rings.length-1)*N;ix.push(o,o+i,o+i+1);}const g=new T.BufferGeometry();g.setAttribute('position',new T.Float32BufferAttribute(vs,3));g.setIndex(ix);g.computeVertexNormals();return mesh(parent,g,mat);}
- // Batch static root meshes by material, leaving limb/wheel groups movable.
  function batchStatic(group){const buckets=new Map();for(const o of [...group.children])if(o.isMesh){o.updateMatrix();const g=o.geometry.index?o.geometry.toNonIndexed():o.geometry.clone();g.applyMatrix4(o.matrix);const a=buckets.get(o.material)||[];a.push({o,g});buckets.set(o.material,a);}for(const [mat,items]of buckets){if(items.length<2){items.forEach(i=>i.g.dispose());continue;}const positions=[],normals=[];for(const {o,g}of items){positions.push(...g.attributes.position.array);normals.push(...g.attributes.normal.array);group.remove(o);g.dispose();}const joined=new T.BufferGeometry();joined.setAttribute('position',new T.Float32BufferAttribute(positions,3));joined.setAttribute('normal',new T.Float32BufferAttribute(normals,3));mesh(group,joined,mat);}}
  function normalize(group,len){group.updateMatrixWorld(true);const b=new T.Box3().setFromObject(group,true),s=b.getSize(new T.Vector3());const k=len/s.z;group.scale.setScalar(k);group.position.y=-b.min.y*k;return k;}
  const pm=new T.Group();pm.name='Original rounded courier character';scene.add(pm);
@@ -1242,7 +1431,6 @@ function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onMode
  for(const x of[-.61,.61]){sphere(cm,x,.85,-1.82,.22,.12,.095,mats.lamp);sphere(cm,x,.85,1.78,.21,.1,.09,mats.tail);}
  rounded(cm,1.15,.16,.12,mats.dark,0,.59,-1.92,.055);rounded(cm,1.42,.11,.12,mats.dark,0,.54,1.85,.045);rounded(cm,.52,.22,.37,mats.lamp,0,1.91,.03,.07);rounded(cm,.31,.1,.015,mats.dark,0,1.93,-.174,.02);
  batchStatic(cm);
- // Original white sport sedan (starter car, own design, ~4.6 m long). Not a copy of any game car.
  const sm=new T.Group();sm.name='Original white sport sedan';
  hull(sm,[[-2.3,.5,.58,.1],[-2.14,.74,.62,.2],[-1.45,.86,.68,.26],[1.5,.86,.68,.26],[2.08,.76,.64,.2],[2.3,.56,.6,.11]],mats.white);
  hull(sm,[[-1.02,.54,.92,.06],[-.5,.64,1.14,.24],[.7,.63,1.14,.24],[1.2,.53,.95,.05]],mats.glass2);
@@ -1253,7 +1441,6 @@ function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onMode
  rounded(sm,1,.12,.06,mats.black,0,.62,-2.27,.03);rounded(sm,1.5,.1,.06,mats.black,0,.56,2.28,.03);
  rounded(sm,1.1,.045,.26,mats.white,0,1.04,2.16,.02);for(const x of[-.4,.4])rounded(sm,.04,.1,.05,mats.black,x,.97,2.16,.015);
  batchStatic(sm);normalize(sm,4.6);scene.add(sm);
- // Original green cruiser bike (own design, ~2.2 m long). Whole visual sits in a lean group.
  const bm=new T.Group();bm.name='Original green cruiser bike';const lean=new T.Group();bm.add(lean);
  for(const z of[-.78,.74]){const pivot=new T.Group();pivot.position.set(0,.45,z);lean.add(pivot);const tire=mesh(pivot,new T.TorusGeometry(.33,.12,5,10),mats.rubber);tire.rotation.y=Math.PI/2;const rim=mesh(pivot,new T.CylinderGeometry(.26,.26,.1,8),mats.black);rim.rotation.z=Math.PI/2;for(const a of[0,1,2]){const spoke=mesh(pivot,new T.BoxGeometry(.03,.5,.05),mats.chrome);spoke.rotation.x=a*Math.PI/3;}}
  for(const x of[-.07,.07]){const f=mesh(lean,new T.CylinderGeometry(.035,.035,.78,8),mats.chrome,x,.82,-.88);f.rotation.x=.42;}
@@ -1274,7 +1461,6 @@ function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onMode
  const car=mkV('taxi',cm,null,start.taxi||{},{x:(spawn.x??0)+4,z:spawn.z??8,heading:0,label:'yellow car',foot:[-1.25,0,1.25],circleR:1.02,exitR:1.7,seatY:.8,tune:{accel:9,maxF:19,maxR:6,turn:1.55}});
  const sedan=mkV('sedan',sm,null,start.sedan||start.car||{},{x:(spawn.x??0)-4,z:(spawn.z??8)+2,heading:0,label:'white sedan',foot:[-1.5,0,1.5],circleR:1.05,exitR:1.75,seatY:.6,tune:{accel:12,maxF:24,maxR:6,turn:1.7}});
  const bike=mkV('bike',bm,lean,start.bike||{},{x:(spawn.x??0)+7,z:(spawn.z??8)+2,heading:0,label:'green bike',foot:[-.7,0,.7],circleR:.5,exitR:1.1,seatY:.74*bikeK,tune:{accel:13,maxF:22,maxR:5,turn:2.3,leanMax:.42}});
- // v012: extra drivable types from js/vehicles.js (coordinator wiring; builder 7 adopt upstream)
  const extra=[];
  for(const t of vehicleTypes){try{
   const g=t.make(T);g.name='Original '+t.label;scene.add(g);
@@ -1343,9 +1529,6 @@ function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onMode
 
 
 // ===== jobs.js =====
-// Original game logic. No external assets or runtime dependencies.
-// jobs.js v2: taxi work (unchanged behaviour, plus a wallet deposit for side jobs)
-// and the new parcel-delivery side job (on foot or any vehicle).
 
 function createTaxiJob({routes, getVehicle, onChange=()=>{}, initialState=null}) {
   if (!Array.isArray(routes) || routes.length < 1) throw new Error('Taxi routes required');
@@ -1371,14 +1554,12 @@ function createTaxiJob({routes, getVehicle, onChange=()=>{}, initialState=null})
   function emit(){changed=true;onChange(snapshot());}
   function accept(){if(state.phase!=='idle')return false;state.phase='pickup';state.dwell=0;state.message='Drive to '+route().pickup.name+'. Stop in the marked zone.';emit();return true;}
   function cancel(){if(state.phase==='idle')return false;state.phase='idle';state.dwell=0;state.message='Taxi job canceled. No money lost.';emit();return true;}
-  // Side jobs pay into this single wallet so the HUD and save keep one balance.
   function deposit(n){if(!money(n))return state.balance;state.balance=Math.min(100000000,state.balance+n);state.lastFare=n;emit();return state.balance;}
   function update(dt){
     if(state.phase==='idle')return;
     const v=getVehicle?.(),target=state.phase==='pickup'?route().pickup:route().dropoff;
     const ready=v && v.driving===true && Number.isFinite(v.x)&&Number.isFinite(v.z)&&Number.isFinite(v.speed) && Math.hypot(v.x-target.x,v.z-target.z)<=5 && Math.abs(v.speed)<=.8;
     const step=Number.isFinite(dt)?Math.max(0,Math.min(.1,dt)):0;
-    // Refresh navigation at most four times a second while travelling. No save event for distance changes.
     uiTimer+=step;if(uiTimer>=.25){uiTimer=0;const q=snapshot(),key=q.arrival+':'+Math.round(q.distance??-1);if(key!==lastUiKey){lastUiKey=key;changed=true;}}
     if(!ready){if(state.dwell!==0){state.dwell=0;emit();}return;}
     state.dwell+=step;changed=true;
@@ -1393,9 +1574,6 @@ function createTaxiJob({routes, getVehicle, onChange=()=>{}, initialState=null})
   }
   return {accept,cancel,update,snapshot,deposit,consumeDirty(){const v=changed;changed=false;return v;},serialize(){return{version:1,balance:state.balance,completed:state.completed,routeIndex:state.routeIndex};}};
 }
-
-// Parcel delivery side job (v1). Walk up or drive any vehicle: collect the parcel at
-// the depot, then stop inside the delivery marker. Pays into the shared taxi wallet.
 function createDeliveryJob({depot, drops, getCourier, onChange=()=>{}, onPayout=()=>{}, initialState=null}) {
   const point = p => p && Number.isFinite(p.x) && Number.isFinite(p.z);
   if (!point(depot) || typeof depot.name!=='string') throw new Error('Delivery depot required');
@@ -1441,9 +1619,6 @@ function createDeliveryJob({depot, drops, getCourier, onChange=()=>{}, onPayout=
   }
   return {accept,cancel,update,snapshot,consumeDirty(){const v=changed;changed=false;return v;},serialize(){return{version:1,completed:state.completed,dropIndex:state.dropIndex,earned:state.earned};}};
 }
-
-// Pizza delivery side job (v1): timed. Collect at the pizzeria, then beat the timer for
-// full pay; a late delivery still pays a share. Pays into the shared taxi wallet.
 function createPizzaJob({shop, drops, getCourier, onChange=()=>{}, onPayout=()=>{}, initialState=null}) {
   const point = p => p && Number.isFinite(p.x) && Number.isFinite(p.z);
   if (!point(shop) || typeof shop.name!=='string') throw new Error('Pizza shop required');
@@ -1569,11 +1744,6 @@ function mountTaxiPhone({host=document.body,job,delivery=null,pizza=null,onPause
 
 
 // ===== save.js =====
-// save.js — save/load/autosave. Coordinator-owned. Contract v1.1.
-// Schema v1: { version:1, savedAt, actors: actors.snapshot(), jobs: taxiJob.serialize() }
-// actors.snapshot() = { version:1, player:{x,z,yaw}, car:{x,z,yaw}, driving }
-// jobs serialize()  = { version:1, balance, completed, routeIndex }
-// Reload intentionally cancels any active fare (builder 5's rule, avoids fake passengers).
 const KEY = 'coastalcity_save_v1';
 
 function createSave({ getActors, getJobs }) {
@@ -1610,7 +1780,6 @@ function createSave({ getActors, getJobs }) {
     if (!lastLoaded) return;
     try {
       if (lastLoaded.actors) getActors().restore(lastLoaded.actors);
-      // jobs state is restored through createTaxiJob initialState in main.js
     } catch (e) { /* a bad save never blocks a fresh game */ }
   }
 
@@ -1626,74 +1795,30 @@ function createSave({ getActors, getJobs }) {
 
 
 // ===== houses.js =====
-// ============================================================================
-// houses.js — Los Santos, standing work 2: "every house on every road".
-// Builder module: this file ONLY. No other file is edited.
-//
-// v2 (round 2, map v7b): coverage pass on the remaining roads + 2 new archetypes.
-//  - Coverage audit: stats.coverage lists every roadPath (classified, length, houses
-//    placed within 16 m) so the coordinator can see which segments are lined.
-//  - v7b-aware road classification, all derived from roadPaths at build time (no
-//    hardcoded road coordinates): the curved Boardwalk arc and the diagonal downtown
-//    avenue are skipped (commercial/beach fronts, not residential), the winding
-//    eastern climb is Hillcrest (villa zone), everything else is grid residential.
-//    New roads added by the roads builder are picked up automatically.
-//  - Gap fill: Southside connectors (x=310, x=558) and the extended street tips now
-//    get houses; MAX_HOUSES dial raised 150 -> 200 (same dial, same semantics: a
-//    single integer cap applied during placement, before merging).
-//  - New archetype A: hillside villa with a rounded garage (Hillcrest/Palm Court).
-//  - New archetype B: corner-shop house (rounded storefront awning + round sign
-//    board, original shapes only, no text/logos) placed at Southside corners;
-//    corners are DERIVED from roadPaths (junction points of every road pair).
-//  - props.js coexistence: driveway slabs now stop ~1.4 m from the road edge so the
-//    lamp/bin/shelter strip (road half-width + 1.2 m) stays clear.
-//
-// Perf (Galaxy M02s hard budget): all houses bake into one merged BufferGeometry
-// per material: 14 draw calls total (+1 vs v1b for the sign boards, inside the +2
-// allowance), shared MeshLambertMaterials, no shadows, 0 per-house draw calls.
-// v1b was 44.4k tris @150 houses; v2 adds ~+16-18k at the default cap (+40k cap).
-// update(dt) is a no-op.
-//
-// Procedural original geometry only. No GLTF models are loaded, so no asset
-// licences are added to MODEL-SOURCES.md by this module.
-//
-// ---- Coordinator notes ----
-// Exact wiring line expected in main.js (after createMap), unchanged from v1b:
-//   const houses = createHouses({ THREE, scene, map, GLTFLoader });
-// Optionally call houses.update(dt) in the loop (no-op today).
-// houses.count, houses.placements, houses.stats { drawCalls, triangles, coverage }.
-// MAX_HOUSES (below) is the FPS dial: single integer cap, tune for the M02s bench.
-// This module calls map.addBlock(minX, minZ, maxX, maxZ) for every placed house.
-// LOTS_L is mirrored from map.js v7b (comment below) — if map.js changes its lot
-// list, sync the copy here.
-// ============================================================================
 
 function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-line no-unused-vars
   const C = 300;                       // layout -> world offset (world = layout - 300)
   const lw = (lx) => lx - C;
   const lz = (ly) => ly - C;
-
-  // ---- shared materials (one draw call per material for the whole district) ----
+  const mat = (color) => new THREE.MeshLambertMaterial({ color, vertexColors: true });
   const MATS = {
-    wall0: new THREE.MeshLambertMaterial({ color: 0xe8dcc8 }), // cream stucco
-    wall1: new THREE.MeshLambertMaterial({ color: 0xdfa06e }), // terracotta
-    wall2: new THREE.MeshLambertMaterial({ color: 0xa8c4d4 }), // pale blue
-    wall3: new THREE.MeshLambertMaterial({ color: 0xc9d6ab }), // sage
-    roof0: new THREE.MeshLambertMaterial({ color: 0x8a4a3a }), // red-brown tile
-    roof1: new THREE.MeshLambertMaterial({ color: 0x5a6068 }), // slate
-    roof2: new THREE.MeshLambertMaterial({ color: 0xb08a5a }), // tan
-    trim:  new THREE.MeshLambertMaterial({ color: 0xf2eee2 }), // white trim
-    glass: new THREE.MeshLambertMaterial({ color: 0x243b52 }), // window glass
-    door:  new THREE.MeshLambertMaterial({ color: 0x5f4128 }), // wood door
-    conc:  new THREE.MeshLambertMaterial({ color: 0x9d9a92 }), // concrete slabs
-    brick: new THREE.MeshLambertMaterial({ color: 0x9a5a4a }), // chimney brick
-    dark:  new THREE.MeshLambertMaterial({ color: 0x3a3e44 }), // flat roof deck
-    sign:  new THREE.MeshLambertMaterial({ color: 0xf0e0b8 }), // corner-shop sign board
+    wall0: mat(0xe8dcc8), // cream stucco
+    wall1: mat(0xdfa06e), // terracotta
+    wall2: mat(0xa8c4d4), // pale blue
+    wall3: mat(0xc9d6ab), // sage
+    roof0: mat(0x8a4a3a), // red-brown tile
+    roof1: mat(0x5a6068), // slate
+    roof2: mat(0xb08a5a), // tan
+    trim:  mat(0xf2eee2), // white trim
+    glass: mat(0x243b52), // window glass
+    door:  mat(0x5f4128), // wood door
+    conc:  mat(0x9d9a92), // concrete slabs
+    brick: mat(0x9a5a4a), // chimney brick
+    dark:  mat(0x3a3e44), // flat roof deck
+    sign:  mat(0xf0e0b8), // corner-shop sign board
   };
-
-  // ---- occupied regions (all in LAYOUT coords unless noted) ----
-  // Existing lots mirrored from map.js v7b LOTS_L (Shop 2 moved south of H360,
-  // Shop 4 nudged south) — treated as occupied. Sync with map.js when it changes.
+  const JIT = { wall0: 'wall', wall1: 'wall', wall2: 'wall', wall3: 'wall',
+    roof0: 'roof', roof1: 'roof', roof2: 'roof', door: 'door', trim: 'trim', sign: 'trim' };
   const LOTS_L = [
     [212,212,244,244],[252,212,276,240],[212,252,240,276],[252,252,276,276],
     [292,212,324,244],[292,252,324,276],[212,292,244,324],[252,292,276,324],
@@ -1707,25 +1832,17 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
   const PARK_W = { minX: lw(210), maxX: lw(350), minZ: lz(368), maxZ: lz(432) }; // Seaside Park grass (map.js ground mesh)
   const PIER_W = { minX: lw(20), maxX: lw(122), minZ: lz(292), maxZ: lz(308) };  // Pelican Pier deck
   const WATER_X = lw(82);                                                        // water west of here (world)
-
-  // ---- road classification, fully derived from roadPaths geometry (v7b) ----
-  // 'skip': no houses (boardwalk arc = shops row + beach; diagonal downtown avenue
-  // = commercial canyon; highway ramp). 'hillcrest': winding eastern climb (villas).
-  // 'grid': everything else (residential). New roads from the roads builder land in
-  // 'grid' automatically unless they are coastal/downtown multi-point paths.
+  const TAXI = (map.taxiStops || []).map((s) => ({ x: s.x, z: s.z }));           // world coords already
   function classify(r) {
     const xs = r.pts.map((p) => p[0]);
     const maxX = Math.max(...xs);
     if (r.pts.length === 2 && r.pts[0][0] === 500 && r.pts[1][0] === 500) return 'skip'; // highway ramp
-    if (r.pts.length > 2 && maxX < 140) return 'skip';   // curved boardwalk arc (v7b)
-    if (r.pts.length > 2 && maxX <= 210) return 'skip';  // diagonal downtown avenue (v7b)
-    if (r.pts.length > 2) return 'hillcrest';            // winding eastern climb
+    if (r.w <= 6) return 'skip';                         // v7c downtown secondaries: driveway-scale canyons between tower lots
+    if (r.pts.length > 2 && maxX < 140) return 'skip';   // curved boardwalk arc
+    if (r.pts.length > 2 && maxX <= 210) return 'skip';  // diagonal downtown avenue
+    if (r.pts.length > 2 && maxX > 450) return 'hillcrest'; // winding eastern climb (switchbacks)
     return 'grid';
   }
-
-  // ---- junction points derived from roadPaths (for corner-shop siting) ----
-  // A junction is where two DIFFERENT roads cross (segment intersection) or where a
-  // path endpoint lands within 12 m of another road's segment (T-junction).
   function segDist2(a, b, c, d) { // min squared distance between segments ab and cd (layout coords)
     const sub = (p, q) => [p[0] - q[0], p[1] - q[1]];
     const dot = (p, q) => p[0] * q[0] + p[1] * q[1];
@@ -1765,8 +1882,6 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
     }
     return false;
   }
-
-  // ---- deterministic rng (stable layouts between loads/tests) ----
   let seed = 20261120 >>> 0;
   function rng() {
     seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
@@ -1774,79 +1889,110 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   }
-
-  // ---- small geometry helpers ----
+  function houseHash(i) { let h = Math.imul((i + 1) ^ 0x9E3779B9, 2654435761) >>> 0; h ^= h >>> 13; h = Math.imul(h, 2246822519) >>> 0; return (h ^ (h >>> 15)) >>> 0; }
+  function houseJitter(i) {
+    const h = houseHash(i);
+    const j = (bits, lo, hi) => lo + (((h >>> bits) & 255) / 255) * (hi - lo);
+    return {
+      wall: [j(0, 0.86, 1.05), j(3, 0.86, 1.05), j(6, 0.86, 1.05)],
+      roof: [j(9, 0.82, 1.02), j(12, 0.82, 1.02), j(15, 0.82, 1.02)],
+      door: [j(18, 0.8, 1.08), j(20, 0.88, 1.05), j(22, 0.88, 1.05)],
+      trim: [j(25, 0.94, 1.02), j(27, 0.94, 1.02), j(29, 0.94, 1.02)],
+      variant: (h >>> 31) & 1, // trim variant: 0 = flower box, 1 = round attic vent
+    };
+  }
   const box  = (w, h, d) => new THREE.BoxGeometry(w, h, d);
   const cyl  = (rt, rb, h, s, open, ts, tl) => new THREE.CylinderGeometry(rt, rb, h, s, 1, open || false, ts || 0, tl === undefined ? Math.PI * 2 : tl);
   const cone = (r, h, s) => new THREE.ConeGeometry(r, h, s, 1);
-  const dome = (r) => new THREE.SphereGeometry(r, 10, 5, 0, Math.PI * 2, 0, Math.PI / 2);
-  // part: geometry + material key + local translate + optional euler (applied Rz,Rx,Ry) + scale
+  const dome = (r) => new THREE.SphereGeometry(r, 7, 3, 0, Math.PI * 2, 0, Math.PI / 2); // v3: 10x5 -> 7x3
+  const domeS = (r) => new THREE.SphereGeometry(r, 6, 3, 0, Math.PI * 2, 0, Math.PI / 2); // small accent domes
+  const halfDisc = (r, s) => new THREE.CircleGeometry(r, s, 0, Math.PI);
   const P = (g, m, t, o = {}) => ({ g, m, t, ry: o.ry || 0, rx: o.rx || 0, rz: o.rz || 0, s: o.s || [1, 1, 1] });
 
-  function win(parts, x, y, z, ry) { // window + white trim, facing local +Z rotated by ry
+  function win(parts, x, y, z, ry) { // STREET-FACE window: white trim + glass (facing +Z rotated by ry)
     const ox = Math.sin(ry), oz = Math.cos(ry);
     parts.push(P(box(1.7, 1.5, 0.1), 'trim', [x + ox * 0.02, y, z + oz * 0.02], { ry }));
     parts.push(P(box(1.4, 1.2, 0.16), 'glass', [x + ox * 0.06, y, z + oz * 0.06], { ry }));
   }
-  function front(parts, w, d, twoStorey) { // door + windows on the street face (+Z), side windows
+  function winSide(parts, x, y, z, ry) { // v3 diet: side/rear windows are glass-only (no trim box)
+    const ox = Math.sin(ry), oz = Math.cos(ry);
+    parts.push(P(box(1.4, 1.2, 0.14), 'glass', [x + ox * 0.05, y, z + oz * 0.05], { ry }));
+  }
+  function front(parts, w, d, twoStorey) { // door + trimmed windows on the street face (+Z), glass-only sides
     const fx = -w * 0.22;
     parts.push(P(box(1.34, 2.5, 0.12), 'trim', [fx, 1.25, d / 2 + 0.02]));
     parts.push(P(box(1.05, 2.3, 0.18), 'door', [fx, 1.15, d / 2 + 0.07]));
     win(parts, w * 0.2, 1.7, d / 2, 0);
     if (w > 9.4) win(parts, w * 0.38, 1.7, d / 2, 0);
-    win(parts, w / 2, 1.7, -d * 0.15, Math.PI / 2);
-    win(parts, -w / 2, 1.7, -d * 0.15, -Math.PI / 2);
+    winSide(parts, w / 2, 1.7, -d * 0.15, Math.PI / 2); // v4 diet: one side window (was two)
     if (twoStorey) {
       win(parts, w * 0.2, 4.5, d / 2, 0);
-      win(parts, -w * 0.22, 4.5, d / 2, 0);
-      win(parts, w / 2, 4.5, 0, Math.PI / 2);
-      win(parts, -w / 2, 4.5, 0, -Math.PI / 2);
+      winSide(parts, -w * 0.22, 4.5, d / 2, 0);
+      winSide(parts, w / 2, 4.5, 0, Math.PI / 2);
     }
   }
-  function porch(parts, fx, d, roofM) { // slab + two round posts + flat porch roof
+  function chimney(parts, rt, rb, h, x, y, z) { // v3 diet: open tube + top disc only
+    parts.push(P(cyl(rt, rb, h, 5, true), 'brick', [x, y, z]));
+    parts.push(P(new THREE.CircleGeometry(rt, 5), 'brick', [x, y + h / 2, z], { rx: -Math.PI / 2 }));
+  }
+  function hedge(parts, x, z) { // low rounded sage hedge along the front lot line
+    parts.push(P(cyl(0.35, 0.35, 2.8, 4, true, 0, Math.PI), 'wall3', [x, 0.35, z], { rz: Math.PI / 2 }));
+    parts.push(P(halfDisc(0.35, 4), 'wall3', [x - 1.4, 0.35, z], { ry: -Math.PI / 2 }));
+    parts.push(P(halfDisc(0.35, 4), 'wall3', [x + 1.4, 0.35, z], { ry: Math.PI / 2 }));
+  }
+  function fence(parts, x, z) { // white ranch fence: top rail + two posts
+    parts.push(P(cyl(0.045, 0.045, 2.8, 4, true), 'trim', [x, 0.92, z], { rz: Math.PI / 2 }));
+    parts.push(P(cyl(0.06, 0.06, 0.75, 4, true), 'trim', [x - 1.35, 0.675, z]));
+    parts.push(P(cyl(0.06, 0.06, 0.75, 4, true), 'trim', [x + 1.35, 0.675, z]));
+  }
+  function tree(parts, x, z) { // small rounded-canopy yard tree
+    parts.push(P(cyl(0.12, 0.16, 1.2, 5, true), 'brick', [x, 0.9, z]));
+    parts.push(P(new THREE.SphereGeometry(1.15, 5, 3), 'wall3', [x, 2.2, z], { s: [1, 0.85, 1] }));
+  }
+  function porch(parts, fx, d, roofM) { // slab + two round posts + flat porch roof (v3: 5-seg posts)
     parts.push(P(box(3.4, 0.18, 1.9), 'conc', [fx, 0.09, d / 2 + 0.95]));
-    parts.push(P(cyl(0.12, 0.14, 2.3, 6), 'trim', [fx - 1.5, 1.32, d / 2 + 1.55]));
-    parts.push(P(cyl(0.12, 0.14, 2.3, 6), 'trim', [fx + 1.5, 1.32, d / 2 + 1.55]));
+    parts.push(P(cyl(0.12, 0.14, 2.3, 5, true), 'trim', [fx - 1.5, 1.32, d / 2 + 1.55]));
+    parts.push(P(cyl(0.12, 0.14, 2.3, 5, true), 'trim', [fx + 1.5, 1.32, d / 2 + 1.55]));
     parts.push(P(box(3.7, 0.16, 2.2), roofM, [fx, 2.62, d / 2 + 1.05]));
   }
   function driveway(parts, w, d) { // concrete slab toward the street; ends ~1.4 m from the
     parts.push(P(box(2.8, 0.12, 3.1), 'conc', [w / 2 - 1.8, 0.06, d / 2 + 1.55])); // road edge
   }                                                                                  // (props strip stays clear)
-
-  // ---- 8 house archetypes (all rounded shapes; footprints keep slope < 0.5 m) ----
-  // Each returns { w, d, parts } in local coords: front = +Z (street side), ground y=0.
   function archBungalowHip(wall, roof) { // Southside / standard single-storey, hip roof
     const w = 9, d = 7.5, h = 3, parts = [];
     parts.push(P(box(w, h, d), wall, [0, h / 2, 0]));
     parts.push(P(box(w + 0.7, 0.22, d + 0.7), roof, [0, h, 0])); // eave
     parts.push(P(cone(Math.hypot(w, d) / 2 * 0.95, 2.2, 4), roof, [0, h + 1.1, 0], { ry: Math.PI / 4, s: [1, 1, d / w] }));
-    parts.push(P(cyl(0.3, 0.34, 1.6, 6), 'brick', [w / 2 - 1.4, h + 0.9, -1]));
+    chimney(parts, 0.3, 0.34, 1.6, w / 2 - 1.4, h + 0.9, -1);
     front(parts, w, d, false);
     porch(parts, -w * 0.22, d, roof);
     driveway(parts, w, d);
-    return { w, d, parts };
+    return { w, d, h, parts };
   }
   function archBungalowBarrel(wall, roof) { // small bungalow, rounded barrel-vault roof
     const w = 8.5, d = 7, h = 3, parts = [];
     parts.push(P(box(w, h, d), wall, [0, h / 2, 0]));
-    parts.push(P(cyl(3.4, 3.4, w + 0.5, 10), roof, [0, h - 0.2, 0], { rz: Math.PI / 2 })); // half embedded
+    parts.push(P(cyl(3.4, 3.4, w + 0.5, 6, true, 0, Math.PI), roof, [0, h - 0.2, 0], { rz: Math.PI / 2 }));
+    parts.push(P(halfDisc(3.4, 6), roof, [-(w + 0.5) / 2, h - 0.2, 0], { ry: -Math.PI / 2 }));
+    parts.push(P(halfDisc(3.4, 6), roof, [(w + 0.5) / 2, h - 0.2, 0], { ry: Math.PI / 2 }));
     parts.push(P(box(w + 0.5, 0.2, d + 0.5), 'trim', [0, h - 0.15, 0])); // trim band under the vault
     front(parts, w, d, false);
-    parts.push(P(cyl(0.6, 0.6, 2.2, 8), roof, [-w * 0.22, 2.6, d / 2 + 0.4], { rz: Math.PI / 2 })); // door canopy
+    parts.push(P(cyl(0.6, 0.6, 2.2, 6, true), roof, [-w * 0.22, 2.6, d / 2 + 0.4], { rz: Math.PI / 2 })); // door canopy
     parts.push(P(box(3.2, 0.16, 1.7), 'conc', [-w * 0.22, 0.08, d / 2 + 0.85]));
     driveway(parts, w, d);
-    return { w, d, parts };
+    return { w, d, h, parts };
   }
   function archCottageDome(wall, roof) { // small rounded cottage with a dome roof
     const w = 8, d = 8, h = 3.2, parts = [];
     parts.push(P(box(w, h, d), wall, [0, h / 2, 0]));
     parts.push(P(box(w + 0.6, 0.22, d + 0.6), 'trim', [0, h, 0]));
     parts.push(P(dome(4.6), roof, [0, h + 0.05, 0], { s: [1, 0.62, 1] }));
-    parts.push(P(cyl(0.28, 0.32, 1.3, 6), 'brick', [-w / 2 + 1.3, h + 0.6, -1.5]));
+    chimney(parts, 0.28, 0.32, 1.3, -w / 2 + 1.3, h + 0.6, -1.5);
     front(parts, w, d, false);
-    porch(parts, -w * 0.22, d, roof);
+    parts.push(P(cyl(0.6, 0.6, 2.2, 6, true), roof, [-w * 0.22, 2.6, d / 2 + 0.4], { rz: Math.PI / 2 }));
+    parts.push(P(box(3.2, 0.16, 1.7), 'conc', [-w * 0.22, 0.08, d / 2 + 0.85]));
     driveway(parts, w, d);
-    return { w, d, parts };
+    return { w, d, h, parts };
   }
   function archSpanish(wall, roof) { // flat roof + parapet, dome over the entrance, columns
     const w = 10, d = 8, h = 3.4, parts = [];
@@ -1856,91 +2002,82 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
     parts.push(P(box(w + 0.4, 0.55, 0.25), wall, [0, h + 0.24, -d / 2 - 0.07]));
     parts.push(P(box(0.25, 0.55, d + 0.4), wall, [w / 2 + 0.07, h + 0.24, 0]));
     parts.push(P(box(0.25, 0.55, d + 0.4), wall, [-w / 2 - 0.07, h + 0.24, 0]));
-    parts.push(P(dome(1.7), roof, [-w * 0.22, h + 0.1, d / 2 - 1.3], { s: [1, 0.75, 1] }));
-    parts.push(P(cyl(0.16, 0.18, 2.6, 8), 'trim', [-w * 0.22 - 1.4, 1.3, d / 2 + 1.3])); // porch columns
-    parts.push(P(cyl(0.16, 0.18, 2.6, 8), 'trim', [-w * 0.22 + 1.4, 1.3, d / 2 + 1.3]));
+    parts.push(P(domeS(1.7), roof, [-w * 0.22, h + 0.1, d / 2 - 1.3], { s: [1, 0.75, 1] }));
+    parts.push(P(cyl(0.16, 0.18, 2.6, 5, true), 'trim', [-w * 0.22 - 1.4, 1.3, d / 2 + 1.3])); // porch columns
+    parts.push(P(cyl(0.16, 0.18, 2.6, 5, true), 'trim', [-w * 0.22 + 1.4, 1.3, d / 2 + 1.3]));
     parts.push(P(box(3.6, 0.35, 0.6), 'trim', [-w * 0.22, 2.75, d / 2 + 1.3]));
     parts.push(P(box(3.6, 0.16, 2.1), 'conc', [-w * 0.22, 0.08, d / 2 + 1.0]));
     front(parts, w, d, false);
     driveway(parts, w, d);
-    return { w, d, parts };
+    return { w, d, h, parts };
   }
   function archGable2(wall, roof) { // 2-storey gable house, triangular prism roof
     const w = 9.5, d = 8, h = 5.4, parts = [];
     parts.push(P(box(w, h, d), wall, [0, h / 2, 0]));
-    parts.push(P(box(w + 0.5, 0.25, d + 0.5), 'trim', [0, 2.95, 0])); // floor band
     parts.push(P(box(w + 0.6, 0.25, d + 0.6), 'trim', [0, h, 0]));     // eave
     const r = d / (2 * 0.866), sy = 0.45; // ridge-up triangular prism, squashed
     parts.push(P(cyl(r, r, w + 0.5, 3, 1, false, Math.PI / 2), roof, [0, h + 0.5 * r * sy, 0], { rz: Math.PI / 2, s: [1, sy, 1] }));
-    parts.push(P(cyl(0.3, 0.34, 1.8, 6), 'brick', [w / 2 - 1.5, h + 1.4, 0]));
+    chimney(parts, 0.3, 0.34, 1.8, w / 2 - 1.5, h + 1.4, 0);
     front(parts, w, d, true);
     porch(parts, -w * 0.22, d, roof);
     driveway(parts, w, d);
-    return { w, d, parts };
+    return { w, d, h, parts };
   }
   function archVilla(wall, roof) { // Palm Court 2-storey villa, balcony + columns
-    const w = 11, d = 8.5, parts = [];
+    const w = 11, d = 8.5, h = 6, parts = [];
     parts.push(P(box(w, 3.1, d), wall, [0, 1.55, 0]));
     parts.push(P(box(w - 1, 2.9, d - 1), wall, [0, 3.1 + 1.45, 0]));
-    for (const sx of [-1, 1]) for (const sz of [-1, 1]) // rounded corner columns
-      parts.push(P(cyl(0.2, 0.24, 3.1, 6), 'trim', [sx * (w / 2 - 0.05), 1.55, sz * (d / 2 - 0.05)]));
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) // rounded corner columns (v3: 5-seg)
+      parts.push(P(cyl(0.2, 0.24, 3.1, 5, true), 'trim', [sx * (w / 2 - 0.05), 1.55, sz * (d / 2 - 0.05)]));
     parts.push(P(box(w - 1 + 0.7, 0.25, d - 1 + 0.7), roof, [0, 6, 0])); // eave
     parts.push(P(cone(Math.hypot(w - 1, d - 1) / 2 * 0.95, 2.4, 4), roof, [0, 6 + 1.2, 0], { ry: Math.PI / 4, s: [1, 1, (d - 1) / (w - 1)] }));
     parts.push(P(box(4.4, 0.16, 1.4), 'conc', [0.8, 3.2, (d - 1) / 2 + 0.62])); // balcony slab
     for (const bx of [-1.1, 0.8, 2.7])
-      parts.push(P(cyl(0.05, 0.05, 0.95, 5), 'trim', [bx, 3.75, (d - 1) / 2 + 1.25]));
-    parts.push(P(cyl(0.06, 0.06, 4.3, 6), 'trim', [0.8, 4.25, (d - 1) / 2 + 1.25], { rz: Math.PI / 2 })); // rail
-    parts.push(P(cyl(0.3, 0.34, 1.6, 6), 'brick', [-w / 2 + 1.6, 6 + 0.8, -1.5]));
+      parts.push(P(cyl(0.05, 0.05, 0.95, 5, true), 'trim', [bx, 3.75, (d - 1) / 2 + 1.25]));
+    parts.push(P(cyl(0.06, 0.06, 4.3, 5, true), 'trim', [0.8, 4.25, (d - 1) / 2 + 1.25], { rz: Math.PI / 2 })); // rail
+    chimney(parts, 0.3, 0.34, 1.6, -w / 2 + 1.6, 6 + 0.8, -1.5);
     front(parts, w, d, true);
     porch(parts, -w * 0.22, d, roof);
     driveway(parts, w, d);
-    return { w, d, parts };
+    return { w, d, h, parts };
   }
-  // Round-2 archetype A: hillside villa with a ROUNDED GARAGE (Hillcrest / Palm Court).
-  // Slightly smaller footprint than archVilla (9.5x8) so more slope spots pass 0.5 m.
   function archHillVillaGarage(wall, roof) {
-    const w = 9.5, d = 8, parts = [];
+    const w = 9.5, d = 8, h = 5.7, parts = [];
     parts.push(P(box(w - 2.6, 3, d), wall, [1.3, 1.5, 0]));                    // main block (right of garage)
     parts.push(P(box(w - 2.6 - 0.6, 2.7, d - 0.8), wall, [1.3, 3 + 1.35, 0])); // upper floor
     parts.push(P(box(w - 2.6 + 0.6, 0.22, d + 0.6), roof, [1.3, 5.7, 0]));     // eave
     parts.push(P(cone(Math.hypot(w - 3.2, d - 0.8) / 2 * 0.95, 2, 4), roof, [1.3, 5.7 + 1, 0], { ry: Math.PI / 4, s: [1, 1, (d - 0.8) / (w - 3.2)] }));
-    // rounded garage: box + half-cylinder vault, roll-up door facing the street
     parts.push(P(box(3.6, 2.5, d - 1.4), wall, [-w / 2 + 1.8, 1.25, 0.3]));
-    parts.push(P(cyl(1.85, 1.85, 3.7, 10), roof, [-w / 2 + 1.8, 2.3, 0.3], { rz: Math.PI / 2 }));
+    parts.push(P(cyl(1.85, 1.85, 3.7, 6, true, 0, Math.PI), roof, [-w / 2 + 1.8, 2.3, 0.3], { rz: Math.PI / 2 })); // v3: open half-shell
+    parts.push(P(halfDisc(1.85, 6), roof, [-w / 2 + 1.8 - 1.85, 2.3, 0.3], { ry: -Math.PI / 2 }));
+    parts.push(P(halfDisc(1.85, 6), roof, [-w / 2 + 1.8 + 1.85, 2.3, 0.3], { ry: Math.PI / 2 }));
     parts.push(P(box(2.9, 2, 0.16), 'dark', [-w / 2 + 1.8, 1, d / 2 + 0.05])); // roll-up door
     parts.push(P(box(3.3, 0.24, 0.2), 'trim', [-w / 2 + 1.8, 2.1, d / 2 + 0.06]));
-    // door + windows on the street face
     parts.push(P(box(1.34, 2.5, 0.12), 'trim', [1.3 - 1.2, 1.25, d / 2 + 0.02]));
     parts.push(P(box(1.05, 2.3, 0.18), 'door', [1.3 - 1.2, 1.15, d / 2 + 0.07]));
     win(parts, 1.3 + 1.2, 1.7, d / 2, 0);
-    win(parts, 1.3 + 1.0, 4.6, d / 2, 0);
-    win(parts, 1.3 - 1.2, 4.6, d / 2, 0);
-    win(parts, w / 2, 1.7, 0, Math.PI / 2);
-    parts.push(P(cyl(0.28, 0.32, 1.4, 6), 'brick', [w / 2 - 1.2, 5.9, -1.5])); // chimney
+    winSide(parts, 1.3 + 1.0, 4.6, d / 2, 0);
+    winSide(parts, 1.3 - 1.2, 4.6, d / 2, 0);
+    winSide(parts, w / 2, 1.7, 0, Math.PI / 2);
+    chimney(parts, 0.28, 0.32, 1.4, w / 2 - 1.2, 5.9, -1.5);
     driveway(parts, w, d);
-    return { w, d, parts };
+    return { w, d, h, parts };
   }
-  // Round-2 archetype B: corner-shop house for Southside corners — storefront with a
-  // rounded awning + round sign board (original shapes only, no text/logos).
   function archCornerShop(wall, roof) {
     const w = 9, d = 7.5, h = 3.2, parts = [];
     parts.push(P(box(w, h, d), wall, [0, h / 2, 0]));
     parts.push(P(box(w + 0.6, 0.22, d + 0.6), 'trim', [0, h, 0]));
     parts.push(P(dome(4.2), roof, [0, h + 0.05, 0], { s: [1, 0.5, 1] })); // shallow dome
-    // storefront: big glass window + door on the street face
     parts.push(P(box(3.6, 2, 0.14), 'trim', [-0.6, 1.35, d / 2 + 0.03]));
     parts.push(P(box(3.3, 1.8, 0.18), 'glass', [-0.6, 1.3, d / 2 + 0.08]));
     parts.push(P(box(1.34, 2.5, 0.12), 'trim', [w / 2 - 1.2, 1.25, d / 2 + 0.02]));
     parts.push(P(box(1.05, 2.3, 0.18), 'door', [w / 2 - 1.2, 1.15, d / 2 + 0.07]));
-    // rounded awning: half-cylinder vault over the storefront
-    parts.push(P(cyl(0.9, 0.9, 4.6, 10, true, Math.PI, Math.PI), roof, [-0.6, 2.6, d / 2 + 0.55], { rz: Math.PI / 2 }));
-    // round sign board on a post (shape only, no text)
-    parts.push(P(cyl(0.07, 0.07, 1.6, 6), 'trim', [-0.6, 3.6, d / 2 + 0.3]));
-    parts.push(P(cyl(0.85, 0.85, 0.14, 12), 'sign', [-0.6, 4.5, d / 2 + 0.3], { rx: Math.PI / 2 }));
-    win(parts, w / 2, 1.7, -d * 0.15, Math.PI / 2);
-    win(parts, -w / 2, 1.7, -d * 0.15, -Math.PI / 2);
+    parts.push(P(cyl(0.9, 0.9, 4.6, 6, true, Math.PI, Math.PI), roof, [-0.6, 2.6, d / 2 + 0.55], { rz: Math.PI / 2 }));
+    parts.push(P(cyl(0.07, 0.07, 1.6, 5), 'trim', [-0.6, 3.6, d / 2 + 0.3]));
+    parts.push(P(cyl(0.85, 0.85, 0.14, 6), 'sign', [-0.6, 4.5, d / 2 + 0.3], { rx: Math.PI / 2 }));
+    winSide(parts, w / 2, 1.7, -d * 0.15, Math.PI / 2); // v4 diet: one side window
     parts.push(P(box(4.6, 0.14, 1.6), 'conc', [-0.6, 0.07, d / 2 + 0.8])); // shopfront slab
-    return { w, d, parts };
+    return { w, d, h, parts };
   }
 
   const WALLS = ['wall0', 'wall1', 'wall2', 'wall3'];
@@ -1968,8 +2105,6 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
     a.kind = f.name.replace('arch', '').toLowerCase();
     return a;
   }
-
-  // ---- street walking (all math in WORLD coords; roadPaths arrive in LAYOUT) ----
   function walker(ptsLayout) {
     const segs = []; let total = 0;
     for (let i = 0; i < ptsLayout.length - 1; i++) {
@@ -1993,7 +2128,7 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
 
   function zoneAt(cx, cz, roadClass) {
     if (roadClass === 'hillcrest') return 'hillcrest';    // winding climb: hillside villas
-    if (cz > lz(442)) return 'south';                     // Southside bungalows
+    if (cz > lz(442)) return 'south';                     // Southside bungalows (incl. v7c courts)
     if (cx > lw(445)) return 'villa';                     // Palm Court hillside
     return 'mixed';
   }
@@ -2003,13 +2138,7 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
 
   const placed = [];      // world AABBs of placed houses (for house-house spacing)
   const placements = [];  // records returned for debugging/save tooling
-  const MAX_HOUSES = 200; // FPS dial: single integer cap, applied during placement
-                          // (coordinator tunes for the M02s bench; v1b was 150)
-
-  // A house is valid only if its whole footprint is off-road (4 corners + 4 edge
-  // midpoints through map.isRoadAt), on land (not water/pier/park), slope across
-  // the footprint <= 0.5 m (map.groundAt at the corners), and clear of existing
-  // lots (4 m) and other placed houses (2 m).
+  const MAX_HOUSES = 218; // FPS dial: single integer cap, applied during placement
   function validFootprint(cx, cz, w, d, yaw) {
     const hw = w / 2, hd = d / 2, co = Math.cos(yaw), si = Math.sin(yaw);
     const local = [[hw, hd], [-hw, hd], [hw, -hd], [-hw, -hd], [hw, 0], [-hw, 0], [0, hd], [0, -hd]];
@@ -2024,6 +2153,12 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
       if (i < 4) { const g = map.groundAt(x, z); if (g < gMin) gMin = g; if (g > gMax) gMax = g; }
     }
     if (gMax - gMin > 0.5) return null;                    // too steep for a pad
+    for (const s of TAXI) {
+      const dx = s.x - cx, dz = s.z - cz;
+      const lx0 = dx * co - dz * si, lz0 = dx * si + dz * co; // stop in the house's local frame
+      const qx = Math.max(0, Math.abs(lx0) - hw), qz = Math.max(0, Math.abs(lz0) - hd);
+      if (qx * qx + qz * qz < 36) return null;
+    }
     const ex = hw * Math.abs(co) + hd * Math.abs(si);
     const ez = hw * Math.abs(si) + hd * Math.abs(co);
     const bb = { minX: cx - ex, maxX: cx + ex, minZ: cz - ez, maxZ: cz + ez };
@@ -2032,36 +2167,32 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
     for (const h of placed) if (overlap(bb, h, 2)) return null;  // 2 m gap between new houses
     return bb;
   }
-
-  // ---- merged-geometry baking (rotations: part Rz,Rx,Ry then house Ry + translate) ----
-  const buckets = new Map(); // matKey -> { pos: [], norm: [] }
-  function bakePart(part, hx, hy, hz, yaw) {
+  const buckets = new Map(); // matKey -> { pos: [], norm: [], col: [] }
+  let bakeTris = 0;          // triangles baked for the current house (per-placement stats)
+  function bakePart(part, hx, hy, hz, yaw, jit) {
     const src = part.g.index ? part.g.toNonIndexed() : part.g;
     const pos = src.attributes.position.array, nrm = src.attributes.normal.array;
     let b = buckets.get(part.m);
-    if (!b) { b = { pos: [], norm: [] }; buckets.set(part.m, b); }
+    if (!b) { b = { pos: [], norm: [], col: [] }; buckets.set(part.m, b); }
+    const tint = jit[JIT[part.m]] || null; // per-house RGB multiplier for this material
+    const cr = tint ? tint[0] : 1, cg = tint ? tint[1] : 1, cb = tint ? tint[2] : 1;
     const [sx, sy, sz] = part.s;
     const c1 = Math.cos(part.rz), s1 = Math.sin(part.rz);
     const c2 = Math.cos(part.rx), s2 = Math.sin(part.rx);
     const c3 = Math.cos(part.ry), s3 = Math.sin(part.ry);
     const cH = Math.cos(yaw), sH = Math.sin(yaw);
     const [tx, ty, tz] = part.t;
+    bakeTris += pos.length / 9;
     for (let i = 0; i < pos.length; i += 3) {
-      // scale
       let x = pos[i] * sx, y = pos[i + 1] * sy, z = pos[i + 2] * sz;
       let nx = nrm[i] / sx, ny = nrm[i + 1] / sy, nz = nrm[i + 2] / sz;
-      // part Rz
       let x2 = x * c1 - y * s1, y2 = x * s1 + y * c1, z2 = z;
       let nx2 = nx * c1 - ny * s1, ny2 = nx * s1 + ny * c1, nz2 = nz;
-      // part Rx
       let y3 = y2 * c2 - z2 * s2, z3 = y2 * s2 + z2 * c2, x3 = x2;
       let ny3 = ny2 * c2 - nz2 * s2, nz3 = ny2 * s2 + nz2 * c2, nx3 = nx2;
-      // part Ry
       let x4 = x3 * c3 + z3 * s3, z4 = -x3 * s3 + z3 * c3, y4 = y3;
       let nx4 = nx3 * c3 + nz3 * s3, nz4 = -nx3 * s3 + nz3 * c3, ny4 = ny3;
-      // part translate
       x4 += tx; y4 += ty; z4 += tz;
-      // house Ry + translate
       const X = hx + x4 * cH + z4 * sH;
       const Z = hz - x4 * sH + z4 * cH;
       b.pos.push(X, hy + y4, Z);
@@ -2069,16 +2200,12 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
       const NZ = -nx4 * sH + nz4 * cH;
       const nl = Math.hypot(NX, ny4, NZ) || 1;
       b.norm.push(NX / nl, ny4 / nl, NZ / nl);
+      b.col.push(cr, cg, cb);
     }
     if (src !== part.g) src.dispose();
     part.g.dispose();
   }
-
-  // ---- placement pass ----
   let count = 0;
-  // Priority order: signature streets first (Hillcrest winding climb, Southside lanes,
-  // Palm Court street), then the general grid, so the MAX_HOUSES cap trims generic
-  // blocks rather than starving the streets the brief names.
   const roads = map.roadPaths.map((r) => ({ r, cls: classify(r) }))
     .filter((e) => e.cls !== 'skip')
     .sort((a, b) => rank(a) - rank(b));
@@ -2096,7 +2223,7 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
   for (const { r: road, cls } of roads) {
     if (count >= MAX_HOUSES) break;
     const walk = walker(road.pts);
-    const frontOff = road.w / 2 + 4.5;             // front wall 8-8.5 m off centerline (w 7..8)
+    const baseOff = road.w / 2 + 4.5;              // front wall 8-8.5 m off centerline (w 7..8)
     let s = 9;
     while (s < walk.total - 9 && count < MAX_HOUSES) {
       const p = walk.at(s);
@@ -2107,6 +2234,7 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
         const zone = zoneAt(p.x + nx * 12, p.z + nz * 12, cls);
         const isCorner = zone === 'south' && nearJunction(p.x + C, p.z + C, 20); // layout coords
         let arch = pickArch(zone, isCorner);
+        const frontOff = baseOff + (rng() - 0.4) * 2; // v4: seeded setback jitter (varied yards)
         let coff = frontOff + arch.d / 2;
         let cx = p.x + nx * coff, cz = p.z + nz * coff;
         const yaw = Math.atan2(-nx, -nz);          // local +Z (front) faces the street
@@ -2115,24 +2243,44 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
           arch = archCottageDome(WALLS[Math.floor(rng() * WALLS.length) % WALLS.length],
                                  ROOFS[Math.floor(rng() * ROOFS.length) % ROOFS.length]);
           arch.kind = 'cottagedome';
-          coff = frontOff + arch.d / 2;
+          coff = baseOff + arch.d / 2;
           cx = p.x + nx * coff; cz = p.z + nz * coff;
           bb = validFootprint(cx, cz, arch.w, arch.d, yaw);
         }
         if (!bb) continue;
+        const jit = houseJitter(count);            // seeded by placement index (the lot index)
+        const h4 = houseHash(count);
+        let yard = null, hasTree = false;
+        if (arch.kind !== 'cornershop') {          // v4: front-yard detail (shops stay commercial)
+          const yardPt = (lx0, lz0) => !map.isRoadAt(cx + lx0 * co + lz0 * si, cz - lx0 * si + lz0 * co);
+          const co = Math.cos(yaw), si = Math.sin(yaw);
+          if (((h4 >>> 11) & 255) < 159 &&
+              yardPt(-arch.w * 0.15 - 1.4, arch.d / 2 + 2.8) && yardPt(-arch.w * 0.15 + 1.4, arch.d / 2 + 2.8)) {
+            yard = ((h4 >>> 10) & 1) ? 'fence' : 'hedge'; // ~62% of houses: hedge or fence
+            if (yard === 'hedge') hedge(arch.parts, -arch.w * 0.15, arch.d / 2 + 2.8);
+            else fence(arch.parts, -arch.w * 0.15, arch.d / 2 + 2.8);
+          }
+          hasTree = ((h4 >>> 20) & 127) < 34 && yardPt(-arch.w * 0.28, arch.d / 2 + 1.9); // ~1 in 3.8 lots
+          if (hasTree) tree(arch.parts, -arch.w * 0.28, arch.d / 2 + 1.9);
+        }
+        if (jit.variant === 0) {                   // trim variant A: flower box under the front window
+          arch.parts.push(P(box(1.6, 0.28, 0.36), 'wall3', [arch.w * 0.2, 0.86, arch.d / 2 + 0.2]));
+        } else {                                   // trim variant B: round attic vent on the street face
+          arch.parts.push(P(cyl(0.35, 0.35, 0.1, 6), 'trim', [arch.w * 0.2, arch.h - 0.5, arch.d / 2 + 0.05], { rx: Math.PI / 2 }));
+        }
         const gy = map.groundAt(cx, cz);
-        for (const part of arch.parts) bakePart(part, cx, gy - 0.3, cz, yaw); // sunk 0.3 foundation
+        bakeTris = 0;
+        for (const part of arch.parts) bakePart(part, cx, gy - 0.3, cz, yaw, jit);
         map.addBlock(bb.minX, bb.minZ, bb.maxX, bb.maxZ);
         placed.push(bb);
-        placements.push({ x: cx, z: cz, y: gy, yaw, w: arch.w, d: arch.d, archetype: arch.kind, zone, corner: isCorner });
+        placements.push({ x: cx, z: cz, y: gy, yaw, w: arch.w, d: arch.d, archetype: arch.kind, zone, corner: isCorner,
+          variant: jit.variant, yard, tree: hasTree, tris: Math.round(bakeTris) });
         count++;
         if (arch.w > widest) widest = arch.w;
       }
-      s += widest + 3.5;                           // house width + side gap
+      s += widest + 2.5;                           // house width + side gap (v4: tighter infill)
     }
   }
-
-  // ---- coverage audit (derived from roadPaths; for the coordinator's report) ----
   function distToRoad(road, x, z) { // x,z world
     let best = Infinity;
     for (let i = 0; i < road.pts.length - 1; i++) {
@@ -2156,14 +2304,13 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
       : placements.filter((p) => distToRoad(r, p.x, p.z) < 16).length;
     return { road: i, class: cls, length: Math.round(len), houses: near };
   });
-
-  // ---- one merged mesh per material ----
   let triTotal = 0;
   const group = new THREE.Group(); group.name = 'houses';
   for (const [mk, b] of buckets) {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(b.pos, 3));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(b.norm, 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(b.col, 3)); // per-house tint jitter
     const mesh = new THREE.Mesh(g, MATS[mk]);
     mesh.matrixAutoUpdate = false;
     group.add(mesh);
@@ -2171,40 +2318,20 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
   }
   scene.add(group);
 
+  const trisByArch = {};
+  for (const p of placements) trisByArch[p.archetype] = (trisByArch[p.archetype] || 0) + p.tris;
+
   return {
     update(dt) {}, // static district: nothing per-frame (dt unused)
     count,
     placements,
-    stats: { drawCalls: buckets.size, triangles: Math.round(triTotal), coverage },
+    stats: { drawCalls: buckets.size, triangles: Math.round(triTotal), trisByArch, coverage },
   };
 }
+const buildHouses = createHouses;
 
 
 // ===== props.js =====
-// js/props.js — street props for Coastal City: lampposts, benches, bins, hydrants,
-// bus-stop shelters, traffic lights, road signs. Original procedural rounded geometry,
-// vertex-colored, merged into 2 static meshes (2 draw calls total, no shadows, no lights;
-// glow parts use an unlit material so lamps read as lit without dynamic lights).
-//
-// Coordinator notes:
-//   main.js wiring (exact one-line calls):
-//     const props = createProps({ THREE, scene, map });
-//     // per frame: props.update(dt);
-//   Bus shelters register collision via map.addBlock (WORLD coords) at build time.
-//   Placements come from map.roadPaths (LAYOUT coords; world = layout - 300), sit at
-//   road half-width + ~1.2 m, and are validated with map.isRoadAt / map.isBlocked.
-//   Pier/water: map.isBlocked already rejects water; the pier deck rectangle from
-//   map.js v7b (layout x 20-122, y 292-308) is mirrored below and excluded.
-//   Round 2: shelters now retry several spots/sides per road (5 placed on v7b);
-//   new merged prop types: mailboxes, planters, parking meters (downtown arterials,
-//   3+ junctions), newsstands on spare signalized corners (addBlock, ~1.5 m wide).
-//   All placement derives from map.roadPaths at build time - no hardcoded coordinates.
-//   No other module changes are needed.
-//
-// Shared palette (baked into vertex colors; only 2 shared materials):
-//   pole #3f4854, metal #8d99a6, wood #a5793f, binGreen #3f7d4e, hydrant #c0392b,
-//   roof #4f6f8f, glass #9fc6d8, signRed #b23b2e, signYellow #e8c832, concrete #9a968c,
-//   dark #2c343c  /  glow: lampAmber #ffd98a, bulbRed #e0483c, bulbGreen #4fae5c
 function createProps({ THREE, scene, map }) {
   const P = {
     pole: '#3f4854', metal: '#8d99a6', wood: '#a5793f', bin: '#3f7d4e',
@@ -2212,8 +2339,6 @@ function createProps({ THREE, scene, map }) {
     signYellow: '#e8c832', concrete: '#9a968c', dark: '#2c343c',
   };
   const G = { lampAmber: '#ffd98a', bulbRed: '#e0483c', bulbGreen: '#4fae5c' };
-
-  // ---- world-space road polylines (layout - 300) with cumulative lengths ----
   const roads = (map.roadPaths || []).map((r) => {
     const pts = r.pts.map((p) => [p[0] - 300, p[1] - 300]);
     const cum = [0];
@@ -2230,8 +2355,6 @@ function createProps({ THREE, scene, map }) {
     const y = (map.groundAt || map.heightAt || (() => 0))(x, z);
     return Number.isFinite(y) ? y : 0;
   };
-
-  // ---- geometry accumulation helpers ----
   const M = new THREE.Matrix4(), NM = new THREE.Matrix3(), V = new THREE.Vector3();
   const E = new THREE.Euler();
   function Acc() { return { pos: [], nor: [], col: [] }; }
@@ -2259,8 +2382,6 @@ function createProps({ THREE, scene, map }) {
       dst.col.push(c[i], c[i + 1], c[i + 2]);
     }
   }
-
-  // ---- prop types, built once in local space (base at y=0, front faces -Z) ----
   function tLamppost() { // ~5.9 m tall, curved-head street light
     const m = Acc(), g = Acc();
     addTo(m, new THREE.CylinderGeometry(0.16, 0.2, 0.5, 5), P.concrete, 0, 0.25, 0);
@@ -2304,10 +2425,11 @@ function createProps({ THREE, scene, map }) {
     addTo(m, new THREE.BoxGeometry(3.4, 0.1, 1.6), P.roof, 0, 2.48, 0);
     addTo(m, new THREE.BoxGeometry(3.5, 0.14, 0.12), P.roof, 0, 2.42, -0.78);
     addTo(m, new THREE.BoxGeometry(3.2, 1.3, 0.06), P.glass, 0, 1.15, 0.58);
+    addTo(g, new THREE.BoxGeometry(3.5, 0.06, 0.06), G.lampAmber, 0, 2.40, -0.80); // PROPS-GLOW front roof lip
+    addTo(g, new THREE.BoxGeometry(3.2, 0.05, 0.05), G.lampAmber, 0, 2.36, 0.55);  // PROPS-GLOW under-roof bar
     addTo(m, new THREE.BoxGeometry(3.0, 0.08, 0.4), P.wood, 0, 0.5, 0.3);
     return { m, g };
   }
-  // ---- round-2 prop types ----
   function tMailbox() { // 1.1 m rounded curbside mailbox on a post
     const m = Acc(), g = Acc();
     addTo(m, new THREE.CylinderGeometry(0.035, 0.045, 1.0, 6, 1, true), P.pole, 0, 0.5, 0);
@@ -2369,15 +2491,17 @@ function createProps({ THREE, scene, map }) {
     shelter: tShelter(), signRed: tSign(P.signRed), signYellow: tSign(P.signYellow),
     mailbox: tMailbox(), planter: tPlanter(), meter: tParkingMeter(), newsStand: tNewsStand(),
   };
-
-  // ---- placement validation ----
   const placed = []; // {x, z, r} for spacing dedupe
   const isRoad = map.isRoadAt || (() => false);
   const isBlk = map.isBlocked || map.blockedAt || (() => false);
+  const KEEPCLEAR = (map.taxiStops || []); // v3: never crowd taxi stops (driveways: isRoadAt covers them)
   function free(x, z, r, spacing) {
     if (!inBounds(x, z) || onPier(x, z)) return false;
     if (isRoad(x, z)) return false;
     if (isBlk(x, z, r)) return false;
+    for (const t of KEEPCLEAR) {
+      if ((x - t.x) * (x - t.x) + (z - t.z) * (z - t.z) < 9) return false; // 3 m keep-clear
+    }
     for (const q of placed) {
       if ((x - q.x) * (x - q.x) + (z - q.z) * (z - q.z) < spacing * spacing) return false;
     }
@@ -2392,8 +2516,6 @@ function createProps({ THREE, scene, map }) {
     placed.push({ x, z, r });
     placements.push({ type: typeKey, x, z, yaw });
   }
-
-  // point + direction at arc distance s along a road
   function pointAt(road, s) {
     let i = 1;
     while (i < road.cum.length - 1 && road.cum[i] < s) i++;
@@ -2403,15 +2525,11 @@ function createProps({ THREE, scene, map }) {
     const L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
     return { x, z, ux: (b[0] - a[0]) / L, uz: (b[1] - a[1]) / L, seg: i - 1 };
   }
-  // yaw that faces local -Z toward (tx,tz)
   const faceYaw = (x, z, tx, tz) => Math.atan2(-(tx - x), -(tz - z));
-
-  // ---- junctions: segment intersections between different roads ----
   function segInt(a, b, c, d) {
     const r = [b[0] - a[0], b[1] - a[1]], s = [d[0] - c[0], d[1] - c[1]];
     const den = r[0] * s[1] - r[1] * s[0];
     if (Math.abs(den) < 1e-9) {
-      // collinear-ish: treat endpoint touch as junction (ramp/hillcrest share endpoints)
       for (const [p, q0, q1] of [[a, c, d], [b, c, d], [c, a, b], [d, a, b]]) {
         if (Math.hypot(p[0] - q0[0], p[1] - q0[1]) < 0.5) return { x: p[0], z: p[1] };
         if (Math.hypot(p[0] - q1[0], p[1] - q1[1]) < 0.5) return { x: p[0], z: p[1] };
@@ -2444,11 +2562,8 @@ function createProps({ THREE, scene, map }) {
       }
     }
   }
-
-  // ---- traffic lights + signs at junctions ----
-  let tlCount = 0;
+  let tlCount = 0, minorJunctions = 0;
   for (const J of junctions) {
-    // corner offset: perpendiculars of both road directions
     const n1x = -J.az, n1z = J.ax, n2x = -J.bz, n2z = J.bx;
     const o1 = J.wA / 2 + 1.0, o2 = J.wB / 2 + 1.0;
     const corners = [
@@ -2463,31 +2578,27 @@ function createProps({ THREE, scene, map }) {
         put(key, c.x, c.z, faceYaw(c.x, c.z, J.x, J.z), 0.4, 2);
         tlCount++;
       }
-      // one stop-style sign on a third corner
       const sx = J.x + n1x * o1 - n2x * o2, sz = J.z + n1z * o1 - n2z * o2;
       if (free(sx, sz, 0.3, 2)) put('signRed', sx, sz, faceYaw(sx, sz, J.x, J.z), 0.3, 2);
     } else {
-      // minor junction: single yield-style sign
-      const c = corners[0];
-      if (free(c.x, c.z, 0.3, 2)) put('signYellow', c.x, c.z, faceYaw(c.x, c.z, J.x, J.z), 0.3, 2);
+      minorJunctions++;
+      if (minorJunctions % 2 === 0) {
+        const c = corners[0];
+        if (free(c.x, c.z, 0.3, 2)) put('signYellow', c.x, c.z, faceYaw(c.x, c.z, J.x, J.z), 0.3, 2);
+      }
     }
   }
-
-  // ---- street furniture along every road ----
-  const LAMP_EVERY = 38, BENCH_EVERY = 95, BIN_EVERY = 60, HYD_EVERY = 170;
+  const LAMP_EVERY = 46, BENCH_EVERY = 120, BIN_EVERY = 78, HYD_EVERY = 210; // v3: retuned for the 46k tri cap
   let sheltersPlaced = 0;
   for (const road of roads) {
     const h = road.w / 2;
-    // lampposts, alternating sides
     for (let s = 19, k = 0; s < road.len - 8; s += LAMP_EVERY, k++) {
       const p = pointAt(road, s);
       const side = k % 2 === 0 ? 1 : -1;
       const x = p.x + -p.uz * side * (h + 1.2), z = p.z + p.ux * side * (h + 1.2);
       if (!free(x, z, 0.4, 3)) continue;
-      // arm toward the road: face the road centerline
       put('lamp', x, z, faceYaw(x, z, p.x, p.z), 0.4, 3);
     }
-    // benches (skip short roads), facing the road
     if (road.len > 120) {
       for (let s = 47; s < road.len - 10; s += BENCH_EVERY) {
         const p = pointAt(road, s);
@@ -2497,7 +2608,6 @@ function createProps({ THREE, scene, map }) {
         put('bench', x, z, faceYaw(x, z, p.x, p.z), 0.5, 2.5);
       }
     }
-    // bins
     for (let s = 30; s < road.len - 6; s += BIN_EVERY) {
       const p = pointAt(road, s);
       const side = (Math.floor(s / BIN_EVERY) % 2 === 0) ? 1 : -1;
@@ -2505,7 +2615,6 @@ function createProps({ THREE, scene, map }) {
       if (!free(x, z, 0.35, 1.5)) continue;
       put('bin', x, z, Math.random() * Math.PI * 2, 0.35, 1.5);
     }
-    // hydrants on the wider downtown streets only
     if (road.w >= 8 && road.len > 200) {
       for (let s = 90; s < road.len - 10; s += HYD_EVERY) {
         const p = pointAt(road, s);
@@ -2514,8 +2623,6 @@ function createProps({ THREE, scene, map }) {
         put('hydrant', x, z, Math.random() * Math.PI * 2, 0.3, 2);
       }
     }
-    // bus shelters (round 2): target 5 city-wide; try several spots and both sides per road
-    // instead of a single candidate, since map v7b's curves invalided some v1 spots.
     if (road.w >= 8 && road.len > 250 && sheltersPlaced < 5) {
       outer: for (const f of [0.55, 0.35, 0.7, 0.25, 0.85, 0.45]) {
         for (const side of [1, -1]) {
@@ -2539,12 +2646,9 @@ function createProps({ THREE, scene, map }) {
       }
     }
   }
-
-  // ---- round-2 props: mailboxes, planters, parking meters, newsstands ----
   let metersPlaced = 0, standsPlaced = 0;
   const JUNCTIONS_PER_ROAD = roads.map((r) =>
     junctions.filter((J) => {
-      // junction belongs to a road if its center sits within the road's swept width
       const rr = { pts: r.pts.map((p) => [p[0], p[1]]), w: r.w + 4 };
       for (let i = 0; i < rr.pts.length - 1; i++) {
         const ax = rr.pts[i][0], az = rr.pts[i][1], bx = rr.pts[i + 1][0], bz = rr.pts[i + 1][1];
@@ -2558,7 +2662,6 @@ function createProps({ THREE, scene, map }) {
     }).length);
   for (let ri = 0; ri < roads.length; ri++) {
     const road = roads[ri], h = road.w / 2;
-    // mailboxes: sparse, residential-style streets (narrower roads), curbside
     if (road.w <= 7.5 && road.len > 60) {
       for (let s = 28, k = 0; s < road.len - 8; s += 55, k++) {
         const p = pointAt(road, s);
@@ -2568,7 +2671,6 @@ function createProps({ THREE, scene, map }) {
         put('mailbox', x, z, faceYaw(x, z, p.x, p.z), 0.3, 1.2);
       }
     }
-    // planters: on the wider streets, set further out than lamps so lanes stay clear
     if (road.w >= 8 && road.len > 150) {
       for (let s = 55, k = 0; s < road.len - 10; s += 130, k++) {
         const p = pointAt(road, s);
@@ -2578,11 +2680,9 @@ function createProps({ THREE, scene, map }) {
         put('planter', x, z, Math.random() * Math.PI * 2, 0.5, 2.2);
       }
     }
-    // parking meters: only on busy downtown-style arterials (3+ junctions), one side,
-    // clear of junction corners; capped city-wide for the tri budget
     if (road.w >= 8 && road.len > 200 && JUNCTIONS_PER_ROAD[ri] >= 3) {
       const side = ri % 2 === 0 ? 1 : -1;
-      for (let s = 30; s < road.len - 10 && metersPlaced < 48; s += 26) {
+      for (let s = 30; s < road.len - 10 && metersPlaced < 28; s += 26) {
         if (junctions.some((J) => Math.hypot(J.x - pointAt(road, s).x, J.z - pointAt(road, s).z) < 12)) continue;
         const p = pointAt(road, s);
         const x = p.x + -p.uz * side * (h + 0.8), z = p.z + p.ux * side * (h + 0.8);
@@ -2592,7 +2692,6 @@ function createProps({ THREE, scene, map }) {
       }
     }
   }
-  // newsstands: on the spare fourth corner of signalized junctions, capped at 6
   for (const J of junctions) {
     if (standsPlaced >= 6 || J.wA < 8 || J.wB < 8) continue;
     const n1x = -J.az, n1z = J.ax, n2x = -J.bz, n2z = J.bx;
@@ -2603,10 +2702,9 @@ function createProps({ THREE, scene, map }) {
     if (map.addBlock) map.addBlock(x - 0.8, z - 0.55, x + 0.8, z + 0.55); // ~1.5 m wide: collision
     standsPlaced++;
   }
-
-  // ---- merge to 2 static meshes ----
   const matMatte = new THREE.MeshLambertMaterial({ vertexColors: true });
   const matGlow = new THREE.MeshBasicMaterial({ vertexColors: true });
+  matGlow.toneMapped = false; // PROPS-GLOW: self-lit parts skip ACES (0 draws, 0 tris)
   function toMesh(acc, mat, name) {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(acc.pos, 3));
@@ -2632,33 +2730,6 @@ function createProps({ THREE, scene, map }) {
 
 
 // ===== pedestrians.js =====
-// js/pedestrians.js — original low-poly rounded pedestrians (~1.8 m) for Coastal City.
-// Soft street ambience: they walk the road edges (half-width + ~2 m offset), turn at
-// junctions or reverse at road ends, hurry across open road at junction crossings,
-// and never register collision (brief: vehicles/players may pass through).
-//
-// Coordinator notes:
-//   main.js wiring (exact one-line calls):
-//     const pedestrians = createPedestrians({ THREE, scene, map, getPlayerPos });
-//     // per frame: pedestrians.update(dt);
-//   getPlayerPos() -> {x, z} in WORLD coords; called at most once per frame.
-//   The module additionally derives 2 pier-waiting spots itself from the westmost road
-//   (roadPaths-derived; pier rect mirrored from map.js v7b, same as props.js).
-//   Peds near a spot sometimes idle (static sit/stand pose, 6-15 s) instead of walking.
-//   No map.addBlock calls, no collision, no shadows, no lights.
-//   Round 2 also fixes junction turns to use segment-intersection transfer points
-//   (grid junctions are not polyline vertices; the v1 vertex check rarely fired).
-//
-// Shared palette (one shared MeshLambertMaterial({vertexColors:true}); colors baked):
-//   skin  #c68b59 #8d5a3a #e0ac82 #6b4a2f
-//   shirt #c94f4f #4f7dc9 #d8c94f #5aa66b #d8d4c8 #7a5ac8
-//   pants #26344c #4a4a52 #6e5a3a #2e5d4c
-//   hair  #2c241c #4a3826 #6e6e6e   shoe #152335
-//
-// Perf: 5 meshes per pedestrian (body, 2 leg groups, 2 arm groups); limb geometries
-// are cached per color combo and shared. Full swing animation only within 60 m of the
-// player; 60-140 m glide (no limb animation); past 140 m hidden and respawned near the
-// player on a random road. Walk speed 1.2-1.8 m/s. No skinned meshes, no AnimationMixer.
 function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots = [] }) {
   const SKIN = ['#c68b59', '#8d5a3a', '#e0ac82', '#6b4a2f'];
   const SHIRT = ['#c94f4f', '#4f7dc9', '#d8c94f', '#5aa66b', '#d8d4c8', '#7a5ac8'];
@@ -2669,8 +2740,6 @@ function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots = [] }) 
 
   const PED_COUNT = 20; // coordinator dial (parent Nov 20): 28->20 for FPS headroom
   const ANIM_NEAR = 60, HIDE_FAR = 140, SIDEWALK = 2.0;
-
-  // ---- world-space road polylines (layout - 300) with cumulative lengths ----
   const roads = (map.roadPaths || []).map((r) => {
     const pts = r.pts.map((p) => [p[0] - 300, p[1] - 300]);
     const cum = [0];
@@ -2679,8 +2748,6 @@ function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots = [] }) 
     }
     return { pts, cum, w: r.w, len: cum[cum.length - 1] };
   }).filter((r) => r.len > 30);
-
-  // ---- junction transfers: where another road crosses, peds may turn onto it ----
   function segIntT(a, b, c, d) {
     const r = [b[0] - a[0], b[1] - a[1]], s = [d[0] - c[0], d[1] - c[1]];
     const den = r[0] * s[1] - r[1] * s[0];
@@ -2716,27 +2783,27 @@ function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots = [] }) 
     return Number.isFinite(y) ? y : 0;
   };
   const inBounds = (x, z) => x > -295 && x < 295 && z > -295 && z < 295;
-
-  // point + unit direction at arc distance s along a road
-  function pointAt(road, s) {
+  function pointAt(road, s, out) {
     let i = 1;
     while (i < road.cum.length - 1 && road.cum[i] < s) i++;
     const t = (s - road.cum[i - 1]) / Math.max(1e-6, road.cum[i] - road.cum[i - 1]);
     const a = road.pts[i - 1], b = road.pts[i];
     const L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
-    return {
-      x: a[0] + (b[0] - a[0]) * t, z: a[1] + (b[1] - a[1]) * t,
-      ux: (b[0] - a[0]) / L, uz: (b[1] - a[1]) / L, seg: i - 1,
-    };
+    out = out || {};
+    out.x = a[0] + (b[0] - a[0]) * t; out.z = a[1] + (b[1] - a[1]) * t;
+    out.ux = (b[0] - a[0]) / L; out.uz = (b[1] - a[1]) / L; out.seg = i - 1;
+    return out;
   }
-  // sidewalk position for a ped state
-  function spot(road, s, side) {
-    const p = pointAt(road, s);
+  const PT = {}; // scratch for pointAt inside spot
+  function spot(road, s, side, out) {
+    const p = pointAt(road, s, PT);
     const off = road.w / 2 + SIDEWALK;
-    return { x: p.x + -p.uz * side * off, z: p.z + p.ux * side * off, ux: p.ux, uz: p.uz, seg: p.seg };
+    out = out || {};
+    out.x = p.x + -p.uz * side * off; out.z = p.z + p.ux * side * off;
+    out.ux = p.ux; out.uz = p.uz; out.seg = p.seg;
+    return out;
   }
-
-  // ---- round 2: idle spots. Passed-in spots (benches/shelters) + self-derived pier waits. ----
+  const Q1 = {}, Q2 = {}, Q3 = {}; // per-frame scratch (no allocations in update)
   const PIER = { minX: -280, maxX: -178, minZ: -8, maxZ: 8 }; // mirror of map.js v7b PIER
   const SPOTS = [];
   for (const s of idleSpots || []) {
@@ -2769,8 +2836,6 @@ function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots = [] }) 
       }
     }
   }
-
-  // ---- geometry helpers ----
   const M = new THREE.Matrix4(), NM = new THREE.Matrix3(), V = new THREE.Vector3(), E = new THREE.Euler();
   function Acc() { return { pos: [], nor: [], col: [] }; }
   function addTo(acc, geo, color, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0, sx = 1, sy = 1, sz = 1) {
@@ -2796,8 +2861,6 @@ function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots = [] }) 
     return g;
   }
   const mat = new THREE.MeshLambertMaterial({ vertexColors: true });
-
-  // ---- cached part geometries (local space; feet at y=0; limbs pivot at top) ----
   const bodyCache = new Map(), legCache = new Map(), armCache = new Map();
   function bodyGeo(skin, shirt, pants, hair) {
     const key = [skin, shirt, pants, hair].join('|');
@@ -2834,8 +2897,6 @@ function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots = [] }) 
     }
     return armCache.get(key);
   }
-
-  // ---- build a pedestrian ----
   function makePed() {
     const skin = pick(SKIN), shirt = pick(SHIRT), pants = pick(PANTS), hair = pick(HAIR);
     const root = new THREE.Group();
@@ -2857,13 +2918,13 @@ function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots = [] }) 
       road: null, s: 0, dir: 1, side: 1, speed: 1.2 + Math.random() * 0.6,
       phase: Math.random() * 6.283, lastSeg: -1, respawnCd: 0, turnCd: 0, x: 0, z: 0,
       mode: 'walk', idleT: 0, idleCd: 4 + Math.random() * 25, pose: 'stand',
+      role: 'wander', a: null, b: null, target: null, ctx: 0, ctz: 0,
     };
   }
 
   function validSpot(x, z) {
     return inBounds(x, z) && !isRoad(x, z) && !isBlk(x, z, 0.35);
   }
-  // place a ped on a random road/s/side; near ({x,z}, minD, maxD) when given
   function spawn(p, near, minD, maxD) {
     for (let t = 0; t < 10; t++) {
       const road = roads[Math.floor(Math.random() * roads.length)];
@@ -2883,12 +2944,135 @@ function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots = [] }) 
     }
     return false;
   }
+  const MAPPED = [];
+  {
+    const q = {}, lq = {};
+    for (const sp of SPOTS) {
+      let best = null;
+      for (const r of roads) {
+        for (let s = 2; s < r.len - 2; s += 2) {
+          pointAt(r, s, q);
+          if (Math.abs(q.x - sp.x) > 12 || Math.abs(q.z - sp.z) > 12) continue;
+          for (const side of [1, -1]) {
+            spot(r, s, side, lq);
+            const d = Math.hypot(lq.x - sp.x, lq.z - sp.z);
+            if (d < 2.5 && (!best || d < best.d)) best = { d, road: r, s, side };
+          }
+        }
+      }
+      if (best) { sp.road = best.road; sp.s = best.s; sp.side = best.side; MAPPED.push(sp); }
+    }
+  }
+  function assignStroll(p) {
+    let a = null;
+    for (const sp of MAPPED) {
+      const d = Math.hypot(sp.x - p.x, sp.z - p.z);
+      if (d < 70 && (!a || d < a.d)) a = { d, sp };
+    }
+    if (!a) return false;
+    let b = null;
+    for (const sp of MAPPED) {
+      if (sp === a.sp || sp.road !== a.sp.road) continue;
+      const along = Math.abs(sp.s - a.sp.s);
+      if (along < 8 || along > 140) continue;
+      if (!b || along < b.along) b = { along, sp };
+    }
+    if (!b) return false;
+    p.role = 'stroll'; p.a = a.sp; p.b = b.sp; p.target = null;
+    p.road = a.sp.road; p.s = a.sp.s; p.side = a.sp.side;
+    const q = spot(p.road, p.s, p.side, Q1);
+    p.x = q.x; p.z = q.z;
+    p.root.position.set(p.x, ground(p.x, p.z), p.z); // stand mode never re-syncs position
+    p.mode = 'stand'; p.idleT = 20 + Math.random() * 40; p.pose = 'stand';
+    p.root.rotation.y = -Math.atan2(a.sp.x - p.x, -(a.sp.z - p.z));
+    return true;
+  }
 
   const peds = [];
-  for (let i = 0; i < Math.min(PED_COUNT, Math.max(1, roads.length ? PED_COUNT : 0)); i++) {
+  const N_PEDS = Math.min(PED_COUNT, Math.max(1, roads.length ? PED_COUNT : 0));
+  const order = [];
+  for (let i = 0; i < N_PEDS; i++) order.push(i);
+  for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const t = order[i]; order[i] = order[j]; order[j] = t; }
+  const wantStroll = Math.floor(N_PEDS / 2);
+  let strollers = 0;
+  for (let i = 0; i < N_PEDS; i++) {
     const p = makePed();
     spawn(p, null, 0, 0);
+    if (p.road) { // place on the lane now: never render a ped at the world origin
+      const q0 = spot(p.road, p.s, p.side, Q1);
+      p.x = q0.x; p.z = q0.z;
+    }
     peds.push(p);
+  }
+  for (const i of order) { // about half become strollers (spot availability permitting)
+    if (strollers >= wantStroll) break;
+    const q = spot(peds[i].road, peds[i].s, peds[i].side, Q1);
+    peds[i].x = q.x; peds[i].z = q.z;
+    if (assignStroll(peds[i])) strollers++;
+  }
+  function updateStroller(p, dt, dPlayer) {
+    if (p.mode === 'corner') { // mid side-swap: reuse the corner-line walk
+      const dx = p.ctx - p.x, dz = p.ctz - p.z, d = Math.hypot(dx, dz);
+      const step = p.speed * 1.5 * dt;
+      if (d <= step + 0.05) { p.mode = 'walkTo'; p.x = p.ctx; p.z = p.ctz; }
+      else { p.x += dx / d * step; p.z += dz / d * step; }
+      p.root.position.set(p.x, ground(p.x, p.z), p.z);
+      p.root.rotation.y = -Math.atan2(dx, -dz);
+      if (dPlayer < ANIM_NEAR) {
+        p.phase += dt * p.speed * 1.5 * 3.6;
+        const sw = Math.sin(p.phase);
+        p.legL.rotation.x = sw * 0.55; p.legR.rotation.x = -sw * 0.55;
+        p.armL.rotation.x = -sw * 0.4; p.armR.rotation.x = sw * 0.4;
+        p.body.position.y = Math.abs(Math.sin(p.phase * 2)) * 0.045;
+      }
+      return;
+    }
+    if (p.mode === 'stand') { // standing at a spot, watching the street
+      p.idleT -= dt;
+      if (dPlayer < ANIM_NEAR) {
+        p.legL.rotation.x *= 0.8; p.legR.rotation.x *= 0.8;
+        p.armL.rotation.x = 0.14; p.armR.rotation.x = -0.14;
+        p.body.position.y *= 0.8;
+      }
+      if (p.idleT <= 0) {
+        p.target = (p.target === p.b) ? p.a : p.b; // first leg: a -> b (starts at a)
+        p.mode = 'walkTo';
+      }
+      return;
+    }
+    const dirT = p.target.s >= p.s ? 1 : -1;
+    const v = p.speed * (isRoad(p.x, p.z) ? 2.5 : 1);
+    p.s += dirT * v * dt;
+    p.dir = dirT;
+    if (p.s >= p.road.len - 1) p.s = p.road.len - 1;
+    else if (p.s <= 1) p.s = 1;
+    const q = spot(p.road, p.s, p.side, Q1);
+    const ax = q.x + q.ux * dirT * 1.1, az = q.z + q.uz * dirT * 1.1;
+    if (isBlk(ax, az, 0.3)) {
+      const q2 = spot(p.road, p.s, -p.side, Q2);
+      const bx = q2.x + q2.ux * dirT * 1.1, bz = q2.z + q2.uz * dirT * 1.1;
+      if (!isBlk(bx, bz, 0.3) && !isRoad(q2.x, q2.z)) {
+        p.side = -p.side; p.ctx = q2.x; p.ctz = q2.z; p.mode = 'corner';
+        return;
+      }
+      p.root.position.set(p.x, ground(p.x, p.z), p.z); // both sides blocked: wait in place
+      return;
+    }
+    p.x = q.x; p.z = q.z;
+    p.root.position.set(p.x, ground(p.x, p.z), p.z);
+    p.root.rotation.y = -Math.atan2(q.ux * dirT, -q.uz * dirT);
+    if (dPlayer < ANIM_NEAR) {
+      p.phase += dt * v * 3.6;
+      const sw = Math.sin(p.phase);
+      p.legL.rotation.x = sw * 0.55; p.legR.rotation.x = -sw * 0.55;
+      p.armL.rotation.x = -sw * 0.4; p.armR.rotation.x = sw * 0.4;
+      p.body.position.y = Math.abs(Math.sin(p.phase * 2)) * 0.045;
+    }
+    if (Math.abs(p.s - p.target.s) < 2.5) { // arrived: stand 20-60 s facing the spot
+      p.mode = 'stand';
+      p.idleT = 20 + Math.random() * 40;
+      p.root.rotation.y = -Math.atan2(p.target.x - p.x, -(p.target.z - p.z));
+    }
   }
 
   function update(dt) {
@@ -2905,13 +3089,15 @@ function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots = [] }) 
         if (p.respawnCd <= 0) {
           p.respawnCd = 2;
           if (spawn(p, pp, 45, HIDE_FAR - 25)) {
-            const q = spot(p.road, p.s, p.side);
+            const q = spot(p.road, p.s, p.side, Q1);
             p.x = q.x; p.z = q.z;
+            if (p.role === 'stroll' && !assignStroll(p)) { p.role = 'wander'; p.mode = 'walk'; }
           }
         }
         continue;
       }
       p.root.visible = true;
+      if (p.role === 'stroll') { updateStroller(p, dt, dPlayer); continue; } // round 3 wander loops
       if (p.mode === 'corner') { // rounding a junction after a turn: walk the corner line
         const dx = p.ctx - p.x, dz = p.ctz - p.z, d = Math.hypot(dx, dz);
         const step = p.speed * 1.5 * dt;
@@ -2945,7 +3131,6 @@ function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots = [] }) 
         }
         continue;
       }
-      // walking: maybe start idling near an idle spot
       p.idleCd -= dt;
       if (p.idleCd <= 0) {
         let hit = null;
@@ -2965,30 +3150,26 @@ function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots = [] }) 
         }
         p.idleCd = 2; // re-check soon while walking past spots
       }
-      // crosswalk hurry: brief says stay off the road surface; at junction crossings the
-      // sidewalk line crosses the side road, so they hurry across instead of strolling.
       const onRoad = isRoad(p.x, p.z);
       const v = p.speed * (onRoad ? 2.5 : 1);
       const sOld = p.s;
       p.s += p.dir * v * dt;
       p.turnCd -= dt;
-      // turn at junctions: crossed a transfer point -> maybe switch to the crossing road
       if (p.turnCd <= 0) {
         for (const tr of p.road.transfers) {
           const crossed = p.dir > 0 ? (sOld < tr.s && p.s >= tr.s) : (sOld > tr.s && p.s <= tr.s);
           if (crossed && Math.random() < 0.3) {
             const nr = tr.other;
             p.dir = Math.random() < 0.5 ? 1 : -1;
-            // pick the new lane side closest to the current position and walk the
-            // corner line over to it (no 8-12 m pop around the junction)
-            let best = null;
+            let bestD = Infinity, bestSide = 1, bestS = 0, bestX = 0, bestZ = 0;
             for (const sd of [1, -1]) {
-              const qn = spot(nr, Math.min(nr.len - 2, Math.max(2, tr.sOther + p.dir * 2)), sd);
+              const sn = Math.min(nr.len - 2, Math.max(2, tr.sOther + p.dir * 2));
+              const qn = spot(nr, sn, sd, Q2);
               const dd = Math.hypot(qn.x - p.x, qn.z - p.z);
-              if (!best || dd < best.d) best = { d: dd, side: sd, s: Math.min(nr.len - 2, Math.max(2, tr.sOther + p.dir * 2)), x: qn.x, z: qn.z };
+              if (dd < bestD) { bestD = dd; bestSide = sd; bestS = sn; bestX = qn.x; bestZ = qn.z; }
             }
-            p.road = nr; p.s = best.s; p.side = best.side;
-            p.ctx = best.x; p.ctz = best.z;
+            p.road = nr; p.s = bestS; p.side = bestSide;
+            p.ctx = bestX; p.ctz = bestZ;
             p.mode = 'corner';
             p.turnCd = 1.5;
             break;
@@ -2998,19 +3179,17 @@ function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots = [] }) 
       if (p.mode === 'corner') continue; // just turned: corner line starts next tick
       if (p.s >= p.road.len - 1) { p.s = p.road.len - 1; p.dir = -1; }
       else if (p.s <= 1) { p.s = 1; p.dir = 1; }
-      let q = spot(p.road, p.s, p.side);
-      // blocked-ahead probe: swap sidewalk side, else reverse
+      let q = spot(p.road, p.s, p.side, Q1);
       const ax = q.x + q.ux * p.dir * 1.1, az = q.z + q.uz * p.dir * 1.1;
       if (isBlk(ax, az, 0.3)) {
-        const q2 = spot(p.road, p.s, -p.side);
+        const q2 = spot(p.road, p.s, -p.side, Q2);
         const bx = q2.x + q2.ux * p.dir * 1.1, bz = q2.z + q2.uz * p.dir * 1.1;
         if (!isBlk(bx, bz, 0.3) && !isRoad(q2.x, q2.z)) {
-          // walk across to the far sidewalk instead of popping over
           p.side = -p.side;
           p.ctx = q2.x; p.ctz = q2.z; p.mode = 'corner';
           continue;
         }
-        p.dir = -p.dir; q = spot(p.road, p.s, p.side);
+        p.dir = -p.dir; q = spot(p.road, p.s, p.side, Q1);
       }
       p.x = q.x; p.z = q.z;
       p.root.position.set(p.x, ground(p.x, p.z), p.z);
@@ -3036,19 +3215,6 @@ function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots = [] }) 
 
 
 // ===== adaptive-resolution.js =====
-// adaptive-resolution.js — NEW drop-in module (complete file). Graphics+FPS builder, v1.
-// No THREE import (project module discipline): the renderer arrives as an argument.
-// Used by patches-main.js P1: main.js does
-//   import { createAdaptiveResolution } from './adaptive-resolution.js';
-// and calls adaptive.sample(rawDt) once per frame with the UNCLAMPED frame delta.
-//
-// Behaviour: EMA of frame time; when the average stays slower than ~33 ms the render
-// pixel ratio steps down (1.0 -> 0.85 -> 0.75), when it stays faster than ~57 fps it
-// steps up (toward 1.25). One step per 1.5 s (hysteresis) so it cannot oscillate.
-// The 1.5 hard cap from the project brief is respected: max defaults to 1.25.
-// Guards: a 30-sample warmup (loading hitches must not pick a ratio), and a single
-// frame longer than 250 ms is clamped so one tab-switch hitch can't force a down-step;
-// sustained slowness still steps down from the second slow frame on.
 
 function createAdaptiveResolution({ renderer, min = 0.6, max = 1.25, start = 1 }) { // v2 (coordinator, Nov 20): min 0.75 -> 0.6 so slow phones shed more pixels
   let cur = start;
@@ -3086,10 +3252,125 @@ function createAdaptiveResolution({ renderer, min = 0.6, max = 1.25, start = 1 }
 
 
 // ===== main.js =====
-// main.js — game loop, camera, HUD glue, module wiring. Coordinator-owned. Contract v1.1.
-// Only this file imports THREE; every module receives it (or DOM hosts) via arguments.
+function buildClouds(THREE, camera) {
+  const cv = document.createElement('canvas'); cv.width = 128; cv.height = 64;
+  const cx = cv.getContext('2d');
+  cx.clearRect(0, 0, 128, 64);
+  const blob = (x, y, r, a) => {
+    const g = cx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, 'rgba(255,255,255,' + a + ')');
+    g.addColorStop(0.7, 'rgba(255,255,255,' + (a * 0.45) + ')');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    cx.fillStyle = g;
+    cx.fillRect(x - r, y - r, r * 2, r * 2);
+  };
+  blob(38, 40, 26, 0.85); blob(64, 32, 30, 0.95); blob(92, 42, 24, 0.8); blob(64, 46, 34, 0.55);
+  const tex = new THREE.CanvasTexture(cv);
+  const quads = [ // [x, y, z, w, h, flip]
+    [-120, 130, -90, 90, 34, 0], [40, 145, -160, 120, 44, 1],
+    [150, 120, 60, 80, 30, 0], [-30, 138, 170, 100, 38, 1],
+  ];
+  const pos = [], uv = [], idx = [];
+  quads.forEach(([x, y, z, w, h, flip], q) => {
+    const b = q * 4;
+    pos.push(x - w / 2, y, z, x + w / 2, y, z, x - w / 2, y, z + h, x + w / 2, y, z + h); // flat, up-facing
+    const u0 = flip ? 1 : 0, u1 = flip ? 0 : 1;
+    uv.push(u0, 0, u1, 0, u0, 1, u1, 1);
+    idx.push(b, b + 2, b + 1, b + 1, b + 2, b + 3);
+  });
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geo.setIndex(idx);
+  const mat = new THREE.MeshBasicMaterial({
+    map: tex, transparent: true, depthWrite: false, fog: false, // above the haze layer
+    side: THREE.DoubleSide, opacity: 0.9, color: 0xf6f9ff,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.name = 'fx:clouds';
+  mesh.renderOrder = 1; // dome writes no depth; clouds draw right after it
+  mesh.frustumCulled = false; // follows the camera like the dome does
+  mesh.onBeforeRender = () => {
+    const t = performance.now() / 1000;
+    mesh.position.set(
+      camera.position.x + Math.sin(t * 0.010) * 45, // slow drift, ~10.5 min period, no wrap pop
+      0,
+      camera.position.z + Math.cos(t * 0.008) * 30,
+    );
+  };
+  return mesh;
+}
+
+function makeStatsProbe({ THREE, renderer, scene, adaptive }) {
+  function bucketOf(o, top) {
+    let inHouses = false, inFallback = false, inLOD = false, inParked = false, inVeh = false;
+    for (let a = o; a; a = a.parent) {
+      if (a.name === 'houses') inHouses = true;
+      if (a.name === 'fallbackBuildings') inFallback = true;
+      if (a.isLOD) inLOD = true;
+      if (a.name === 'parkedCars') inParked = true;
+      if (/^Original /.test(a.name || '') || a.name === 'wheel') inVeh = true;
+    }
+    const n = o.name || '';
+    if (/^fx:/.test(n)) return 'sky/fx';
+    if (o.material && o.material.side === THREE.BackSide && o.material.fog === false) return 'sky/fx'; // gradient dome
+    if (inHouses) return 'houses';
+    if (inFallback) return 'map-fallback-bld';
+    if (inLOD || /^bld:/.test((top && top.name) || '')) return 'buildings-glb';
+    if (/^props:/.test(n)) return 'props';
+    if (inParked) return 'parked-cars';
+    if (inVeh) return 'vehicles';
+    if (o === top) return 'map-statics'; // unnamed scene-root meshes: terrain, ocean, roads, pier, job markers
+    return 'peds+actors+other';
+  }
+  function perModule() {
+    const rows = {};
+    for (const top of scene.children) {
+      top.traverse((o) => {
+        if (!o.isMesh && !o.isInstancedMesh) return;
+        const name = bucketOf(o, top);
+        const g = o.geometry;
+        const tris = Math.round((g.index ? g.index.count : g.attributes.position ? g.attributes.position.count : 0) / 3)
+          * (o.isInstancedMesh ? o.count : 1);
+        const r = rows[name] || (rows[name] = { meshes: 0, visibleMeshes: 0, contentTris: 0 });
+        r.meshes++;
+        if (o.visible) r.visibleMeshes++;
+        r.contentTris += tris;
+      });
+    }
+    return rows;
+  }
+  return function stats(sampleMs) {
+    const snap = () => {
+      const out = {
+        draws: renderer.info.render.calls,
+        renderedTris: renderer.info.render.triangles,
+        ratio: adaptive && adaptive.current,
+        modules: perModule(),
+      };
+      const line = 'ccInfo.stats draws=' + out.draws + ' renderedTris=' + out.renderedTris + ' ratio=' + out.ratio;
+      console.log(line);
+      if (console.table) console.table(out.modules);
+      return out;
+    };
+    if (!sampleMs || typeof requestAnimationFrame !== 'function') return snap();
+    return new Promise((resolve) => {
+      let frames = 0;
+      const t0 = performance.now();
+      const tick = () => {
+        frames++;
+        if (performance.now() - t0 >= sampleMs) {
+          const out = snap();
+          out.fps = Math.round(frames / ((performance.now() - t0) / 1000));
+          console.log('ccInfo.stats fps=' + out.fps + ' over ' + sampleMs + ' ms');
+          resolve(out);
+        } else requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+  };
+}
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-// houses v1b: every road lined with homes; adaptive-resolution = P1; props/pedestrians: street life
 
 const canvas = document.getElementById('game');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
@@ -3097,9 +3378,14 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping; // F1: warmer coastal tonali
 renderer.toneMappingExposure = 1.12;
 renderer.setSize(window.innerWidth, window.innerHeight);
 const adaptive = createAdaptiveResolution({ renderer }); // P1: sets pixelRatio 1.0, then adapts
-window.ccInfo = () => ({ calls: renderer.info.render.calls, tris: renderer.info.render.triangles, ratio: adaptive.current }); // P8
+
 
 const scene = new THREE.Scene();
+window.ccInfo = (() => { // P8 + STATS (gfxfps round 3)
+  const base = () => ({ calls: renderer.info.render.calls, tris: renderer.info.render.triangles, ratio: adaptive.current });
+  base.stats = makeStatsProbe({ THREE, renderer, scene, adaptive });
+  return base;
+})();
 scene.background = new THREE.Color(0xa9c6e2);
 scene.fog = new THREE.Fog(0xa9c6e2, 70, 260); // F5: warmer haze, slightly nearer start
 
@@ -3125,14 +3411,13 @@ const skyDome = (() => { // F2: gradient sky dome; follows the camera so the hor
 })();
 
 const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 270); // P6: was 600; fog saturates at 260
+scene.add(buildClouds(THREE, camera));
 
 const hemi = new THREE.HemisphereLight(0xbdd8f2, 0x77684a, 0.85); // F1: cooler sky, warm ground bounce
 scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xffdfae, 1.55); // F1: warmer late-afternoon sun
 sun.position.set(60, 100, 40);
 scene.add(sun);
-
-// ---- toast + fps -----------------------------------------------------------
 const elFps = document.getElementById('hud-fps');
 const elToast = document.getElementById('toast');
 let toastTimer = 0;
@@ -3142,10 +3427,6 @@ function notify(msg) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { elToast.style.opacity = '0'; }, 2200);
 }
-
-// ---- module wiring (order matters: map -> controls -> actors -> jobs) ------
-// map v3 Kenney assets ride as ONE pack of .b64 chunks (GitHub's web UI rejects binary
-// uploads, and 46 separate chunk-sets would mean 50 editor commits; the pack is 20).
 async function loadAssetPack(prefix) {
   const parts = [];
   for (let i = 0; ; i++) {
@@ -3166,8 +3447,6 @@ async function loadAssetPack(prefix) {
   }
   return blobs;
 }
-// two packs: the big Kenney set (20 chunks) and Mohamed's props (1 chunk), kept
-// separate so adding props did not mean re-uploading the whole 4.8 MB Kenney pack
 const assetBlobs = Object.assign({},
   await loadAssetPack('assets/models-pack.b64'),
   await loadAssetPack('assets/props-pack.b64'));
@@ -3194,8 +3473,6 @@ const controls = createControls({
   container: document.getElementById('controls-root'),
   onInteract: () => { if (!paused) actors.interact(); },
 });
-
-// vehicle variety (builder: vehicles v001, wired Nov 20): parked spawns, verified off-road/unblocked
 const VEHICLE_SPAWNS = {
   van:     { x: -13,  z: -52, heading: 0 },  // by Solana Depot, downtown
   pickup:  { x: -51,  z: 166, heading: 0 },  // Southside street shoulder
@@ -3210,8 +3487,6 @@ const actors = createActors({
   onModeChange: (d) => controls.setMode(d),
   vehicleTypes: VEHICLE_TYPES.map((t) => ({ ...t, spawn: VEHICLE_SPAWNS[t.key] })),
 });
-
-// taxi routes: coordinator pairs map-provided road-safe stops into routes
 const stops = map.taxiStops;
 const routes = [];
 for (let i = 0; i < stops.length; i++) {
@@ -3224,7 +3499,6 @@ for (let i = 0; i < stops.length; i++) {
 }
 
 let taxiJob = null, deliveryJob = null, pizzaJob = null;
-// one saved balance: taxi owns the wallet, side jobs pay into it via deposit()
 const jobsFacade = {
   serialize() {
     const t = taxiJob.serialize();
@@ -3236,14 +3510,11 @@ const jobsFacade = {
 const save = createSave({ getActors: () => actors, getJobs: () => jobsFacade });
 const loaded = save.load();
 const loadedJobs = loaded && loaded.jobs ? loaded.jobs : null;
-// v1 saves stored the taxi blob directly; v2 added delivery; v3 adds pizza
 const taxiInit = !loadedJobs ? null
   : loadedJobs.version === 1 ? loadedJobs
   : { version: 1, balance: loadedJobs.balance, completed: loadedJobs.completed, routeIndex: loadedJobs.routeIndex };
 const deliveryInit = loadedJobs && loadedJobs.version >= 2 && loadedJobs.delivery ? loadedJobs.delivery : null;
 const pizzaInit = loadedJobs && loadedJobs.version >= 3 && loadedJobs.pizza ? loadedJobs.pizza : null;
-
-// world marker: coordinator renders it from job snapshots (builder 5 contract)
 let marker = null, deliveryMarker = null, pizzaMarker = null;
 function syncPizzaMarker(snap) {
   const target = snap.target;
@@ -3307,9 +3578,6 @@ taxiJob = createTaxiJob({
   onChange: (snap) => { syncMarker(snap); save.persist(); },
   initialState: taxiInit,
 });
-
-// parcel delivery: depot at the downtown stop, drops at the other road-safe stops.
-// on foot or any vehicle; pays into the shared taxi wallet
 const depotStop = stops[1]; // Downtown Solana
 const deliveryJobRef = createDeliveryJob({
   depot: { x: depotStop.x, z: depotStop.z, name: 'Solana Depot' },
@@ -3322,9 +3590,6 @@ const deliveryJobRef = createDeliveryJob({
   initialState: deliveryInit,
 });
 deliveryJob = deliveryJobRef;
-
-// pizza delivery: the Palm Court stop doubles as the pizzeria; timed runs to the
-// other stops, full pay only before the timer. Same courier rules as parcel delivery
 const pizzaJobRef = createPizzaJob({
   shop: { x: stops[2].x, z: stops[2].z, name: 'Palm Court Pizzeria' },
   drops: stops.filter((s) => s !== stops[2]).map((s) => ({ x: s.x, z: s.z, name: s.name })),
@@ -3352,8 +3617,6 @@ syncMarker(taxiJob.snapshot());
 syncDeliveryMarker(deliveryJob.snapshot());
 syncPizzaMarker(pizzaJob.snapshot());
 phone.render();
-
-// ---- camera follow ----------------------------------------------------------
 const camPos = new THREE.Vector3();
 const camTarget = new THREE.Vector3();
 function followCamera(dt) {
@@ -3366,8 +3629,6 @@ function followCamera(dt) {
   camTarget.set(t.x + fx * 6, (t.y || 0) + 1.5, t.z + fz * 6);
   camera.lookAt(camTarget);
 }
-
-// ---- loop -------------------------------------------------------------------
 let last = performance.now();
 let fpsAcc = 0, fpsN = 0, fpsShown = 0;
 let lastHud = ''; // P7
@@ -3406,16 +3667,12 @@ window.addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
-
-// GitHub's web UI can't process these binaries, so the GLBs are committed as .b64 text;
-// decode to blob URLs and hand builder 7's loader a subclass that maps the plain paths.
 async function glbURL(path) {
   let r = await fetch(path + '.b64');
   let b64 = '';
   if (r.ok) {
     b64 = await r.text();
   } else {
-    // big files are committed as numbered parts (240 KB each, GitHub editor limit)
     for (let i = 0; ; i++) {
       const part = await fetch(path + '.b64.0' + i);
       if (!part.ok) { if (i === 0) return path; break; } // a real GLB committed later wins automatically
@@ -3435,8 +3692,6 @@ class RepoGLTFLoader extends GLTFLoader {
     return super.loadAsync(modelBlobs[url] || url, onProgress);
   }
 }
-
-// load the CC0 models before hiding the loader (builder 7 v007); report failures, don't fall back silently
 try {
   await actors.loadModels({ GLTFLoader: RepoGLTFLoader, baseURL: './models/' });
 } catch (err) {
