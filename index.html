@@ -346,6 +346,23 @@ function createMap({ THREE, scene, GLTFLoader }) {
     { pts: [[200,208],[360,208]], w: 6 }, // A2 E-W behind Tower row 1 (1 m clear of pads + H200 edge)
     { pts: [[200,330],[360,330]], w: 6 }, // A3 E-W behind the Office row (3 m clear of pads)
   ];
+  const TEARDROPS = []; // v25 (round 22): turning loops at the dead-end stubs - asphalt + isRoadAt only, never exported in roadPaths
+  const teardrop = (tx, ty, ux, uy, r, w, lead = 0) => { // loop attaches at tip + u*lead (lead = straight extension first); circle centre attach + u*r
+    const ax = tx + ux * lead, ay = ty + uy * lead, cx = ax + ux * r, cy = ay + uy * r, a0 = Math.atan2(ay - cy, ax - cx);
+    const pts = [[tx, ty]];
+    if (lead) pts.push([ax, ay]);
+    for (let k = 1; k <= 8; k++) pts.push([cx + r * Math.cos(a0 + k * Math.PI / 4), cy + r * Math.sin(a0 + k * Math.PI / 4)]);
+    TEARDROPS.push({ pts, w });
+  };
+  teardrop(200, 480, 0, 1, 5.0, 8); // Harborview Ave south stub (asphalt stays 1.5 m clear of H500's north edge)
+  teardrop(280, 480, 0, 1, 5.0, 8); // Solana Ave south stub
+  teardrop(440, 480, 0, 1, 5.0, 8); // Coral Ave south stub
+  teardrop(245, 520, 0, 1, 7, 7); // Heron St south tip
+  teardrop(310, 520, 0, 1, 7, 7); // Tern St south tip
+  teardrop(375, 520, 0, 1, 7, 7); // Gull St south tip
+  teardrop(560, 360, 1, 0, 5.5, 8); // Marlin St east stub
+  teardrop(560, 440, 1, 0, 5.5, 8); // Sandpiper St east stub
+  teardrop(440, 500, 1, 0, 7, 7, 10); // Southshore Rd east end (10 m extension first: the Coral stub tip is only 20 m north; a tip-attached loop would overlap it)
   const ROAD_NAMES = [ // v22: original invented street names for the future HUD (no real GTA names)
     'Pelican Bay Promenade', 'Harborview Avenue', 'Solana Avenue', 'Cordova Avenue', 'Coral Avenue',
     'Palm Court Ramp', 'Palm Drive', 'Seabreeze Street', 'Marlin Street', 'Sandpiper Street',
@@ -583,6 +600,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
   }
   for (const r of ROADS) strip(r, matRoad, r.w / 2, 0.04, 8, 0, 0);
   for (const a of ALLEYS) strip(a, matRoad, a.w / 2, 0.04, 8, 0, 0); // v9: alley asphalt (no dashes)
+  for (const t of TEARDROPS) strip(t, matRoad, t.w / 2, 0.04, 8, 0, 0); // v25: turning-loop asphalt (no dashes)
   strip(HWY, matHwy, HWY.w / 2, 0.05, 8, 0, 0);
   for (const d of DRIVES) strip(d, matDrive, d.w / 2, 0.045, 4, 0, 0);
   for (const r of ROADS) strip(r, matLine, 0.2, 0.08, 8, 3, 12, r === ROADS[0] ? medianZones : breakZones); // v8 junction breaks + v10 median stretch
@@ -1386,7 +1404,16 @@ function createMap({ THREE, scene, GLTFLoader }) {
         freeze(inst);
       });
     }
-    for (const [f, x, z, rot, h] of PROPS) placeProp(f, x, z, rot, h);
+    {
+      const byFile = {};
+      for (const [f, x, z, rot, h] of PROPS) (byFile[f] = byFile[f] || []).push([x, z, rot, h]);
+      for (const f of Object.keys(byFile)) {
+        propProto(f).then((proto) => {
+          if (!proto) return; // missing GLB: skip silently, exactly like the clone path
+          for (const im of buildInstancedProps(THREE, proto, byFile[f], terrainH, scene)) freeze(im);
+        });
+      }
+    }
     const PROPS2 = [
       ['props/palm', -178, -180, 0, 7], ['props/palm', -178, -140, 1.2, 6.5], ['props/palm', -178, -100, 2.1, 7],
       ['props/palm', -178, -60, 0.6, 6], ['props/palm', -178, 20, 1.7, 7], ['props/palm', -178, 60, 2.9, 6.5],
@@ -1450,6 +1477,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
     for (const r of ROADS) if (roadHit(r, x, z)) return true;
     for (const d of DRIVES) if (roadHit(d, x, z)) return true;
     for (const a of ALLEYS) if (roadHit(a, x, z)) return true; // v9 alleys
+    for (const t of TEARDROPS) if (roadHit(t, x, z)) return true; // v25 turning loops
     for (const p of PARK_W) if (x >= p.minX && x <= p.maxX && z >= p.minZ && z <= p.maxZ) return true; // v9 lots
     for (const t of TURN_W) if (x >= t.minX && x <= t.maxX && z >= t.minZ && z <= t.maxZ) return true; // v11 turnout
     for (const b of LAYBY_W) if (x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ) return true; // v13 lay-bys
@@ -1473,25 +1501,47 @@ function createMap({ THREE, scene, GLTFLoader }) {
     isBlocked, blockedAt: isBlocked,
     isRoadAt, taxiStops,
     starterHome: { x: lw(505), z: lz(309), name: 'Palm Court Bungalow' },
-    roadPaths: ROADS.map((r, i) => (r.cls ? { pts: r.pts, w: r.w, cls: r.cls, name: ROAD_NAMES[i] } : { pts: r.pts, w: r.w, name: ROAD_NAMES[i] })) // v22: +name
-      .concat(ALLEYS.map((r, i) => ({ pts: r.pts, w: r.w, cls: 'alley', name: 'Service Alley ' + (i + 1) }))) // v9: alleys carry the class
-      .map((r) => ({ ...r, limit: r.cls === 'alley' ? 20 : r.w >= 10 ? 60 : r.w === 8 ? 50 : r.w === 7 ? 40 : 30 })), // v21: km/h
+    roadPaths: (() => {
+      const all = ROADS.concat(ALLEYS);
+      const segDist = (px, py, ax, ay, bx, by) => {
+        const dx = bx - ax, dy = by - ay;
+        const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)));
+        return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+      };
+      const endConnected = (i, p, w) =>
+        junctions.some((nd) => Math.hypot(nd.x - p[0], nd.y - p[1]) < nd.maxHalf + w / 2 + 1.5) ||
+        all.some((r, ri) => ri !== i && r.pts.slice(0, -1).some((q, k) =>
+          segDist(p[0], p[1], q[0], q[1], r.pts[k + 1][0], r.pts[k + 1][1]) <= w / 2 + r.w / 2 - 0.5));
+      return ROADS.map((r, i) => (r.cls ? { pts: r.pts, w: r.w, cls: r.cls, name: ROAD_NAMES[i] } : { pts: r.pts, w: r.w, name: ROAD_NAMES[i] })) // v22: +name
+        .concat(ALLEYS.map((r, i) => ({ pts: r.pts, w: r.w, cls: 'alley', name: 'Service Alley ' + (i + 1) }))) // v9: alleys carry the class
+        .map((r) => ({ ...r, limit: r.cls === 'alley' ? 20 : r.w >= 10 ? 60 : r.w === 8 ? 50 : r.w === 7 ? 40 : 30 })) // v21: km/h
+        .map((r, i) => ({ ...r, through: endConnected(i, r.pts[0], r.w) && endConnected(i, r.pts[r.pts.length - 1], r.w) })); // v24
+    })(),
     parkingLots, // v9: [{name,x,z,w,h,heading,layout,bays}] world coords, axis-aligned (heading 0),
     coastal, // v10: divided-stretch data (median rects world, guardrail, gantry) for tests/vehicles,
     turnout, // v11: Hillcrest viewpoint turnout { layout, w, h, mouth, barrier },
     laybys, // v13: bus lay-by bays { layout, w, h, street, stop },
     hillBenches: HILL_BENCHES.map(([nm, x0, y0, x1, y1], i) => ({ name: nm, layout: [(x0 + x1) / 2, (y0 + y1) / 2], w: x1 - x0, h: y1 - y0, padY: HILL_T[i].padY })), // v14
     hillsideSign, // v17: LOS SANTOS hillside letter row (layout data; mesh 'hillsideSign')
-    junctions: junctions.map((nd) => { // hwy=true: dash-break only (highway + v9 alley junctions)
+    junctions: (() => { // hwy=true: dash-break only (highway + v9 alley junctions)
+      const ALLWAY_PAINTED = new Set(['248,280', '280,248', '280,455', '360,455', '423,280']);
+      return junctions.map((nd) => {
       const maxW = Math.max(...nd.arms.map((a) => a.w));
       const hwy = nd.hwy || nd.base === false;
       const allEq = nd.arms.every((a) => a.w === maxW); // v22: width-tied junction
-      const control = hwy ? 'none' : (allEq && nd.arms.length >= 3 ? 'all-way' : 'priority');
+      const paintedAllWay = ALLWAY_PAINTED.has(Math.round(nd.x * 10) / 10 + ',' + Math.round(nd.y * 10) / 10);
+      const control = hwy ? 'none' : ((allEq && nd.arms.length >= 3) || paintedAllWay ? 'all-way' : 'priority');
       const priorityArm = control === 'priority' ? nd.arms.findIndex((a) => a.w === maxW) : null;
       const yields = control === 'priority' ? nd.arms.map((a, i) => (a.w < maxW ? i : -1)).filter((i) => i >= 0) : [];
       return { x: nd.x, y: nd.y, maxHalf: nd.maxHalf, hwy, arms: nd.arms.map((a) => [a.dx, a.dy, a.w]),
-        priorityArm, yields, control };
-    }),
+        priorityArm, yields, control,
+        approaches: nd.arms.map((a, i) => ({ // v24 (round 20): per-arm approach data for traffic AI
+          heading: Math.atan2(-a.dy, -a.dx), // incoming travel direction, layout frame (y south), radians
+          stopLine: hwy ? null : [Math.round((nd.x + a.dx * (nd.maxHalf + 0.9)) * 10) / 10, Math.round((nd.y + a.dy * (nd.maxHalf + 0.9)) * 10) / 10],
+          giveWay: control === 'all-way' ? true : yields.includes(i),
+        })) };
+      });
+    })(),
     markings,
     addBlock(minX, minZ, maxX, maxZ) { blocks.push({ minX, minZ, maxX, maxZ }); },
     update(dt) {},
@@ -2695,7 +2745,66 @@ function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onMode
   for(const v of vehicles){const s=vehs[v.key];if(s)for(const k of['x','z','yaw'])v[k]=s[k];v.speed=0;v.lean=0;}
   driving=data.driving===true;driveV=driving?vehicles.find(v=>v.key===vehKey):null;
   sync();onModeChange(driving);return true;}
- async function loadModels({GLTFLoader,baseURL='./models/'}={}){if(!GLTFLoader)throw new Error('GLTFLoader is required');const loader=new GLTFLoader();const [human,taxi]=await Promise.all([loader.loadAsync(baseURL+'player-vest-cc0.glb'),loader.loadAsync(baseURL+'taxi.glb')]);if(disposed)return false;for(const o of [...pm.children])pm.remove(o);for(const o of [...cm.children])cm.remove(o);human.scene.updateMatrixWorld(true);human.scene.traverse(o=>{if(o.isSkinnedMesh)o.skeleton.update();});const hb=new T.Box3().setFromObject(human.scene,true),hs=hb.getSize(new T.Vector3());human.scene.scale.setScalar(1.9/hs.y);human.scene.position.y=-hb.min.y*human.scene.scale.x;human.scene.rotation.y=Math.PI;pm.add(human.scene);const tb=new T.Box3().setFromObject(taxi.scene),ts=tb.getSize(new T.Vector3());const scale=3.8/ts.z;taxi.scene.scale.setScalar(scale);taxi.scene.rotation.y=Math.PI;taxi.scene.position.y=-tb.min.y*scale;cm.add(taxi.scene);{const tv=vehicles.find(v=>v.key==='taxi');if(tv){tv.parts=cm.children.slice();tv.shell=buildVehShell(T,cm,shellMat);cm.add(tv.shell);}} human.scene.traverse(o=>{if(o.isMesh){o.frustumCulled=false;geometries.push(o.geometry);}});taxi.scene.traverse(o=>{if(o.isMesh)geometries.push(o.geometry);});mixer=new T.AnimationMixer(human.scene);walkAction=mixer.clipAction(human.animations.find(a=>a.name==='Walk'));idleAction=mixer.clipAction(human.animations.find(a=>a.name==='Idle'));walkAction.play();idleAction.play();walkAction.enabled=false;idleAction.enabled=false;loadedModels=true;captureBones();sync();return true;}
+const SKIN_MERGE = true;
+function mergePlayerSkins(T, root) {
+  const parts = [];
+  root.traverse((o) => { if (o.isSkinnedMesh) parts.push(o); });
+  if (parts.length < 2) return false;
+  const m0 = parts[0].material, s0 = parts[0].skeleton, b0 = parts[0].bindMatrix.elements;
+  const sameMat = (m) => !Array.isArray(m) && m.type === m0.type && (m.map || null) === (m0.map || null) &&
+    (m.alphaMap || null) === (m0.alphaMap || null) && m.side === m0.side && m.transparent === m0.transparent &&
+    m.opacity === m0.opacity && m.roughness === m0.roughness && m.metalness === m0.metalness &&
+    (m.emissive ? m.emissive.getHex() : 0) === (m0.emissive ? m0.emissive.getHex() : 0);
+  const sameBones = (s) => s.bones.length === s0.bones.length && s.bones.every((b, i) => b === s0.bones[i]);
+  const sameBind = (o) => o.bindMatrix.elements.every((v, i) => Math.abs(v - b0[i]) < 1e-6);
+  const ATTRS = ['position', 'normal', 'uv', 'skinIndex', 'skinWeight'];
+  const sameAttrs = (g) => ATTRS.every((a) => !!g.attributes[a] === !!parts[0].geometry.attributes[a]) &&
+    !g.attributes.color && !!g.index;
+  if (!parts.every((o) => sameMat(o.material) && sameBones(o.skeleton) && sameBind(o) && sameAttrs(o.geometry))) return false;
+  const C = new T.Color();
+  let nv = 0, ni = 0;
+  for (const o of parts) { nv += o.geometry.attributes.position.count; ni += o.geometry.index.count; }
+  const posA = new T.BufferAttribute(new Float32Array(nv * 3), 3);
+  const norA = new T.BufferAttribute(new Float32Array(nv * 3), 3);
+  const uvA = new T.BufferAttribute(new Float32Array(nv * 2), 2);
+  const jiA = new T.BufferAttribute(new Uint16Array(nv * 4), 4);
+  const wtA = new T.BufferAttribute(new Float32Array(nv * 4), 4);
+  const colA = new T.BufferAttribute(new Float32Array(nv * 3), 3);
+  const idx = new Uint32Array(ni);
+  let vo = 0, io = 0;
+  for (const o of parts) {
+    const g = o.geometry, n = g.attributes.position.count;
+    posA.array.set(g.attributes.position.array, vo * 3);
+    norA.array.set(g.attributes.normal.array, vo * 3);
+    uvA.array.set(g.attributes.uv.array, vo * 2);
+    wtA.array.set(g.attributes.skinWeight.array, vo * 4);
+    const ji = g.attributes.skinIndex.array;
+    for (let i = 0; i < n * 4; i++) jiA.array[vo * 4 + i] = ji[i]; // widen Uint8 -> Uint16 if needed, values unchanged
+    C.copy(o.material.color); // runtime working-space colour -> vertex colour; white base keeps shader math identical
+    for (let i = 0; i < n; i++) { colA.array[(vo + i) * 3] = C.r; colA.array[(vo + i) * 3 + 1] = C.g; colA.array[(vo + i) * 3 + 2] = C.b; }
+    const gi = g.index.array;
+    for (let i = 0; i < gi.length; i++) idx[io + i] = gi[i] + vo;
+    vo += n; io += gi.length;
+  }
+  const geo = new T.BufferGeometry();
+  geo.setAttribute('position', posA); geo.setAttribute('normal', norA); geo.setAttribute('uv', uvA);
+  geo.setAttribute('skinIndex', jiA); geo.setAttribute('skinWeight', wtA); geo.setAttribute('color', colA);
+  geo.setIndex(new T.BufferAttribute(idx, 1));
+  const mat = m0.clone();
+  mat.color.set(0xffffff); mat.vertexColors = true; mat.needsUpdate = true;
+  const merged = new T.SkinnedMesh(geo, mat);
+  merged.name = 'player:skinmerge';
+  const parent0 = parts[0].parent, groups = new Set(parts.map((o) => o.parent));
+  const bind0 = parts[0].bindMatrix.clone();
+  for (const o of parts) o.removeFromParent();
+  for (const g of groups) if (g !== parent0 && g.children.length === 0) g.removeFromParent();
+  parent0.add(merged);
+  merged.bind(s0, bind0); // same skeleton, same bind matrix, default 'attached' mode - same as GLTFLoader
+  return true;
+}
+async function loadModels({GLTFLoader,baseURL='./models/'}={}){if(!GLTFLoader)throw new Error('GLTFLoader is required');const loader=new GLTFLoader();const [human,taxi]=await Promise.all([loader.loadAsync(baseURL+'player-vest-cc0.glb'),loader.loadAsync(baseURL+'taxi.glb')]);if(disposed)return false;for(const o of [...pm.children])pm.remove(o);for(const o of [...cm.children])cm.remove(o);human.scene.updateMatrixWorld(true);human.scene.traverse(o=>{if(o.isSkinnedMesh)o.skeleton.update();});const hb=new T.Box3().setFromObject(human.scene,true),hs=hb.getSize(new T.Vector3());human.scene.scale.setScalar(1.9/hs.y);human.scene.position.y=-hb.min.y*human.scene.scale.x;human.scene.rotation.y=Math.PI;pm.add(human.scene);
+if(SKIN_MERGE)mergePlayerSkins(T,human.scene); // PLAYER-SKIN-MERGE
+const tb=new T.Box3().setFromObject(taxi.scene),ts=tb.getSize(new T.Vector3());const scale=3.8/ts.z;taxi.scene.scale.setScalar(scale);taxi.scene.rotation.y=Math.PI;taxi.scene.position.y=-tb.min.y*scale;cm.add(taxi.scene);{const tv=vehicles.find(v=>v.key==='taxi');if(tv){tv.parts=cm.children.slice();tv.shell=buildVehShell(T,cm,shellMat);cm.add(tv.shell);}} human.scene.traverse(o=>{if(o.isMesh){o.frustumCulled=false;geometries.push(o.geometry);}});taxi.scene.traverse(o=>{if(o.isMesh)geometries.push(o.geometry);});mixer=new T.AnimationMixer(human.scene);walkAction=mixer.clipAction(human.animations.find(a=>a.name==='Walk'));idleAction=mixer.clipAction(human.animations.find(a=>a.name==='Idle'));walkAction.play();idleAction.play();walkAction.enabled=false;idleAction.enabled=false;loadedModels=true;captureBones();sync();return true;}
  sync();return{player,car,sedan,bike,vehicles,update,interact,loadModels,get modelsLoaded(){return loadedModels;},snapshot,restore,get driving(){return driving;},get drivingVehicle(){return driveV?driveV.key:null;},get current(){return driveV||car;},get cameraTarget(){return driving&&driveV?driveV:player;},dispose(){disposed=true;scene.remove(pm,cm,sm,bm);geometries.forEach(g=>g.dispose());Object.values(mats).forEach(m=>m.dispose());}};
 }
 
@@ -3131,9 +3240,8 @@ function createProps({ THREE, scene, map }) {
     return { m, g };
   }
 
-  function tUmbrellaCluster() { // round 6: beach umbrella + cooler (towel stamped separately)
-    const m = Acc(), g = Acc();
-    const canvas = ['#e05a4e', '#4f7dc9', '#e8c94f', '#5aa66b'][Math.floor(Math.random() * 4)];
+  function tUmbrellaCluster(canvas) { // round 6: beach umbrella + cooler (towel stamped separately)
+    const m = Acc(), g = Acc(); // round 13: canvas colour is passed in (placement freeze, was per-load random)
     addTo(m, new THREE.CylinderGeometry(0.035, 0.045, 1.9, 6), '#d8d4c8', 0, 0.95, 0);       // pole
     addTo(m, new THREE.ConeGeometry(1.15, 0.5, 8), canvas, 0, 1.95, 0);                     // canopy
     addTo(m, new THREE.SphereGeometry(0.06, 6, 5), '#d8d4c8', 0, 2.24, 0);                  // finial
@@ -3141,9 +3249,8 @@ function createProps({ THREE, scene, map }) {
     addTo(m, new THREE.BoxGeometry(0.57, 0.08, 0.38), '#4f7dc9', 0.85, 0.38, 0.3);          // cooler lid
     return { m, g };
   }
-  function tTowel() { // round 6: beach towel (recorded as 'bench' so idleSpots wiring carries it)
-    const m = Acc(), g = Acc();
-    const cloth = ['#e8c94f', '#e05a4e', '#5aa6a6', '#d8d4c8'][Math.floor(Math.random() * 4)];
+  function tTowel(cloth) { // round 6: beach towel (recorded as 'bench' so idleSpots wiring carries it)
+    const m = Acc(), g = Acc(); // round 13: cloth colour is passed in (placement freeze, was per-load random)
     addTo(m, new THREE.BoxGeometry(0.85, 0.04, 1.8), cloth, 0, 0.02, 0);                    // towel
     addTo(m, new THREE.CylinderGeometry(0.09, 0.09, 0.8, 6), '#e8e4d0', 0, 0.07, -0.75, 0, 0, Math.PI / 2); // rolled end
     return { m, g };
@@ -3192,7 +3299,10 @@ function createProps({ THREE, scene, map }) {
     lamp: tLamppost(), bench: tBench(), bin: tBin(), hydrant: tHydrant(),
     shelter: tShelter(), signRed: tSign(P.signRed), signYellow: tSign(P.signYellow),
     mailbox: tMailbox(), planter: tPlanter(), meter: tParkingMeter(), newsStand: tNewsStand(),
-    railing: tRailing(), umbrella: tUmbrellaCluster(), towel: tTowel(),
+    railing: tRailing(),
+    umbrellaA: tUmbrellaCluster('#e05a4e'), umbrellaB: tUmbrellaCluster('#4f7dc9'), // round 13 freeze:
+    umbrellaC: tUmbrellaCluster('#e8c94f'), umbrellaD: tUmbrellaCluster('#5aa66b'), // deterministic variants
+    towelA: tTowel('#e8c94f'), towelB: tTowel('#e05a4e'), towelC: tTowel('#5aa6a6'), towelD: tTowel('#d8d4c8'),
     cafeTable: tCafeTable(), cafeChair: tCafeChair(), ashtray: tStandingAshtray(),
     busStop: tBusStopSign(), entranceSign: tEntranceSign(),
   };
@@ -3214,6 +3324,8 @@ function createProps({ THREE, scene, map }) {
   }
   const world = Acc(), glow = Acc();
   const placements = [];
+  const det01 = (x, z) => { const h = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453; return h - Math.floor(h); };
+  const detYaw = (x, z) => det01(x, z) * Math.PI * 2;
   function put(typeKey, x, z, yaw, r, spacing, recordKey) {
     const y = ground(x, z);
     stamp(world, TYPES[typeKey].m, x, y, z, yaw);
@@ -3318,14 +3430,14 @@ function createProps({ THREE, scene, map }) {
       const side = (Math.floor(s / BIN_EVERY) % 2 === 0) ? 1 : -1;
       const x = p.x + -p.uz * side * (h + 1.1), z = p.z + p.ux * side * (h + 1.1);
       if (!free(x, z, 0.35, 1.5)) continue;
-      put('bin', x, z, Math.random() * Math.PI * 2, 0.35, 1.5);
+      put('bin', x, z, detYaw(x, z), 0.35, 1.5);
     }
     if (road.w >= 8 && road.len > 200) {
       for (let s = 90; s < road.len - 10; s += HYD_EVERY) {
         const p = pointAt(road, s);
         const x = p.x + -p.uz * (h + 1.0), z = p.z + p.ux * (h + 1.0);
         if (!free(x, z, 0.3, 2)) continue;
-        put('hydrant', x, z, Math.random() * Math.PI * 2, 0.3, 2);
+        put('hydrant', x, z, detYaw(x, z), 0.3, 2);
       }
     }
     if (road.w >= 8 && road.len > 250 && sheltersPlaced < 5) {
@@ -3389,7 +3501,7 @@ function createProps({ THREE, scene, map }) {
               for (const perp of [0, 2.2, -2.2]) {
                 const x = sh.x + ax * sgn * d + -az * perp, z = sh.z + az * sgn * d + ax * perp;
                 if (!free(x, z, 0.35, 2.5)) continue;
-                put('bin', x, z, Math.random() * Math.PI * 2, 0.35, 2.5);
+                put('bin', x, z, detYaw(x, z), 0.35, 2.5);
                 break outerBin;
               }
             }
@@ -3429,7 +3541,7 @@ function createProps({ THREE, scene, map }) {
         const side = k % 2 === 0 ? -1 : 1;
         const x = p.x + -p.uz * side * (h + 2.3), z = p.z + p.ux * side * (h + 2.3);
         if (!free(x, z, 0.5, 2.2)) continue;
-        put('planter', x, z, Math.random() * Math.PI * 2, 0.5, 2.2);
+        put('planter', x, z, detYaw(x, z), 0.5, 2.2);
       }
     }
     if (road.w >= 8 && road.len > 200 && JUNCTIONS_PER_ROAD[ri] >= 3) {
@@ -3493,11 +3605,11 @@ function createProps({ THREE, scene, map }) {
       let near = false;
       for (const q of placed) { if (Math.hypot(q.x - x, q.z - jz) < 4) { near = true; break; } }
       if (near) continue;
-      const yaw = Math.random() * Math.PI * 2;
-      put('umbrella', x, jz, yaw, 1.2, 4);
+      const yaw = detYaw(x, jz); // round 13 freeze (was per-load random): towel offset inherits it
+      put('umbrella' + 'ABCD'[clusters % 4], x, jz, yaw, 1.2, 4, 'umbrella');
       const tx = x + Math.sin(yaw) * 1.6, tz = jz + Math.cos(yaw) * 1.6;
       if (!onPier(tx, tz) && !isRoad(tx, tz) && !isBlk(tx, tz, 0.5) && tx - 0.5 >= WATER_X)
-        put('towel', tx, tz, yaw + Math.PI / 2, 0.5, 1, 'bench');
+        put('towel' + 'ABCD'[clusters % 4], tx, tz, yaw + Math.PI / 2, 0.5, 1, 'bench');
       clusters++;
     }
   }
@@ -3527,7 +3639,7 @@ function createProps({ THREE, scene, map }) {
       let near = false;
       for (const q of placed) { if (Math.hypot(q.x - x, q.z - z) < 4) { near = true; break; } }
       if (near) continue;
-      put('cafeTable', x, z, Math.random() * Math.PI * 2, 0.5, 2, 'bench'); // table records as bench -> idleSpots
+      put('cafeTable', x, z, detYaw(x, z), 0.5, 2, 'bench'); // table records as bench -> idleSpots
       let chairs = 0;
       for (const ca of [Math.PI / 2, -Math.PI / 2]) { // chairs flank the table along z
         const cx = x + Math.sin(ca) * 0.85, cz = z + Math.cos(ca) * 0.85;
@@ -3541,7 +3653,7 @@ function createProps({ THREE, scene, map }) {
         const px = x - 2.6, pz = z + 1.8;
         if (!isRoad(px, pz) && !isBlk(px, pz, 0.8) && keepClear3(px, pz)) {
           put('ashtray', px, pz, 0, 0.3, 1);
-          put('planter', px, pz + 1.2, Math.random() * Math.PI * 2, 0.5, 1);
+          put('planter', px, pz + 1.2, detYaw(px, pz + 1.2), 0.5, 1);
           pairs++;
         }
       }
@@ -3646,6 +3758,67 @@ function createProps({ THREE, scene, map }) {
       if (kerbFree(x, z, 0.4)) put('lamp', x, z, faceYaw(x, z, p.x, p.z), 0.4, 3);
     }
   }
+  { // Map v17's hillsideSign band clipped two road-side homes at the foot of the climb; houses v8's
+    const spine = (map.roadPaths || []).find((r) => r.w === 7 && (r.pts || []).length >= 20);
+    if (spine) {
+      const pts = spine.pts.map((p) => [p[0] - 300, p[1] - 300]);
+      const cum = [0];
+      for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+      const hroad = { pts, cum, w: spine.w, len: cum[cum.length - 1] };
+      const distPt2 = (r, px, pz) => { // precise point-to-polyline (same reason as the 9b pack)
+        let m = 1e9;
+        for (let i = 0; i < r.pts.length - 1; i++) {
+          const ax = r.pts[i][0], az = r.pts[i][1], cx = r.pts[i + 1][0], cz = r.pts[i + 1][1];
+          const dx = cx - ax, dz = cz - az, L2 = dx * dx + dz * dz;
+          let t = L2 ? ((px - ax) * dx + (pz - az) * dz) / L2 : 0; t = Math.max(0, Math.min(1, t));
+          m = Math.min(m, Math.hypot(ax + t * dx - px, az + t * dz - pz));
+        }
+        return m;
+      };
+      const kerbFree2 = (x, z, r) => { // free() minus isRoadAt + the precise polyline road check
+        if (!inBounds(x, z) || onPier(x, z)) return false;
+        if (isBlk(x, z, r)) return false;
+        for (const t of KEEPCLEAR) { if ((x - t.x) * (x - t.x) + (z - t.z) * (z - t.z) < 9) return false; }
+        for (const q of placed) { if ((x - q.x) * (x - q.x) + (z - q.z) * (z - q.z) < 1.2 * 1.2) return false; }
+        for (const rr of roads) { if (distPt2(rr, x, z) < rr.w / 2 + 0.7) return false; }
+        return true;
+      };
+      const rev = [];
+      for (let i = 1; i < pts.length - 1; i++) {
+        const ux = pts[i][0] - pts[i - 1][0], uz = pts[i][1] - pts[i - 1][1];
+        const vx = pts[i + 1][0] - pts[i][0], vz = pts[i + 1][1] - pts[i][1];
+        const lu = Math.hypot(ux, uz), lv = Math.hypot(vx, vz);
+        if (lu && lv) rev.push([i, (ux * vx + uz * vz) / (lu * lv)]);
+      }
+      const sharp = rev.filter(([, dot]) => dot < 0.35).sort((a, b) => a[1] - b[1]).slice(0, 2).map(([i]) => i).sort((a, b) => a - b);
+      if (sharp.length === 2) {
+        const westFirst = pts[sharp[0]][0] < pts[sharp[1]][0] ? [cum[sharp[0]], cum[sharp[1]]] : [cum[sharp[1]], cum[sharp[0]]];
+        const signRect = (map.hillsideSign && map.hillsideSign.rect) || null; // world [minX, minZ, maxX, maxZ]
+        const step2 = (westFirst[1] - westFirst[0]) / 12;
+        let done = false;
+        for (let k = 0; k <= 12 && !done; k++) { // walk leg 2 from its west hairpin across the west run
+          const sArc = westFirst[0] + step2 * k;
+          const p = pointAt(hroad, Math.max(4, Math.min(hroad.len - 4, sArc)));
+          for (const sd of [1, -1]) {
+            const hx = p.x + -p.uz * sd * (hroad.w / 2 + 8), hz = p.z + p.ux * sd * (hroad.w / 2 + 8); // house-probe: a live block off this kerb
+            if (signRect && hx > signRect[0] - 1 && hx < signRect[2] + 1 && hz > signRect[1] - 1 && hz < signRect[3] + 1) continue; // the sign band itself, not a home
+            if (!isBlk(hx, hz, 2.0)) continue;
+            let onPad = false; // never on/near a bench pad (hard limit)
+            for (const b of map.hillBenches || []) {
+              if (Math.abs(p.x - (b.layout[0] - 300)) < b.w / 2 + 8 && Math.abs(p.z - (b.layout[1] - 300)) < b.h / 2 + 8) { onPad = true; break; }
+            }
+            if (onPad) continue;
+            const x = p.x + -p.uz * sd * (hroad.w / 2 + 1.05), z = p.z + p.ux * sd * (hroad.w / 2 + 1.05);
+            if (!kerbFree2(x, z, 0.3)) continue;
+            if (placements.some((q) => (q.type === 'mailbox' || q.type === 'lamp') && Math.hypot(q.x - x, q.z - z) < 13)) continue; // already dressed
+            put('mailbox', x, z, faceYaw(x, z, p.x, p.z), 0.3, 1.2);
+            done = true;
+            break;
+          }
+        }
+      }
+    }
+  }
   const matMatte = new THREE.MeshLambertMaterial({ vertexColors: true });
   const matGlow = new THREE.MeshBasicMaterial({ vertexColors: true });
   const PROPS_CHUNK_CELL = 100;
@@ -3685,9 +3858,21 @@ function createProps({ THREE, scene, map }) {
     return first;
   }
   const meshMatte = toMesh(world, matMatte, 'props:matte');
+  let glowTris = 0;
+  if (glow.pos.length) {
+    const gg = new THREE.BufferGeometry();
+    gg.setAttribute('position', new THREE.Float32BufferAttribute(glow.pos, 3));
+    gg.setAttribute('normal', new THREE.Float32BufferAttribute(glow.nor, 3));
+    gg.setAttribute('color', new THREE.Float32BufferAttribute(glow.col, 3));
+    gg.computeBoundingSphere();
+    const gm = new THREE.Mesh(gg, matGlow);
+    gm.name = 'props:glow:all';
+    gm.matrixAutoUpdate = false;
+    scene.add(gm);
+    glowTris = glow.pos.length / 9;
+  }
   const triCount =
-    meshMatte.userData.chunkTris +
-    (glow.pos.length ? toMesh(glow, matGlow, 'props:glow').userData.chunkTris : 0);
+    meshMatte.userData.chunkTris + glowTris;
 
   return {
     update(dt) {}, // fully static; API kept for the brief
