@@ -112,48 +112,6 @@ function mergeProtoParts(THREE, proto) {
   return parts;
 }
 
-function buildBuildingInstances(THREE, proto, entries, lw, lz, groundFn, scene, mergeProtoParts) {
-  const ONE = new THREE.Vector3(1, 1, 1);
-  const up = new THREE.Vector3(0, 1, 0);
-  const matrices = [];
-  for (const { ft, rot } of entries) {
-    proto.rotation.y = rot;
-    proto.position.set(0, 0, 0);
-    proto.scale.copy(ONE);
-    proto.updateMatrixWorld(true);
-    let box = new THREE.Box3().setFromObject(proto);
-    const size = box.getSize(new THREE.Vector3());
-    const sx = (ft.x1 - ft.x0) / size.x, sz = (ft.y1 - ft.y0) / size.z;
-    const sy = Math.min((sx + sz) / 2, (ft.h || 60) / size.y); // fill the lot, cap height
-    proto.scale.set(sx, sy, sz);
-    proto.updateMatrixWorld(true);
-    box = new THREE.Box3().setFromObject(proto);
-    const c = box.getCenter(new THREE.Vector3());
-    const gx = lw((ft.x0 + ft.x1) / 2), gz = lz((ft.y0 + ft.y1) / 2);
-    matrices.push(new THREE.Matrix4().compose(
-      new THREE.Vector3(gx - c.x, groundFn(gx, gz) - 0.6 - box.min.y, gz - c.z), // on its pad, sunk 0.6
-      new THREE.Quaternion().setFromAxisAngle(up, rot),
-      new THREE.Vector3(sx, sy, sz),
-    ));
-  }
-  proto.rotation.y = 0; proto.position.set(0, 0, 0); proto.scale.copy(ONE);
-  proto.updateMatrixWorld(true);
-  const parts = mergeProtoParts(THREE, proto); // passed in: the copy inlined in map.js (round-4 integration)
-  const made = [];
-  for (const { geometry, material } of parts) {
-    const im = new THREE.InstancedMesh(geometry, material, matrices.length);
-    for (let i = 0; i < matrices.length; i++) im.setMatrixAt(i, matrices[i]);
-    im.instanceMatrix.needsUpdate = true;
-    im.computeBoundingBox();
-    im.computeBoundingSphere();
-    im.name = 'inst:' + (proto.name || 'building');
-    im.matrixAutoUpdate = false;
-    im.updateMatrix();
-    if (scene) scene.add(im);
-    made.push(im);
-  }
-  return made;
-}
 function buildInstancedProps(THREE, proto, list, groundFn, scene) {
   const { matrices } = computePropInstances(THREE, proto, list, groundFn);
   const parts = mergeProtoParts(THREE, proto);
@@ -288,6 +246,17 @@ function createMap({ THREE, scene, GLTFLoader }) {
   });
   { const R = { minX: lw(131), maxX: lw(157), minZ: lz(236), maxZ: lz(272) }; // + v12 Beachfront Row
     R.padY = baseH((R.minX + R.maxX) / 2, (R.minZ + R.maxZ) / 2); PARK_T.push(R); }
+  const HILL_BENCHES = [ // [name, x0,y0,x1,y1] layout
+    ['Bench A (legs 1-2, west)', 508,174,548,184],
+    ['Bench F (legs 1-2, east)', 552,166,566,176],
+    ['Bench B (leg 3, east)',    572, 96,586,124],
+    ['Bench E (switchback 1)',   586,178,600,192],
+  ];
+  const HILL_T = HILL_BENCHES.map(([, x0, y0, x1, y1]) => {
+    const R = { minX: lw(x0), maxX: lw(x1), minZ: lz(y0), maxZ: lz(y1) };
+    R.padY = baseH((R.minX + R.maxX) / 2, (R.minZ + R.maxZ) / 2);
+    return R;
+  });
   function terrainH(x, z) { // building pads flatten inside each lot (blended inward): roads keep natural slope
     let h = baseH(x, z);
     for (const L of LOTS) {
@@ -297,6 +266,11 @@ function createMap({ THREE, scene, GLTFLoader }) {
       h = h * (1 - w) + L.padY * w;
     }
     for (const P of PARK_T) { // v13 BUGFIX: full-rect flatten + 1 m apron (Apartment Lot downhill bays sank)
+      const d = Math.min(x - P.minX, P.maxX - x, z - P.minZ, P.maxZ - z);
+      if (d >= 0) { h = P.padY; continue; }
+      if (d > -1) { const w = smooth(1 + d); h = h * (1 - w) + P.padY * w; }
+    }
+    for (const P of HILL_T) { // v14: Hillcrest bench pads flat (buildable, <=9% by construction)
       const d = Math.min(x - P.minX, P.maxX - x, z - P.minZ, P.maxZ - z);
       if (d >= 0) { h = P.padY; continue; }
       if (d > -1) { const w = smooth(1 + d); h = h * (1 - w) + P.padY * w; }
@@ -449,6 +423,36 @@ function createMap({ THREE, scene, GLTFLoader }) {
       }
     }
   });
+  ROADS.forEach((r, i) => {
+    for (let vi = 1; vi < r.pts.length - 1; vi++) {
+      const p = r.pts[vi];
+      for (const o of SURF) {
+        if (o.id === i || o.alley) continue;
+        const { d, dir } = nearSeg(o.r, p);
+        if (d <= o.r.w / 2 - 0.5 && !rawNodes.some((nd) => Math.hypot(nd.x - p[0], nd.y - p[1]) < 20)) {
+          const pa = r.pts[vi - 1], nb = r.pts[vi + 1];
+          const La = Math.hypot(p[0] - pa[0], p[1] - pa[1]), Lb = Math.hypot(nb[0] - p[0], nb[1] - p[1]);
+          const need = Math.max(o.r.w, r.w) / 2 + 1.5, cum = [0];
+          for (let k = 1; k < o.r.pts.length; k++) cum.push(cum[k - 1] + Math.hypot(o.r.pts[k][0] - o.r.pts[k - 1][0], o.r.pts[k][1] - o.r.pts[k - 1][1]));
+          let best = 1e9, sProj = 0;
+          for (let k = 0; k < o.r.pts.length - 1; k++) {
+            const a2 = o.r.pts[k], b2 = o.r.pts[k + 1];
+            const dx2 = b2[0] - a2[0], dy2 = b2[1] - a2[1], L2 = dx2 * dx2 + dy2 * dy2;
+            let t = L2 ? ((p[0] - a2[0]) * dx2 + (p[1] - a2[1]) * dy2) / L2 : 0; t = Math.max(0, Math.min(1, t));
+            const dd = Math.hypot(a2[0] + t * dx2 - p[0], a2[1] + t * dy2 - p[1]);
+            if (dd < best) { best = dd; sProj = cum[k] + t * Math.sqrt(L2); }
+          }
+          const arms = [
+            { dx: (pa[0] - p[0]) / La, dy: (pa[1] - p[1]) / La, w: r.w, hwy: false, rd: i },
+            { dx: (nb[0] - p[0]) / Lb, dy: (nb[1] - p[1]) / Lb, w: r.w, hwy: false, rd: i }];
+          if (sProj >= need) arms.push({ dx: -dir[0], dy: -dir[1], w: o.r.w, hwy: o.hwy, rd: o.id });
+          if (cum[cum.length - 1] - sProj >= need) arms.push({ dx: dir[0], dy: dir[1], w: o.r.w, hwy: o.hwy, rd: o.id });
+          if (arms.length >= 3) addNode(p[0], p[1], arms, true);
+          break;
+        }
+      }
+    }
+  });
   const armOf = (o, dx, dy) => ({ dx, dy, w: o.r.w, hwy: o.hwy, alley: !!o.alley, rd: o.id });
   for (let i = 0; i < SURF.length; i++) for (let j = i + 1; j < SURF.length; j++) {
     const A = SURF[i], B = SURF[j];
@@ -514,10 +518,25 @@ function createMap({ THREE, scene, GLTFLoader }) {
     while (at(s1).y > 150 && s1 > 0) s1 -= 0.5;
     return { at, s0, s1, y0: 84, y1: 150 };
   })();
+  const COASTS = (() => { // arc-length walk of the boardwalk between layout y 505 and 520
+    const pts = ROADS[0].pts, cum = [0];
+    for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+    const at = (s) => {
+      let i = 1; while (i < cum.length - 1 && cum[i] < s) i++;
+      const t = (s - cum[i - 1]) / (cum[i] - cum[i - 1]);
+      return { x: pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t, y: pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t,
+               ux: (pts[i][0] - pts[i - 1][0]) / (cum[i] - cum[i - 1]), uy: (pts[i][1] - pts[i - 1][1]) / (cum[i] - cum[i - 1]) };
+    };
+    let s0 = 0, s1 = cum[cum.length - 1];
+    while (at(s0).y < 505 && s0 < s1) s0 += 0.5;
+    while (at(s1).y > 520 && s1 > 0) s1 -= 0.5;
+    return { at, s0, s1, y0: 505, y1: 520 };
+  })();
   const inJunctionZone = (x, y) => breakZones.some((z) => (x - z.x) * (x - z.x) + (y - z.y) * (y - z.y) < z.rad * z.rad);
   const medianZones = breakZones.slice(); // v10: also suppress centre dashes under the median
   for (let s = COAST.s0; s < COAST.s1; s += 6) { const p = COAST.at(s); medianZones.push({ x: p.x, y: p.y, rad: 2.2 }); }
   for (let s = COASTN.s0; s < COASTN.s1; s += 6) { const p = COASTN.at(s); medianZones.push({ x: p.x, y: p.y, rad: 2.2 }); } // v12 north
+  for (let s = COASTS.s0; s < COASTS.s1; s += 6) { const p = COASTS.at(s); medianZones.push({ x: p.x, y: p.y, rad: 2.2 }); } // v15 south
   const strips = [];
   function strip(r, mat, halfW, off, step, dashLen, dashPitch, zones) { // v8: zones = centre-dash break boxes at junctions
     const qs = [];
@@ -561,7 +580,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
   for (const d of DRIVES) strip(d, matDrive, d.w / 2, 0.045, 4, 0, 0);
   for (const r of ROADS) strip(r, matLine, 0.2, 0.08, 8, 3, 12, r === ROADS[0] ? medianZones : breakZones); // v8 junction breaks + v10 median stretch
   strip(HWY, matHwyLn, 0.2, 0.09, 8, 4, 16, breakZones);
-  const markings = { crosswalks: [], stopLines: 0, kerbs: 0, arrows: 0 }; // crosswalks: layout [x,y] centres
+  const markings = { crosswalks: [], stopLines: 0, kerbs: 0, arrows: 0, kerbRamps: [], tactilePads: [] }; // crosswalks/kerbRamps/tactilePads: layout [x,y] centres (ramps/pads v17)
   const offMark = 0.07; // above the asphalt (0.04-0.05), just under the dashes (0.08)
   const markLine = [], markKerb = [];
   function flatQuad(cx, cy, ux, uy, hl, hw, off) { // layout centre, unit axis u, half-len along u, half-wid across; up-facing (strip winding)
@@ -594,6 +613,9 @@ function createMap({ THREE, scene, GLTFLoader }) {
           P(cxo[0] - ux * 1.2, cxo[1] - uy * 1.2, 0.22), P(cxo[0] + ux * 1.2, cxo[1] + uy * 1.2, 0.22),
           P(cxi[0] + ux * 1.2, cxi[1] + uy * 1.2, 0.05), P(cxi[0] - ux * 1.2, cxi[1] - uy * 1.2, 0.05)));
         markings.kerbs++;
+        markings.kerbRamps.push([bx, by]); // v17: auditable ramp positions
+        if ([[134, 500], [423, 200], [423, 280], [423, 360]].some(([tx, ty]) => Math.abs(nd.x - tx) < 1 && Math.abs(nd.y - ty) < 1))
+          markings.tactilePads.push([bx + nx * sgn * 0.9, by + ny * sgn * 0.9, Math.atan2(uy, ux)]);
       }
       if (a.w === 6 && !a.alley && nd.x >= 190 && nd.x <= 370 && nd.y >= 190 && nd.y <= 370) { // v9 alleys, v11: arrows stay downtown
         const dA = nd.maxHalf + 7.4;
@@ -783,8 +805,11 @@ function createMap({ THREE, scene, GLTFLoader }) {
   }
 
   const blocks = [];
+  let hillsideSign = null; // v17
   const coastal = { dividedY: [COAST.y0, COAST.y1], medianRects: [], guardrail: { count: 0, offset: 4.1, spacing: 4 }, gantry: null,
-    north: { dividedY: [COASTN.y0, COASTN.y1], medianRects: [], guardrail: { count: 0, offset: 4.1, spacing: 4 }, gantry: null } }; // v12
+    north: { dividedY: [COASTN.y0, COASTN.y1], medianRects: [], guardrail: { count: 0, offset: 4.1, spacing: 4 }, gantry: null }, // v12
+    south: { dividedY: [COASTS.y0, COASTS.y1], medianRects: [], guardrail: { count: 0, offset: 4.1, spacing: 4, posts: [] }, gantry: null }, // v15 (+posts v16)
+    southEnd: { bollards: 0, rect: null, sign: null } }; // v16
   {
     const pos = [], norm = [], col = [], idx = [];
     const hex = (h) => [((h >> 16) & 255) / 255, ((h >> 8) & 255) / 255, (h & 255) / 255];
@@ -864,6 +889,41 @@ function createMap({ THREE, scene, GLTFLoader }) {
       box(m.x + m.ux * 0.5, m.y + m.uy * 0.5, th, 0.06, 1.7, 4.55, 5.85, 0x1f6f3c); // sign panel
       coastal.north.gantry = { layout: [m.x, m.y], beamMinY: 4.55, postHalfSpan: 4.3, roadHalfW: ROADS[0].w / 2 };
     }
+    for (let s = COASTS.s0 + 8.5; s < COASTS.s1 - 4; s += 8) { // start clears the H500 junction's south crosswalk; -4 keeps the hedge off the dead end
+      const m = COASTS.at(s);
+      if (inJunctionZone(m.x, m.y)) continue;
+      const b = box(m.x, m.y, Math.atan2(m.uy, m.ux), 3.7, 0.6, 0.04, 0.39, 0x3f7a34);
+      const r = aabbOf(b);
+      blocks.push(r); coastal.south.medianRects.push([r.minX, r.minZ, r.maxX, r.maxZ]); // blocked, like the v10 median
+    }
+    for (let s = COASTS.s0 + 4; s < COASTS.s1; s += 4) { // +4: first post clears the south crosswalk
+      const m = COASTS.at(s);
+      if (inJunctionZone(m.x, m.y)) continue;
+      let nx = m.uy, ny = -m.ux; if (nx > 0) { nx = -nx; ny = -ny; } // west (water side)
+      box(m.x + nx * coastal.south.guardrail.offset, m.y + ny * coastal.south.guardrail.offset,
+        Math.atan2(m.uy, m.ux), 0.075, 0.075, 0.04, 0.79, 0x8a8d90);
+      coastal.south.guardrail.count++;
+      coastal.south.guardrail.posts.push([m.x + nx * coastal.south.guardrail.offset, m.y + ny * coastal.south.guardrail.offset]); // v16: spacing auditable
+    }
+    { // third sign gantry at y ~512 (posts clear of the lanes, beam at vehicle clearance)
+      let s = COASTS.s0; while (COASTS.at(s).y < 512) s += 0.5;
+      const m = COASTS.at(s), th = Math.atan2(m.uy, m.ux);
+      box(m.x + m.uy * 4.3, m.y - m.ux * 4.3, th, 0.15, 0.15, 0.04, 4.95, 0x8a8d90);
+      box(m.x - m.uy * 4.3, m.y + m.ux * 4.3, th, 0.15, 0.15, 0.04, 4.95, 0x8a8d90);
+      box(m.x, m.y, th, 0.2, 4.9, 4.55, 4.95, 0x8a8d90); // beam
+      box(m.x + m.ux * 0.5, m.y + m.uy * 0.5, th, 0.06, 1.7, 4.55, 5.85, 0x1f6f3c); // sign panel
+      coastal.south.gantry = { layout: [m.x, m.y], beamMinY: 4.55, postHalfSpan: 4.3, roadHalfW: ROADS[0].w / 2 };
+    }
+    {
+      for (let k = 0; k < 7; k++) box(130.7 + k * 1.13, 518.7, 0, 0.09, 0.09, 0.04, 0.94, 0xd8c43c); // yellow bollards across the asphalt
+      const r = { minX: lw(130.2), maxX: lw(137.8), minZ: lz(518.3), maxZ: lz(519.1) }; // one shared blocked rect
+      blocks.push(r); coastal.southEnd.rect = [r.minX, r.minZ, r.maxX, r.maxZ];
+      coastal.southEnd.bollards = 7;
+      box(139.0, 516.8, 0, 0.06, 0.06, 0.04, 2.34, 0x8a8d90); // sign post on the land-side kerb
+      box(139.0, 516.8, 0, 0.5, 0.06, 1.74, 2.34, 0xc0272d); // red no-exit panel, faces the lanes
+      coastal.southEnd.sign = { layout: [139.0, 516.8], face: 'no-exit', height: 2.34 };
+    }
+    for (const tp of markings.tactilePads) box(tp[0], tp[1], tp[2], 0.5, 0.3, 0.2, 0.26, 0xd8c43c);
     {
       const b = box(596, 170, 0, 0.15, 5, 0.04, 0.39, 0x9d9a92); // concrete, full pad width
       blocks.push(aabbOf(b));
@@ -877,6 +937,59 @@ function createMap({ THREE, scene, GLTFLoader }) {
     g.setIndex(idx);
     const mesh = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ vertexColors: true }));
     mesh.name = 'coastalFurniture'; scene.add(mesh);
+  }
+  {
+    const pos = [], norm = [], col = [], idx = [];
+    const hex = (h) => [((h >> 16) & 255) / 255, ((h >> 8) & 255) / 255, (h & 255) / 255];
+    let vc = 0;
+    function sbox(cx, cz, hx, hz, y0, y1, h, gy) { // axis-aligned box on explicit ground height
+      const c3 = hex(h);
+      const P = (x, z, y) => [lw(cx + x), gy + y, lz(cz + z)];
+      const F = (corners, n) => {
+        for (const p of corners) { pos.push(...p); norm.push(...n); col.push(...c3); }
+        idx.push(vc, vc + 1, vc + 2, vc, vc + 2, vc + 3); vc += 4;
+      };
+      { const t = [P(-hx, -hz, y1), P(hx, -hz, y1), P(hx, hz, y1), P(-hx, hz, y1)];
+        for (const p of t) { pos.push(...p); norm.push(0, 1, 0); col.push(...c3); }
+        idx.push(vc, vc + 2, vc + 1, vc, vc + 3, vc + 2); vc += 4; }
+      F([P(hx, -hz, y0), P(hx, -hz, y1), P(hx, hz, y1), P(hx, hz, y0)], [1, 0, 0]);
+      F([P(-hx, hz, y0), P(-hx, hz, y1), P(-hx, -hz, y1), P(-hx, -hz, y0)], [-1, 0, 0]);
+      F([P(hx, hz, y0), P(hx, hz, y1), P(-hx, hz, y1), P(-hx, hz, y0)], [0, 0, 1]);
+      F([P(-hx, -hz, y0), P(-hx, -hz, y1), P(hx, -hz, y1), P(hx, -hz, y0)], [0, 0, -1]);
+    }
+    const Y = 212, SW = 0.7, LW = 3.4, LH = 5.0, WHITE = 0xf2f2ee, GREY = 0x8a8d90, CONC = 0x9d9a92;
+    const letterXs = [511, 515.4, 519.8, 525.6, 530, 534.4, 538.8, 543.2, 547.6]; // extra gap after LOS
+    const word = 'LOSSANTOS';
+    word.split('').forEach((ch, li) => {
+      const cx = letterXs[li], gy = terrainH(lw(cx), lz(Y));
+      const vbar = (dx, z0, z1) => sbox(cx + dx, Y, SW / 2, 0.45, z0 - 0.4, z1, WHITE, gy); // strokes embed 0.4
+      const hbar = (dx, z0, w) => sbox(cx + dx, Y, w / 2, 0.45, z0, z0 + SW, WHITE, gy);
+      const bl = (dx, z0, s) => sbox(cx + dx, Y, s / 2, 0.45, z0, z0 + s, WHITE, gy); // square block
+      if (ch === 'L') { vbar(-LW / 2 + SW / 2, 0, LH); hbar(0, 0, LW); }
+      else if (ch === 'O') { vbar(-LW / 2 + SW / 2, 0, LH); vbar(LW / 2 - SW / 2, 0, LH); hbar(0, 0, LW); hbar(0, LH - SW, LW);
+        bl(-LW / 2 + 0.4, SW / 2 + 0.1, 0.8); bl(LW / 2 - 0.4, SW / 2 + 0.1, 0.8); bl(-LW / 2 + 0.4, LH - SW - 0.3, 0.8); bl(LW / 2 - 0.4, LH - SW - 0.3, 0.8); }
+      else if (ch === 'S') { hbar(0, 0, LW); hbar(0, LH / 2 - SW / 2, LW); hbar(0, LH - SW, LW);
+        vbar(-LW / 2 + SW / 2, LH / 2, LH); vbar(LW / 2 - SW / 2, 0, LH / 2);
+        bl(-LW / 2 + 0.35, LH / 2 - SW / 2 + 0.15, 0.7); bl(LW / 2 - 0.35, LH / 2 - SW / 2 + 0.15, 0.7); }
+      else if (ch === 'A') { vbar(-LW / 2 + SW / 2, 0, LH); vbar(LW / 2 - SW / 2, 0, LH); hbar(0, LH - SW, LW); hbar(0, LH / 2 - SW / 2, LW); }
+      else if (ch === 'N') { vbar(-LW / 2 + SW / 2, 0, LH); vbar(LW / 2 - SW / 2, 0, LH);
+        bl(-0.85, 3.3, 0.95); bl(0, 2.5, 0.95); bl(0.85, 1.7, 0.95); }
+      else if (ch === 'T') { hbar(0, LH - SW, LW); vbar(0, 0, LH - SW); }
+      sbox(cx - LW / 4, Y + 0.55, 0.075, 0.075, -0.3, LH - 0.8, GREY, gy); // rear struts
+      sbox(cx + LW / 4, Y + 0.55, 0.075, 0.075, -0.3, LH - 0.8, GREY, gy);
+      sbox(cx, Y, LW / 2 + 0.15, 0.55, -0.2, 0.12, CONC, gy); // concrete plinth
+    });
+    const sr = { minX: lw(509.5), maxX: lw(550.5), minZ: lz(210.5), maxZ: lz(213.5) };
+    blocks.push(sr); // nothing parks inside the sign
+    hillsideSign = { text: 'LOS SANTOS', letters: 9, layout: [511, Y], letterW: LW, letterH: LH, pitch: 4.4,
+      spanX: [letterXs[0] - LW / 2, letterXs[8] + LW / 2], y: Y, rect: [sr.minX, sr.minZ, sr.maxX, sr.maxZ] };
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(norm, 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    g.setIndex(idx);
+    const mesh = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ vertexColors: true }));
+    mesh.name = 'hillsideSign'; scene.add(mesh); // +1 draw, as budgeted
   }
   building('Tower 1', 212, 212, 244, 244, 12, 'tower', 'n', 'pent');
   building('Tower 2', 252, 212, 276, 240, 9,  'tower', 'n', null);
@@ -1068,11 +1181,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
 
   function swapToModels(GL) {
     const loader = new GL();
-    const BLD_INST = {};
-    for (const m of MODELS) if (!m.lod) (BLD_INST[m.f] = BLD_INST[m.f] || []).push(m);
-    for (const f of Object.keys(BLD_INST)) if (BLD_INST[f].length < 2) delete BLD_INST[f];
     for (const m of MODELS) {
-      if (BLD_INST[m.f]) continue; // instanced below, after this loop
       const ft = FOOT[m.k];
       loader.load(MODEL_BASE + m.f + '.glb', (g) => {
         const obj = fitFootprint(lodify(g.scene), ft, m.rot);
@@ -1100,13 +1209,6 @@ function createMap({ THREE, scene, GLTFLoader }) {
           scene.add(obj); freeze(obj);
         }
       }, undefined, () => {}); // load failed: primitive fallback stays
-    }
-    for (const f of Object.keys(BLD_INST)) {
-      loader.load(MODEL_BASE + f + '.glb', (g) => {
-        for (const m of BLD_INST[f]) { const old = S.getObjectByName('bld:' + m.k); if (old) S.remove(old); }
-        const entries = BLD_INST[f].map((m) => ({ ft: FOOT[m.k], rot: m.rot }));
-        for (const im of buildBuildingInstances(THREE, lodify(g.scene), entries, lw, lz, terrainH, scene, mergeProtoParts)) freeze(im);
-      }, undefined, () => {});
     }
     const PROPS = [];
     for (const x of [-100, -20, 60, 140]) for (const z of [-100, -20, 60, 140])
@@ -1143,16 +1245,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
         freeze(inst);
       });
     }
-    {
-      const byFile = {};
-      for (const [f, x, z, rot, h] of PROPS) (byFile[f] = byFile[f] || []).push([x, z, rot, h]);
-      for (const f of Object.keys(byFile)) {
-        propProto(f).then((proto) => { // v25 fix: tested round-5 snippet form (was roadKit.load - undefined here, threw at boot)
-          if (!proto) return;
-          for (const im of buildInstancedProps(THREE, proto, byFile[f], terrainH, scene)) freeze(im);
-        });
-      }
-    }
+    for (const [f, x, z, rot, h] of PROPS) placeProp(f, x, z, rot, h);
     const PROPS2 = [
       ['props/palm', -178, -180, 0, 7], ['props/palm', -178, -140, 1.2, 6.5], ['props/palm', -178, -100, 2.1, 7],
       ['props/palm', -178, -60, 0.6, 6], ['props/palm', -178, 20, 1.7, 7], ['props/palm', -178, 60, 2.9, 6.5],
@@ -1244,7 +1337,9 @@ function createMap({ THREE, scene, GLTFLoader }) {
     parkingLots, // v9: [{name,x,z,w,h,heading,layout,bays}] world coords, axis-aligned (heading 0),
     coastal, // v10: divided-stretch data (median rects world, guardrail, gantry) for tests/vehicles,
     turnout, // v11: Hillcrest viewpoint turnout { layout, w, h, mouth, barrier },
-    laybys, // v13: bus lay-by bays { layout, w, h, street, stop }
+    laybys, // v13: bus lay-by bays { layout, w, h, street, stop },
+    hillBenches: HILL_BENCHES.map(([nm, x0, y0, x1, y1], i) => ({ name: nm, layout: [(x0 + x1) / 2, (y0 + y1) / 2], w: x1 - x0, h: y1 - y0, padY: HILL_T[i].padY })), // v14
+    hillsideSign, // v17: LOS SANTOS hillside letter row (layout data; mesh 'hillsideSign')
     junctions: junctions.map((nd) => ({ x: nd.x, y: nd.y, maxHalf: nd.maxHalf, hwy: nd.hwy || nd.base === false, arms: nd.arms.map((a) => [a.dx, a.dy, a.w]) })), // hwy=true: dash-break only (highway + v9 alley junctions)
     markings,
     addBlock(minX, minZ, maxX, maxZ) { blocks.push({ minX, minZ, maxX, maxZ }); },
@@ -1530,6 +1625,7 @@ function buildParkedCars({ THREE: T, scene, map, count = 32, seed = 20261120, av
   if (sp.player) keepClear.push({ x: sp.player.x, z: sp.player.z, r: 10 });
   if (sp.car) keepClear.push({ x: sp.car.x, z: sp.car.z, r: 11 });      // starter car on its driveway
   if (map.starterHome) keepClear.push({ x: map.starterHome.x, z: map.starterHome.z, r: 15 }); // bungalow + garage + drive mouth
+  const bands = _junctionBands(map); // v009: junction approach-band exclusion (roads builder rule)
   const perRoad = [];
   for (const road of map.roadPaths || []) {
     const pts = road.pts.map(p => [p[0] - CC, p[1] - CC]); // world
@@ -1554,6 +1650,7 @@ function buildParkedCars({ THREE: T, scene, map, count = 32, seed = 20261120, av
           const off = w / 2 + 1.4 + extra;
           const x = sx + nx * off * side, z = sz + nz * off * side;
           const yaw = Math.atan2(ux, -uz) + (side < 0 ? Math.PI : 0); // face along traffic side
+          if (_inJunctionBand(bands, x, z)) continue; // v009: no parking in junction approach bands
           if (parkedCarFits(map, x, z, yaw, keepClear)) { list.push({ x, z, yaw }); placedHere = true; break; }
         }
         if (placedHere) break;
@@ -1579,6 +1676,10 @@ function buildParkedCars({ THREE: T, scene, map, count = 32, seed = 20261120, av
       placed.push(s);
     }
   }
+  for (const h of _hillcrestCars(map, keepClear, 3, placed)) {
+    if (placed.some(p => Math.hypot(p.x - h.x, p.z - h.z) < 9)) continue;
+    placed.push(h);
+  }
   const specials = [];
   const farFromPlaced = (s, hl) => placed.every(p => Math.hypot(p.x - s.x, p.z - s.z) > hl + 3.6)
     && specials.every(p => Math.hypot(p.x - s.x, p.z - s.z) > hl + 3.6);
@@ -1587,19 +1688,56 @@ function buildParkedCars({ THREE: T, scene, map, count = 32, seed = 20261120, av
   if (busSpot) specials.push({ type: 'bus', ...busSpot, hl: 5.6, hw: 1.3 });
   const cruiserSpot = _findSpotsNear(map, keepClear, -52, -52, 70, 2.3, 1.0, 1, farFromPlaced)[0]; // downtown civic core (between the secondary streets)
   if (cruiserSpot) specials.push({ type: 'cruiser', ...cruiserSpot, hl: 2.3, hw: 1.0 });
-  const beachAnchor = placed[1] || { x: -178, z: -11 }; // middle v003 beach spot
-  for (const s of _findSpotsNear(map, keepClear, beachAnchor.x, beachAnchor.z, 40, 1.1, .45, 3, farFromPlaced))
+  const beachAnchor = { x: -178, z: -11 }; // pinned v008 anchor (keeps the mopeds south of the pier root as beach spots move)
+  const offPier = (spot, hl) => farFromPlaced(spot, hl) && !(Math.abs(spot.z) < 14 && spot.x < -160); // v009: pier root stays clear
+  for (const s of _findSpotsNear(map, keepClear, beachAnchor.x, beachAnchor.z, 40, 1.1, .45, 3, offPier))
     specials.push({ type: 'moped', ...s, hl: 1.1, hw: .45 });
   const pierStop = (map.taxiStops || []).find(s => /Pier/i.test(s.name)) || { x: -167.5, z: 0 };
-  const lifeguardSpot = _findSpotsNear(map, keepClear, pierStop.x, pierStop.z, 55, 2.3, 1.0, 1, farFromPlaced)[0];
+  const lifeguardSpot = _findSpotsNear(map, keepClear, pierStop.x, pierStop.z, 55, 2.3, 1.0, 1, offPier)[0];
   if (lifeguardSpot) specials.push({ type: 'lifeguard', ...lifeguardSpot, hl: 2.3, hw: 1.0 });
   const palmStop = (map.taxiStops || []).find(s => /Palm/i.test(s.name)) || { x: 142.5, z: 20 };
   const iceCreamSpot = _findSpotsNear(map, keepClear, palmStop.x, palmStop.z, 70, 2.6, 1.05, 1, farFromPlaced)[0];
   if (iceCreamSpot) specials.push({ type: 'icecream', ...iceCreamSpot, hl: 2.6, hw: 1.05 });
   const utilSpot = _findSpotsNear(map, keepClear, 52, -52, 80, 2.6, 1.05, 1, farFromPlaced)[0];
   if (utilSpot) specials.push({ type: 'utility', ...utilSpot, hl: 2.6, hw: 1.05 });
-  const surfSpot = _findSpotsNear(map, keepClear, -176, 14, 45, 2.2, .95, 1, farFromPlaced)[0];
+  const surfSpot = _findSpotsNear(map, keepClear, -176, 14, 45, 2.2, .95, 1, (spot, hl) => offPier(spot, hl) && Math.hypot(spot.x - -147.4, spot.z - 7.9) > 9)[0]; // v009: also clear of the coupe drivable spawn
   if (surfSpot) specials.push({ type: 'surfwagon', ...surfSpot, hl: 2.2, hw: .95 });
+  const layby = (map.laybys || []).find(l => /downtown/i.test(l.stop || '')) || (map.laybys || [])[0];
+  if (layby) {
+    const lb = { x: layby.layout[0] - 300, z: layby.layout[1] - 300, w: layby.w, h: layby.h };
+    const alongX = lb.w >= lb.h, yaw = alongX ? Math.PI / 2 : 0;
+    const hl = 5.6, hw = 1.3, ca = Math.cos(yaw), sa = Math.sin(yaw);
+    let ok = true;
+    for (const [lx, lz] of [[-hw, -hl], [hw, -hl], [-hw, hl], [hw, hl], [0, -hl], [0, hl], [-hw, 0], [hw, 0]]) {
+      const px = lb.x + lx * ca - lz * sa, pz = lb.z + lx * sa + lz * ca;
+      if (Math.abs(px - lb.x) > lb.w / 2 - .2 || Math.abs(pz - lb.z) > lb.h / 2 - .2) { ok = false; break; } // inside the layby rect
+      if (!map.isRoadAt(px, pz) || map.isBlocked(px, pz, .2)) { ok = false; break; }
+    }
+    if (ok && _inJunctionBand(_junctionBands(map), lb.x, lb.z)) ok = false;
+    if (ok && farFromPlaced && !farFromPlaced({ x: lb.x, z: lb.z }, hl)) ok = false;
+    if (ok) {
+      specials.push({ type: 'bus', x: lb.x, z: lb.z, yaw, hl, hw });
+      keepClear.push({ x: lb.x, z: lb.z, r: hl + 1.5 }); // later fills/kerb swaps keep clear of the layby
+    }
+  }
+  const layby2 = (map.laybys || []).find(l => /palm/i.test(l.stop || ''));
+  if (layby2) {
+    const lb = { x: layby2.layout[0] - 300, z: layby2.layout[1] - 300, w: layby2.w, h: layby2.h };
+    const alongX = lb.w >= lb.h, yaw = alongX ? Math.PI / 2 : 0;
+    const hl = 2.45, hw = .98, ca = Math.cos(yaw), sa = Math.sin(yaw);
+    let ok = true;
+    for (const [lx, lz] of [[-hw, -hl], [hw, -hl], [-hw, hl], [hw, hl], [0, -hl], [0, hl], [-hw, 0], [hw, 0]]) {
+      const px = lb.x + lx * ca - lz * sa, pz = lb.z + lx * sa + lz * ca;
+      if (Math.abs(px - lb.x) > lb.w / 2 - .2 || Math.abs(pz - lb.z) > lb.h / 2 - .2) { ok = false; break; }
+      if (!map.isRoadAt(px, pz) || map.isBlocked(px, pz, .2)) { ok = false; break; }
+    }
+    if (ok && _inJunctionBand(_junctionBands(map), lb.x, lb.z)) ok = false;
+    if (ok && farFromPlaced && !farFromPlaced({ x: lb.x, z: lb.z }, hl)) ok = false;
+    if (ok) {
+      specials.push({ type: 'delivery', x: lb.x, z: lb.z, yaw, hl, hw });
+      keepClear.push({ x: lb.x, z: lb.z, r: hl + 1.5 });
+    }
+  }
   const rnd4 = _mulberry32((seed ^ 0xc0b4) >>> 0);
   let kerbArchN = 0;
   for (const s of placed) {
@@ -1625,6 +1763,7 @@ function buildParkedCars({ THREE: T, scene, map, count = 32, seed = 20261120, av
     const paint = base === 'cruiser' ? '#23272c' : base === 'bus' ? '#33506e'
       : base === 'lifeguard' ? '#e5bc45' : base === 'icecream' ? '#f0d9e2'
       : base === 'utility' ? '#e0a13c' : base === 'surfwagon' ? '#8fb8c9' // v008 liveries (fixed: no stream draws)
+      : base === 'delivery' ? '#d9d5cc' // v010 delivery van (fixed: no stream draws)
       : (base === 'car' && s.lot) || base === 'boat' ? PARKED_PAINTS[Math.floor(rnd2() * PARKED_PAINTS.length)]
       : PARKED_PAINTS[Math.floor(rnd() * PARKED_PAINTS.length)];
     const roofPick = (base === 'car' && s.lot) || base === 'boat' ? ROOFS[Math.floor(rnd2() * ROOFS.length)] : ROOFS[Math.floor(rnd() * ROOFS.length)];
@@ -1633,6 +1772,7 @@ function buildParkedCars({ THREE: T, scene, map, count = 32, seed = 20261120, av
     const car = base === 'bus' ? _busBase(T) : base === 'cruiser' ? _cruiserBase(T) : base === 'moped' ? _mopedBase(T)
       : base === 'lifeguard' ? _lifeguardBase(T) : base === 'icecream' ? _iceCreamBase(T)
       : base === 'utility' ? _utilityTruckBase(T) : base === 'surfwagon' ? _surfWagonBase(T)
+      : base === 'delivery' ? _lotVanBase(T) // v010: delivery van reuses the panel-van body
       : base === 'boat' ? _boatBase(T, s.variant)
       : base === 'car' && s.arch === 'pickup' ? _lotPickupBase(T)
       : base === 'car' && s.arch === 'panelvan' ? _lotVanBase(T)
@@ -1655,15 +1795,41 @@ function buildParkedCars({ THREE: T, scene, map, count = 32, seed = 20261120, av
     const hx = ca * hw + sa * hl, hz = sa * hw + ca * hl;
     if (map.addBlock) map.addBlock(s.x - hx, s.z - hz, s.x + hx, s.z + hz);
   });
-  const geo = new T.BufferGeometry();
-  geo.setAttribute('position', new T.Float32BufferAttribute(positions, 3));
-  geo.setAttribute('normal', new T.Float32BufferAttribute(normals, 3));
-  geo.setAttribute('color', new T.Float32BufferAttribute(colors, 3));
-  const meshObj = new T.Mesh(geo, new T.MeshLambertMaterial({ vertexColors: true }));
+  const parkedMat = new T.MeshLambertMaterial({ vertexColors: true });
+  const meshObj = new T.Group();
   meshObj.name = 'parkedCars';
+  {
+    const PARKED_CHUNK_CELL = 100;
+    const FOG_CULL_DIST = 260; // scene fog far (main.js scene.fog = 70..260)
+    const cells = new Map();
+    for (let t = 0; t < positions.length; t += 9) { // non-indexed triangle soup
+      const cx = (positions[t] + positions[t + 3] + positions[t + 6]) / 3;
+      const cz = (positions[t + 2] + positions[t + 5] + positions[t + 8]) / 3;
+      const key = Math.floor(cx / PARKED_CHUNK_CELL) + ':' + Math.floor(cz / PARKED_CHUNK_CELL);
+      let c = cells.get(key);
+      if (!c) { c = { pos: [], norm: [], col: [] }; cells.set(key, c); }
+      for (let k = 0; k < 9; k++) { c.pos.push(positions[t + k]); c.norm.push(normals[t + k]); c.col.push(colors[t + k]); }
+    }
+    for (const c of cells.values()) {
+      const g = new T.BufferGeometry();
+      g.setAttribute('position', new T.Float32BufferAttribute(c.pos, 3));
+      g.setAttribute('normal', new T.Float32BufferAttribute(c.norm, 3));
+      g.setAttribute('color', new T.Float32BufferAttribute(c.col, 3));
+      g.computeBoundingSphere();
+      const ctr = g.boundingSphere.center, r = g.boundingSphere.radius;
+      const m = new T.Mesh(g, parkedMat);
+      m.position.set(-ctr.x, -ctr.y, -ctr.z); // cancel: geometry is world-baked
+      m.updateMatrix();
+      m.matrixAutoUpdate = false; // static like the frozen map statics
+      const lod = new T.LOD();
+      lod.position.set(ctr.x, ctr.y, ctr.z);
+      lod.addLevel(m, 0);
+      lod.addLevel(new T.Object3D(), FOG_CULL_DIST + r); // nearest surface past fog far -> invisible
+      meshObj.add(lod);
+    }
+  }
   scene.add(meshObj);
   meshObj.updateMatrixWorld(true);
-  meshObj.matrixAutoUpdate = false; // static like the frozen map statics
   return { count: units.length, mesh: meshObj, beachCount, distinctBodyColors: usedPaints.size,
     specials: specials.map(s => ({ type: s.type, x: +s.x.toFixed(1), z: +s.z.toFixed(1), yaw: +s.yaw.toFixed(2) })),
     lotCount: lotCars.length, boatCount: boats.length,
@@ -1671,8 +1837,25 @@ function buildParkedCars({ THREE: T, scene, map, count = 32, seed = 20261120, av
     boats: boats.map(s => ({ x: +s.x.toFixed(1), z: +s.z.toFixed(1), yaw: +s.yaw.toFixed(2), variant: s.variant })),
     spots: placed.concat(specials).map(s => ({ x: +s.x.toFixed(1), z: +s.z.toFixed(1), yaw: +s.yaw.toFixed(2), ...(s.arch ? { arch: s.arch, hl: s.hl, hw: s.hw } : {}) })) };
 }
+function _junctionBands(map) {
+  const CC = 300, bands = [];
+  for (const nd of map.junctions || []) {
+    if (nd.hwy) continue; // dash-break-only junctions (alleys/highway) carry no pedestrian markings
+    for (const a of nd.arms) bands.push({ x: nd.x - CC, z: nd.y - CC, dx: a[0], dz: a[1], lim: nd.maxHalf + 5.0 + 2.15, lat: a[2] / 2 + 7.5 });
+  }
+  return bands;
+}
+function _inJunctionBand(bands, x, z) {
+  for (const b of bands) {
+    const vx = x - b.x, vz = z - b.z;
+    const proj = vx * b.dx + vz * b.dz, lat = Math.abs(vx * b.dz - vz * b.dx);
+    if (proj > -1 && proj < b.lim && lat < b.lat) return true;
+  }
+  return false;
+}
 function _findSpotsNear(map, keepClear, ax, az, maxR, hl, hw, want, extraOk) {
   const CC = 300, found = [];
+  const bands = _junctionBands(map); // v009: junction approach-band exclusion covers specials too
   for (const road of map.roadPaths || []) {
     const pts = road.pts.map(p => [p[0] - CC, p[1] - CC]);
     const cum = [0];
@@ -1689,6 +1872,7 @@ function _findSpotsNear(map, keepClear, ax, az, maxR, hl, hw, want, extraOk) {
         const x = ax2 + dx * t + nx * off * side, z = az2 + dz * t + nz * off * side;
         if (Math.hypot(x - ax, z - az) > maxR) continue;
         const yaw = Math.atan2(ux, -uz) + (side < 0 ? Math.PI : 0);
+        if (_inJunctionBand(bands, x, z)) continue; // v009
         if (!parkedCarFits(map, x, z, yaw, keepClear, hl, hw)) continue;
         const spot = { x, z, yaw };
         if (extraOk && !extraOk(spot, hl)) continue;
@@ -1757,6 +1941,7 @@ function _beachSpots(map, keepClear, want) {
   for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
   const L = cum[cum.length - 1];
   const out = [];
+  const bands = _junctionBands(map);
   for (let s = 6; s < L - 6 && out.length < want; s += 5) {
     let i = 1; while (i < cum.length - 1 && cum[i] < s) i++;
     const t = (s - cum[i - 1]) / (cum[i] - cum[i - 1] || 1);
@@ -1770,6 +1955,9 @@ function _beachSpots(map, keepClear, want) {
       const off = arc.w / 2 + 1.4;
       const x = sx + nx * off * side, z = sz + nz * off * side;
       const yaw = Math.atan2(ux, -uz) + (side < 0 ? Math.PI : 0);
+      if (Math.abs(z) < 14 && x < -160) continue; // v009: pier root apron is pedestrian-only
+      if (!map.isRoadAt(x, z) && map.groundAt(x, z) > 0.1) continue; // v009: elevated pedestrian deck/pavement = no-park
+      if (_inJunctionBand(bands, x, z)) continue; // v009: junction approach bands
       if (!parkedCarFits(map, x, z, yaw, keepClear)) continue;
       if (out.some(p => Math.hypot(p.x - x, p.z - z) < 12)) break; // beach spots spread out
       out.push({ x, z, yaw });
@@ -1793,6 +1981,52 @@ function _rowHit(a, b, margin) {
   const dl = dx * fx + dz * fz, dw = Math.abs(dx * fz - dz * fx);
   return Math.abs(dl) < (a.hl || 2.15) + (b.hl || 2.15) + margin && dw < (a.hw || .95) + (b.hw || .95) + margin;
 }
+function _hillcrestCars(map, keepClear, want, avoid) {
+  const CC = 300;
+  if (!map.turnout || !map.turnout.mouth) return [];
+  const mouth = { x: map.turnout.mouth[0] - CC, z: map.turnout.mouth[1] - CC };
+  const pad = { x: map.turnout.layout[0] - CC, z: map.turnout.layout[1] - CC, w: map.turnout.w, h: map.turnout.h };
+  let road = null, best = 1e9;
+  for (const r of map.roadPaths || []) {
+    for (const p of r.pts) {
+      const d = Math.hypot(p[0] - CC - mouth.x, p[1] - CC - mouth.z);
+      if (d < best) { best = d; road = r; }
+    }
+  }
+  if (!road || best > 15) return [];
+  const pts = road.pts.map(p => [p[0] - CC, p[1] - CC]);
+  const cum = [0];
+  for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  const L = cum[cum.length - 1];
+  const bands = _junctionBands(map);
+  const out = [];
+  for (let leg = 0; leg < want; leg++) {
+    const s0 = 8 + (L - 16) * leg / want, s1 = 8 + (L - 16) * (leg + 1) / want;
+    for (let s = s0; s < s1; s += 4) {
+    let i = 1; while (i < cum.length - 1 && cum[i] < s) i++;
+    const t = (s - cum[i - 1]) / (cum[i] - cum[i - 1] || 1);
+    const ax = pts[i - 1][0], az = pts[i - 1][1], bx = pts[i][0], bz = pts[i][1];
+    const dx = bx - ax, dz = bz - az, len = Math.hypot(dx, dz) || 1;
+    const ux = dx / len, uz = dz / len, nx = -uz, nz = ux;
+    const sx = ax + dx * t, sz = az + dz * t;
+    for (const side of [1, -1]) {
+      const off = road.w / 2 + .95 + .45;
+      const x = sx + nx * off * side, z = sz + nz * off * side;
+      const yaw = Math.atan2(ux, -uz) + (side < 0 ? Math.PI : 0);
+      if (Math.hypot(x - mouth.x, z - mouth.z) < 10) continue; // turnout mouth stays clear
+      if (Math.abs(x - pad.x) < pad.w / 2 + 2 && Math.abs(z - pad.z) < pad.h / 2 + 2) continue; // turnout pad
+      if (_inJunctionBand(bands, x, z)) continue;
+      if (avoid && avoid.some(p => Math.hypot(p.x - x, p.z - z) < 9)) continue; // clear of the generic fill
+      if (!parkedCarFits(map, x, z, yaw, keepClear)) continue;
+      if (out.some(p => Math.hypot(p.x - x, p.z - z) < 14)) continue; // spread along the legs
+      out.push({ x, z, yaw });
+      break;
+    }
+    if (out.length > leg) break; // leg filled: next leg
+    }
+  }
+  return out;
+}
 function _bayFits(map, lot, x, z, yaw, hl = 2.15, hw = .95) {
   const ca = Math.cos(yaw), sa = Math.sin(yaw);
   const mX = lot.w / 2 - .2, mZ = lot.h / 2 - .2;
@@ -1804,7 +2038,7 @@ function _bayFits(map, lot, x, z, yaw, hl = 2.15, hw = .95) {
   }
   return true;
 }
-const LOT_DENSE = { match: /beachfront/i, occupancy: .72, maxUnits: 6 };
+const LOT_DENSE = { match: /beachfront/i, occupancy: .75, maxUnits: 9 };
 
 function _lotFill(map, taken, rnd, rnd3) {
   const out = [];
@@ -1817,7 +2051,7 @@ function _lotFill(map, taken, rnd, rnd3) {
       const want = Math.min(Math.round((lot.bays || 0) * LOT_DENSE.occupancy), LOT_DENSE.maxUnits);
       const slots = [];
       for (let k = 0; k < (lot.bays || 0); k++)
-        slots.push({ sx: minX + 2.2, sz: lot.z - lot.h / 2 + 2.5 + 3 * k + 1.5 }); // stripe-k anchor
+        slots.push({ sx: minX + 2.2, sz: lot.z - lot.h / 2 + 2.0 + 2.9 * k + 1.45 }); // stripe-k anchor (v13: 2.9 m pitch)
       for (let i = slots.length - 1; i > 0; i--) { const j = Math.floor(rnd3() * (i + 1)); const t = slots[i]; slots[i] = slots[j]; slots[j] = t; }
       let n = 0;
       for (const s of slots) {
@@ -1825,9 +2059,10 @@ function _lotFill(map, taken, rnd, rnd3) {
         const arch = n === 0 ? (li % 2 ? 'panelvan' : 'pickup') : null; // forced work vehicle, then commuters
         const hl = arch === 'panelvan' ? 2.45 : arch === 'pickup' ? 2.4 : 2.15;
         const hw = arch ? .98 : .95;
-        const spot = { x: s.sx + A45 * (hl + .9) + (rnd3() * .2 - .1), z: s.sz + A45 * (hl + .9) + (rnd3() * .2 - .1), yaw: yaw + (rnd3() * .05 - .025), lot: lot.name, arch, hl, hw };
+        const jit = rnd3() * .3 - .15;
+        const spot = { x: s.sx + A45 * (hl + .9 + jit), z: s.sz + A45 * (hl + .9 + jit), yaw: yaw + (rnd3() * .05 - .025), lot: lot.name, arch, hl, hw };
         if (!_bayFits(map, lot, spot.x, spot.z, spot.yaw, hl, hw)) continue;
-        if (taken.some(p => _aabbHit(p, spot, .45)) || out.some(p => p.lot === lot.name && _rowHit(p, spot, .1))) continue;
+        if (taken.some(p => _aabbHit(p, spot, .45)) || out.some(p => p.lot === lot.name && _rowHit(p, spot, .05))) continue;
         out.push(spot);
         n++;
       }
@@ -2720,12 +2955,29 @@ function createProps({ THREE, scene, map }) {
     return { m, g };
   }
 
+  function tBusStopSign() { // round 8: bus-stop sign pole for the v13 lay-bys
+    const m = Acc(), g = Acc();
+    addTo(m, new THREE.CylinderGeometry(0.04, 0.05, 2.4, 6), '#5a6a75', 0, 1.2, 0);      // pole
+    addTo(m, new THREE.BoxGeometry(0.55, 0.7, 0.05), '#2f5fa8', 0, 2.15, 0);            // sign plate (transit blue)
+    addTo(m, new THREE.BoxGeometry(0.4, 0.18, 0.06), '#e8e4d0', 0, 2.3, 0);             // route band
+    addTo(m, new THREE.CylinderGeometry(0.16, 0.16, 0.05, 8), '#e8c94f', 0, 1.62, 0, Math.PI / 2, 0, 0); // roundel
+    return { m, g };
+  }
+  function tEntranceSign() { // round 8: two-post panel sign (Beachfront Row mouth)
+    const m = Acc(), g = Acc();
+    for (const px of [-0.85, 0.85]) addTo(m, new THREE.CylinderGeometry(0.05, 0.06, 1.7, 6), '#7a6a55', px, 0.85, 0); // posts
+    addTo(m, new THREE.BoxGeometry(2.0, 0.7, 0.08), '#4f7dc9', 0, 1.45, 0);             // panel
+    addTo(m, new THREE.BoxGeometry(1.7, 0.16, 0.09), '#e8e4d0', 0, 1.45, 0);            // name band
+    return { m, g };
+  }
+
   const TYPES = {
     lamp: tLamppost(), bench: tBench(), bin: tBin(), hydrant: tHydrant(),
     shelter: tShelter(), signRed: tSign(P.signRed), signYellow: tSign(P.signYellow),
     mailbox: tMailbox(), planter: tPlanter(), meter: tParkingMeter(), newsStand: tNewsStand(),
     railing: tRailing(), umbrella: tUmbrellaCluster(), towel: tTowel(),
     cafeTable: tCafeTable(), cafeChair: tCafeChair(), ashtray: tStandingAshtray(),
+    busStop: tBusStopSign(), entranceSign: tEntranceSign(),
   };
   const placed = []; // {x, z, r} for spacing dedupe
   const isRoad = map.isRoadAt || (() => false);
@@ -2824,7 +3076,7 @@ function createProps({ THREE, scene, map }) {
       }
     }
   }
-  const LAMP_EVERY = 54, BENCH_EVERY = 120, BIN_EVERY = 105, HYD_EVERY = 250; // v3-v6: retuned for the tri cap
+  const LAMP_EVERY = 70, BENCH_EVERY = 120, BIN_EVERY = 140, HYD_EVERY = 280; // v3-v10: retuned for the tri cap
   let sheltersPlaced = 0;
   for (const road of roads) {
     const h = road.w / 2;
@@ -2908,7 +3160,7 @@ function createProps({ THREE, scene, map }) {
   for (let ri = 0; ri < roads.length; ri++) {
     const road = roads[ri], h = road.w / 2;
     if (road.w <= 7.5 && road.len > 60) {
-      for (let s = 28, k = 0; s < road.len - 8; s += 65, k++) {
+      for (let s = 28, k = 0; s < road.len - 8; s += 75, k++) {
         const p = pointAt(road, s);
         const side = k % 2 === 0 ? 1 : -1;
         const x = p.x + -p.uz * side * (h + 1.05), z = p.z + p.ux * side * (h + 1.05);
@@ -2917,7 +3169,7 @@ function createProps({ THREE, scene, map }) {
       }
     }
     if (road.w >= 8 && road.len > 150) {
-      for (let s = 55, k = 0; s < road.len - 10; s += 165, k++) {
+      for (let s = 55, k = 0; s < road.len - 10; s += 200, k++) {
         const p = pointAt(road, s);
         const side = k % 2 === 0 ? -1 : 1;
         const x = p.x + -p.uz * side * (h + 2.3), z = p.z + p.ux * side * (h + 2.3);
@@ -2927,7 +3179,7 @@ function createProps({ THREE, scene, map }) {
     }
     if (road.w >= 8 && road.len > 200 && JUNCTIONS_PER_ROAD[ri] >= 3) {
       const side = ri % 2 === 0 ? 1 : -1;
-      for (let s = 30; s < road.len - 10 && metersPlaced < 24; s += 26) {
+      for (let s = 30; s < road.len - 10 && metersPlaced < 22; s += 26) {
         if (junctions.some((J) => Math.hypot(J.x - pointAt(road, s).x, J.z - pointAt(road, s).z) < 12)) continue;
         const p = pointAt(road, s);
         const x = p.x + -p.uz * side * (h + 0.8), z = p.z + p.ux * side * (h + 0.8);
@@ -3040,22 +3292,147 @@ function createProps({ THREE, scene, map }) {
       }
     }
   }
+  {
+    const signAt = (x, z, yaw) => {
+      if (isRoad(x, z) || isBlk(x, z, 0.4)) return false;
+      for (const q of placed) if (Math.hypot(q.x - x, q.z - z) < 2) return false;
+      put('busStop', x, z, yaw, 0.3, 1);
+      return true;
+    };
+    signAt(-28.5, -59.6, Math.PI);
+    signAt(130.6, 26.5, -Math.PI / 2);
+    for (const sz of [-26.2, -65.8]) {
+      const x = -167.5;
+      if (isRoad(x, sz) || isBlk(x, sz, 0.6)) continue;
+      let near = false;
+      for (const q of placed) if (Math.hypot(q.x - x, q.z - sz) < 2) { near = true; break; }
+      if (near) continue;
+      put('entranceSign', x, sz, Math.PI / 2, 1.0, 1); // panel faces the boardwalk
+    }
+  }
+  if (map.turnout) {
+    const padX = map.turnout.layout[0] - 300, padZ = map.turnout.layout[1] - 300; // world pad centre
+    const tryPut = (type, x, z, yaw, r) => {
+      for (const dz of [0, 0.6, -0.6, 1.2, -1.2]) {
+        if (free(x, z + dz, r, 1.5)) { put(type, x, z + dz, yaw, r, 1.5); return true; }
+      }
+      return false;
+    };
+    const eastYaw = faceYaw(0, 0, 10, 0); // face the view (east over the city)
+    tryPut('bench', padX + 4, padZ + 6, eastYaw, 0.5); // north flank, facing the view
+    tryPut('bench', padX + 4, padZ - 6, eastYaw, 0.5); // south flank, facing the view
+    tryPut('bin', padX + 1.3, padZ - 7.2, 0, 0.35); // beside the south bench
+    const mX = map.turnout.mouth[0] - 300, mZ = map.turnout.mouth[1] - 300;
+    tryPut('planter', mX + 1.5, mZ + 6.2, 0, 0.45); // planter pair flanking the mouth
+    tryPut('planter', mX + 1.5, mZ - 6.2, 0, 0.45);
+  }
+  for (const b of map.hillBenches || []) {
+    const bx = b.layout[0] - 300, bz = b.layout[1] - 300;
+    let road = null, rd = 1e9;
+    const distPt = (r, px, pz) => {
+      let m = 1e9;
+      for (let i = 0; i < r.pts.length - 1; i++) {
+        const ax = r.pts[i][0], az = r.pts[i][1], cx = r.pts[i + 1][0], cz = r.pts[i + 1][1];
+        const dx = cx - ax, dz = cz - az, L2 = dx * dx + dz * dz;
+        let t = L2 ? ((px - ax) * dx + (pz - az) * dz) / L2 : 0; t = Math.max(0, Math.min(1, t));
+        m = Math.min(m, Math.hypot(ax + t * dx - px, az + t * dz - pz));
+      }
+      return m;
+    };
+    const kerbFree = (x, z, r) => { // free() minus isRoadAt + a precise polyline road check
+      if (!inBounds(x, z) || onPier(x, z)) return false;
+      if (isBlk(x, z, r)) return false;
+      for (const t of KEEPCLEAR) { if ((x - t.x) * (x - t.x) + (z - t.z) * (z - t.z) < 9) return false; }
+      for (const q of placed) { if ((x - q.x) * (x - q.x) + (z - q.z) * (z - q.z) < 1.2 * 1.2) return false; }
+      for (const rr of roads) { if (distPt(rr, x, z) < rr.w / 2 + 0.7) return false; }
+      return true;
+    };
+    for (const r of roads) {
+      const d = distPt(r, bx, bz);
+      if (d < rd) { rd = d; road = r; }
+    }
+    if (!road) continue;
+    const R = Math.max(b.w, b.h) / 2 + 14;
+    const span = [];
+    for (let s = 0; s <= road.len; s += 2) {
+      const p = pointAt(road, s);
+      if (Math.hypot(p.x - bx, p.z - bz) < R) span.push(s);
+    }
+    if (span.length < 2) continue;
+    let bi = 0, bs = 1e9;
+    for (let i = 0; i < span.length; i++) {
+      const p = pointAt(road, span[i]);
+      const d = Math.hypot(p.x - bx, p.z - bz);
+      if (d < bs) { bs = d; bi = i; }
+    }
+    let lo = bi, hi = bi;
+    while (lo > 0 && span[lo - 1] >= span[lo] - 3) lo--;
+    while (hi < span.length - 1 && span[hi + 1] <= span[hi] + 3) hi++;
+    const s0 = span[lo], s1 = span[hi], hh = road.w / 2;
+    const sideOf = (s) => { // which side of the centreline the pad sits on at arc s
+      const p = pointAt(road, s);
+      return (-p.uz * (bx - p.x) + p.ux * (bz - p.z)) > 0 ? 1 : -1;
+    };
+    const nBox = b.w >= 30 ? 2 : 1; // Bench A is the long row
+    for (let k = 1; k <= nBox; k++) {
+      const sk = s0 + (s1 - s0) * k / (nBox + 1);
+      for (const ds of [0, 3, -3, 6, -6]) {
+        const p = pointAt(road, Math.max(4, Math.min(road.len - 4, sk + ds)));
+        const sd = sideOf(sk);
+        const x = p.x + -p.uz * sd * (hh + 1.05), z = p.z + p.ux * sd * (hh + 1.05);
+        if (!kerbFree(x, z, 0.3)) continue;
+        put('mailbox', x, z, faceYaw(x, z, p.x, p.z), 0.3, 1.2);
+        break;
+      }
+    }
+    if (b.w >= 30) { // one lamp mid-frontage on the long row
+      const s = (s0 + s1) / 2, p = pointAt(road, s), sd = sideOf(s);
+      const x = p.x + -p.uz * sd * (hh + 1.2), z = p.z + p.ux * sd * (hh + 1.2);
+      if (kerbFree(x, z, 0.4)) put('lamp', x, z, faceYaw(x, z, p.x, p.z), 0.4, 3);
+    }
+  }
   const matMatte = new THREE.MeshLambertMaterial({ vertexColors: true });
   const matGlow = new THREE.MeshBasicMaterial({ vertexColors: true });
+  const PROPS_CHUNK_CELL = 100;
+  const FOG_CULL_DIST = 260; // scene fog far (main.js scene.fog = 70..260)
   function toMesh(acc, mat, name) {
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(acc.pos, 3));
-    g.setAttribute('normal', new THREE.Float32BufferAttribute(acc.nor, 3));
-    g.setAttribute('color', new THREE.Float32BufferAttribute(acc.col, 3));
-    const mesh = new THREE.Mesh(g, mat);
-    mesh.name = name;
-    scene.add(mesh);
-    return mesh;
+    const cells = new Map();
+    for (let t = 0; t < acc.pos.length; t += 9) { // non-indexed triangle soup
+      const cx = (acc.pos[t] + acc.pos[t + 3] + acc.pos[t + 6]) / 3;
+      const cz = (acc.pos[t + 2] + acc.pos[t + 5] + acc.pos[t + 8]) / 3;
+      const key = Math.floor(cx / PROPS_CHUNK_CELL) + ':' + Math.floor(cz / PROPS_CHUNK_CELL);
+      let c = cells.get(key);
+      if (!c) { c = { pos: [], nor: [], col: [] }; cells.set(key, c); }
+      for (let k = 0; k < 9; k++) { c.pos.push(acc.pos[t + k]); c.nor.push(acc.nor[t + k]); c.col.push(acc.col[t + k]); }
+    }
+    let tris = 0, first = null;
+    for (const [key, c] of cells) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(c.pos, 3));
+      g.setAttribute('normal', new THREE.Float32BufferAttribute(c.nor, 3));
+      g.setAttribute('color', new THREE.Float32BufferAttribute(c.col, 3));
+      g.computeBoundingSphere();
+      const ctr = g.boundingSphere.center, r = g.boundingSphere.radius;
+      const mesh = new THREE.Mesh(g, mat);
+      mesh.name = name + ':' + key;
+      mesh.position.set(-ctr.x, -ctr.y, -ctr.z); // cancel: geometry is world-baked
+      mesh.updateMatrix();
+      mesh.matrixAutoUpdate = false;
+      const lod = new THREE.LOD();
+      lod.position.set(ctr.x, ctr.y, ctr.z);
+      lod.addLevel(mesh, 0);
+      lod.addLevel(new THREE.Object3D(), FOG_CULL_DIST + r); // nearest surface past fog far -> invisible
+      scene.add(lod);
+      tris += c.pos.length / 9;
+      if (!first) first = mesh;
+    }
+    first.userData.chunkTris = tris; // total across all cells of this material
+    return first;
   }
   const meshMatte = toMesh(world, matMatte, 'props:matte');
   const triCount =
-    meshMatte.geometry.attributes.position.count / 3 +
-    (glow.pos.length ? (() => { const mm = toMesh(glow, matGlow, 'props:glow'); return mm.geometry.attributes.position.count / 3; })() : 0);
+    meshMatte.userData.chunkTris +
+    (glow.pos.length ? toMesh(glow, matGlow, 'props:glow').userData.chunkTris : 0);
 
   return {
     update(dt) {}, // fully static; API kept for the brief
@@ -3558,4 +3935,4 @@ requestAnimationFrame(frame);
 
 </script>
 </body>
-  </html>
+</html>
