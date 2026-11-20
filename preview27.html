@@ -1257,7 +1257,64 @@ function createMap({ THREE, scene, GLTFLoader }) {
     obj.position.set(x - c.x, terrainH(x, z) - 0.15 - box.min.y, z - c.z); // prop sits on the terrain
     return obj;
   }
-
+  function bakeFarPrimitive(T, grp) {
+    grp.updateMatrixWorld(true);
+    const texBuckets = new Map(); // material.uuid -> { mat, pos:[], norm:[], uv:[] }
+    const flat = { pos: [], norm: [], col: [] };
+    const nm = new T.Matrix3();
+    const v = new T.Vector3();
+    grp.traverse((o) => {
+      if (!o.isMesh) return;
+      const geo = o.geometry;
+      const index = geo.index;
+      const posA = geo.attributes.position, normA = geo.attributes.normal, uvA = geo.attributes.uv;
+      const groups = geo.groups && geo.groups.length ? geo.groups
+        : [{ start: 0, count: index ? index.count : posA.count, materialIndex: 0 }];
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      nm.getNormalMatrix(o.matrixWorld);
+      for (const gd of groups) {
+        const m = mats[gd.materialIndex] || mats[0];
+        const isTex = !!(m && m.map);
+        let bk;
+        if (isTex) {
+          bk = texBuckets.get(m.uuid);
+          if (!bk) { bk = { mat: m, pos: [], norm: [], uv: [] }; texBuckets.set(m.uuid, bk); }
+        }
+        for (let i = gd.start; i < gd.start + gd.count; i++) {
+          const vi = index ? index.getX(i) : i;
+          v.fromBufferAttribute(posA, vi).applyMatrix4(o.matrixWorld);
+          if (isTex) {
+            bk.pos.push(v.x, v.y, v.z);
+            v.fromBufferAttribute(normA, vi).applyMatrix3(nm).normalize();
+            bk.norm.push(v.x, v.y, v.z);
+            if (uvA) bk.uv.push(uvA.getX(vi), uvA.getY(vi));
+          } else {
+            flat.pos.push(v.x, v.y, v.z);
+            v.fromBufferAttribute(normA, vi).applyMatrix3(nm).normalize();
+            flat.norm.push(v.x, v.y, v.z);
+            const c = (m && m.color) || { r: 1, g: 1, b: 1 };
+            flat.col.push(c.r, c.g, c.b);
+          }
+        }
+      }
+    });
+    grp.clear();
+    const addBaked = (pos, norm, extra, mat) => {
+      const g = new T.BufferGeometry();
+      g.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
+      g.setAttribute('normal', new T.Float32BufferAttribute(norm, 3));
+      if (extra) g.setAttribute(extra[0], new T.Float32BufferAttribute(extra[1], extra[2]));
+      g.computeBoundingSphere();
+      const mesh = new T.Mesh(g, mat);
+      mesh.matrixAutoUpdate = false;
+      grp.add(mesh);
+    };
+    for (const bk of texBuckets.values())
+      addBaked(bk.pos, bk.norm, bk.uv.length ? ['uv', bk.uv, 2] : null, bk.mat);
+    if (flat.pos.length)
+      addBaked(flat.pos, flat.norm, ['color', flat.col, 3],
+        new T.MeshLambertMaterial({ color: 0xffffff, vertexColors: true }));
+  }
   function swapToModels(GL) {
     const loader = new GL();
     for (const m of MODELS) {
@@ -1272,6 +1329,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
           old.traverse((o) => { // swap the dark near facade for the light far one (P3a: 2-material box)
             if (o.isMesh && Array.isArray(o.material)) o.material = [farSide, o.material[1]];
           });
+          bakeFarPrimitive(THREE, old); // BLD-FAR-BAKE: ~6 draws -> 2 per tower far level
           const lod = new THREE.LOD();
           lod.addLevel(obj, 0); lod.addLevel(old, 70); // towers: far level past 70 m
           scene.add(lod); freeze(lod);
