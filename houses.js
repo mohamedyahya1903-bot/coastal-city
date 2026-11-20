@@ -200,7 +200,8 @@ export function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disa
     const maxX = Math.max(...xs);
     if (r.w >= 10) return 'skip';                        // v10: highway-class (eased on-ramp, 7 pts)
     if (r.pts.length === 2 && r.pts[0][0] === 500 && r.pts[1][0] === 500) return 'skip'; // highway ramp (pre-v10 shape)
-    if (r.w <= 6) return 'skip';                         // v7c downtown secondaries: driveway-scale canyons between tower lots
+    if (r.w <= 6 && r.cls !== 'grid') return 'skip';        // v7c downtown secondaries (cls unset): driveway-scale canyons between tower lots;
+    // v8 (round 8): w=6 streets the map marks cls 'grid' (C1/C2 Southside infill, E1 secondary) are house-ready
     if (r.pts.length > 2 && maxX < 140) return 'skip';   // curved boardwalk arc
     if (r.pts.length > 2 && maxX <= 210) return 'skip';  // diagonal downtown avenue
     if (r.pts.length > 2 && maxX > 450) return 'hillcrest'; // winding eastern climb (switchbacks)
@@ -223,7 +224,14 @@ export function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disa
     const dx = p1[0] - p2[0], dy = p1[1] - p2[1];
     return { d2: dx * dx + dy * dy, x: (p1[0] + p2[0]) / 2, y: (p1[1] + p2[1]) / 2 };
   }
+  // v8 (round 8): two junction sets. JUNCTIONS keeps v7's exact membership
+  // (non-skip, non-infill roads) so corner-shop siting - and the rng stream -
+  // is unchanged. JUNCTIONS_INFILL holds junctions that touch a w=6 cls 'grid'
+  // infill street (C1/C2, E1); the late infill pass uses it to stay clear of
+  // the junction arms + their markings.
+  const isInfillRoad = (r) => r.w <= 6 && r.cls === 'grid';
   const JUNCTIONS = []; // layout coords
+  const JUNCTIONS_INFILL = [];
   {
     const roads = map.roadPaths.filter((r) => classify(r) !== 'skip');
     for (let i = 0; i < roads.length; i++) {
@@ -236,12 +244,13 @@ export function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disa
             if (!best || r.d2 < best.d2) best = r;
           }
         }
-        if (best && best.d2 < 12 * 12) JUNCTIONS.push([best.x, best.y]);
+        if (best && best.d2 < 12 * 12)
+          (isInfillRoad(roads[i]) || isInfillRoad(roads[j]) ? JUNCTIONS_INFILL : JUNCTIONS).push([best.x, best.y]);
       }
     }
   }
-  function nearJunction(lx, ly, rad) {
-    for (const [jx, jy] of JUNCTIONS) {
+  function nearJunction(lx, ly, rad, set = JUNCTIONS) {
+    for (const [jx, jy] of set) {
       const dx = jx - lx, dy = jy - ly;
       if (dx * dx + dy * dy < rad * rad) return true;
     }
@@ -716,7 +725,12 @@ export function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disa
   // stepped over. Fully rule-driven off roadPaths: any new street (v11 infill)
   // joins phase A automatically.
   const PHASE_A = 218; // the v5 build count: phase A reproduces it 1:1
-    const queues = roads.map((e) => ({ road: e.r, cls: e.cls, walk: walker(e.r.pts), s: 9, fine: false }));
+    // v8 (round 8): the w=6 cls 'grid' infill streets (C1/C2 Southside pair, E1
+    // secondary) walk in their own late pass AFTER phase B, so the v5-v7 rng
+    // stream - and every existing placement - holds exactly.
+    const isInfill = (e) => e.r.w <= 6 && e.r.cls === 'grid';
+    const queues = roads.filter((e) => !isInfill(e)).map((e) => ({ road: e.r, cls: e.cls, walk: walker(e.r.pts), s: 9, fine: false }));
+    const infillQueues = roads.filter(isInfill).map((e) => ({ road: e.r, cls: e.cls, walk: walker(e.r.pts), s: 9, fine: true, infill: true }));
 
   // ---- v7: deliberate development of the map.hillBenches pads ----
   // Runs before the road walks so the rows take the pads by design; the
@@ -827,6 +841,7 @@ export function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disa
           bb = validFootprint(cx, cz, arch.w, arch.d, yaw);
         }
         if (!bb) continue;
+        if (q.infill && nearJunction(cx + C, cz + C, Math.max(arch.w, arch.d) / 2 + 7, JUNCTIONS_INFILL)) continue; // v8: infill homes keep clear of the junction arms + their markings (roads round 13 works the E1 junctions)
         if (zone === 'hillcrest' && hillCount >= HILL_CAP) continue; // v7: cap AFTER the rng-consuming checks so other roads keep the v6 stream
         if (arch.kind === 'apartment') apartments++;
         // v5: rear fence when the footprint backs onto an alley (<= 4 m to its centerline)
@@ -864,7 +879,7 @@ export function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disa
         for (const part of arch.parts) bakePart(part, cx, gy - 0.3, cz, yaw, jit);
         map.addBlock(bb.minX, bb.minZ, bb.maxX, bb.maxZ);
         placed.push(bb);
-        placements.push({ x: cx, z: cz, y: gy, yaw, w: arch.w, d: arch.d, archetype: arch.kind, zone, corner: isCorner,
+        placements.push({ x: cx, z: cz, y: gy, yaw, w: arch.w, d: arch.d, archetype: arch.kind, zone, corner: isCorner, infill: q.infill || undefined,
           variant: jit.variant, yard, tree: hasTree, rearFence, tris: Math.round(bakeTris) });
         count++;
         if (zone === 'hillcrest') hillCount++; // v7
@@ -885,6 +900,68 @@ export function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disa
       if (count >= MAX_HOUSES) break;
       if (q.s >= q.walk.total - 9) continue;
       more = true;
+      step(q);
+    }
+  }
+  // ---- v8 (round 8): hillcrest displacement re-siting sweep ----
+  // Map v17's hillsideSign band clipped the two road-side homes at the foot of
+  // the climb. The band stays untouched; this pass sweeps the hillcrest road at
+  // 2 m with a deterministic offset ladder (own houseHash stream - the road
+  // walks keep their rng) until the hillcrest count returns to its pre-band
+  // level (11: 7 bench + 4 road-side), bounded by HILL_CAP. Same clearance
+  // rules as every other home (validFootprint, 2 m spacing, terrain, blocks).
+  (function resiteHillcrest() {
+    const HILL_TARGET = 11;
+    const hr = roads.find((e) => e.cls === 'hillcrest');
+    if (!hr) return;
+    const walk = walker(hr.r.pts);
+    const OFFS = [7.6, 8.8, 8.2, 9.4, 7.0, 10.0];
+    let probes = 0;
+    for (let s = 9; s < walk.total - 9 && hillCount < Math.min(HILL_TARGET, HILL_CAP) && count < MAX_HOUSES && probes < 500; s += 1) {
+      probes++;
+      const p = walk.at(s);
+      for (const side of [-1, 1]) {
+        if (hillCount >= Math.min(HILL_TARGET, HILL_CAP) || count >= MAX_HOUSES) break;
+        const h0 = houseHash(count + 1 + probes * 131 + (side + 1) * 57); // own deterministic stream
+        const nx = -p.uz * side, nz = p.ux * side;
+        const yaw = Math.atan2(-nx, -nz);
+        const pool = [archVinewood, archVinewood, archCottageDome]; // growth-phase hill stock (lean)
+        let bb = null, arch = null, cx = 0, cz = 0;
+        outer: for (const f0 of [pool[(h0 >>> 3) % 3], archCottageDome]) { // stock pick, then the smallest footprint
+          for (let k = 0; k < OFFS.length; k++) {
+            const off = OFFS[(h0 + k) % OFFS.length];
+            const a0 = f0(WALLS[(h0 >>> 5) % WALLS.length], ROOFS[(h0 >>> 8) % ROOFS.length]);
+            a0.kind = f0.name.replace('arch', '').toLowerCase();
+            const tx = p.x + nx * (off + a0.d / 2), tz = p.z + nz * (off + a0.d / 2);
+            const fb = validFootprint(tx, tz, a0.w, a0.d, yaw);
+            if (fb) { bb = fb; arch = a0; cx = tx; cz = tz; break outer; }
+          }
+        }
+        if (!bb) continue;
+        const jit = houseJitter(count);
+        const gy = map.groundAt(cx, cz);
+        bakeTris = 0;
+        for (const part of arch.parts) bakePart(part, cx, gy - 0.3, cz, yaw, jit);
+        map.addBlock(bb.minX, bb.minZ, bb.maxX, bb.maxZ);
+        placed.push(bb);
+        placements.push({ x: cx, z: cz, y: gy, yaw, w: arch.w, d: arch.d, archetype: arch.kind, zone: 'hillcrest',
+          corner: false, variant: jit.variant, yard: null, tree: false, rearFence: null,
+          tris: Math.round(bakeTris), resite: true }); // v8: displaced-home re-site
+        count++;
+        hillCount++;
+      }
+    }
+  })();
+  // v8 (round 8): C1/C2/E1 late infill pass - lean stock via the PHASE_A gate,
+  // same clearance rules as every other home (validFootprint, spacing, terrain),
+  // plus the junction guard above. Runs last so nothing upstream shifts.
+  let moreInfill = true;
+  while (moreInfill && count < MAX_HOUSES) {
+    moreInfill = false;
+    for (const q of infillQueues) {
+      if (count >= MAX_HOUSES) break;
+      if (q.s >= q.walk.total - 9) continue;
+      moreInfill = true;
       step(q);
     }
   }
@@ -969,10 +1046,23 @@ export function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disa
       group.add(lod);
     }
   };
+  // HOUSE-MERGE (gfxfps round 9): all 14 bucket materials are the same
+  // MeshLambertMaterial({ vertexColors: true }) differing only in the colour multiplier,
+  // and every bucket's vertex colours already carry the per-house tint jitter. Folding
+  // each bucket's palette colour into its vertex colours lets the whole district share
+  // ONE white material, so each 100 m chunk cell bakes as ONE mesh instead of one mesh
+  // per material per cell. Same vertices, same final lit colours: zero visual change.
+  const houseMerged = { pos: [], norm: [], col: [] };
   for (const [mk, b] of buckets) {
-    bakeChunked(b, MATS[mk], mk);
+    const mc = MATS[mk].color; // palette multiplier folded into the vertex colours
+    for (let i = 0; i < b.pos.length; i++) houseMerged.pos.push(b.pos[i]);
+    for (let i = 0; i < b.norm.length; i++) houseMerged.norm.push(b.norm[i]);
+    for (let i = 0; i < b.col.length; i += 3)
+      houseMerged.col.push(b.col[i] * mc.r, b.col[i + 1] * mc.g, b.col[i + 2] * mc.b);
     triTotal += b.pos.length / 9;
   }
+  bakeChunked(houseMerged, new THREE.MeshLambertMaterial({ color: 0xffffff, vertexColors: true }), 'all');
+
   scene.add(group);
 
   const trisByArch = {};
@@ -982,7 +1072,9 @@ export function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disa
     update(dt) {}, // static district: nothing per-frame (dt unused)
     count,
     placements,
-    stats: { drawCalls: buckets.size, triangles: Math.round(triTotal), trisByArch, apartments, coverage, benches: benchStats },
+    // one shared vertex-colour material post-HOUSE-MERGE (was 14 buckets); each chunk cell costs 1 draw
+    stats: { drawCalls: 1, triangles: Math.round(triTotal), trisByArch, apartments, coverage, benches: benchStats },
+
   };
 }
 // main.js imports createHouses; buildHouses kept as an alias for the brief's naming.
