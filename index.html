@@ -2432,7 +2432,7 @@ function createPedestrians({ THREE, scene, map, getPlayerPos }) {
 // frame longer than 250 ms is clamped so one tab-switch hitch can't force a down-step;
 // sustained slowness still steps down from the second slow frame on.
 
-function createAdaptiveResolution({ renderer, min = 0.75, max = 1.25, start = 1 }) {
+function createAdaptiveResolution({ renderer, min = 0.6, max = 1.25, start = 1 }) { // v2 (coordinator, Nov 20): min 0.75 -> 0.6 so slow phones shed more pixels
   let cur = start;
   let ema = 1 / 45; // mid-band start: steady state, not the first frames, picks the ratio
   let cooldown = 0;
