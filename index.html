@@ -1801,6 +1801,622 @@ function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disable-lin
 }
 
 
+// ===== props.js =====
+// js/props.js — street props for Coastal City: lampposts, benches, bins, hydrants,
+// bus-stop shelters, traffic lights, road signs. Original procedural rounded geometry,
+// vertex-colored, merged into 2 static meshes (2 draw calls total, no shadows, no lights;
+// glow parts use an unlit material so lamps read as lit without dynamic lights).
+//
+// Coordinator notes:
+//   main.js wiring (exact one-line calls):
+//     const props = createProps({ THREE, scene, map });
+//     // per frame: props.update(dt);
+//   Bus shelters register collision via map.addBlock (WORLD coords) at build time.
+//   Placements come from map.roadPaths (LAYOUT coords; world = layout - 300), sit at
+//   road half-width + ~1.2 m, and are validated with map.isRoadAt / map.isBlocked.
+//   Pier/water: map.isBlocked already rejects water; the pier deck rectangle from
+//   map.js v7a (layout x 20-122, y 292-308) is mirrored below and excluded.
+//   No other module changes are needed.
+//
+// Shared palette (baked into vertex colors; only 2 shared materials):
+//   pole #3f4854, metal #8d99a6, wood #a5793f, binGreen #3f7d4e, hydrant #c0392b,
+//   roof #4f6f8f, glass #9fc6d8, signRed #b23b2e, signYellow #e8c832, concrete #9a968c,
+//   dark #2c343c  /  glow: lampAmber #ffd98a, bulbRed #e0483c, bulbGreen #4fae5c
+function createProps({ THREE, scene, map }) {
+  const P = {
+    pole: '#3f4854', metal: '#8d99a6', wood: '#a5793f', bin: '#3f7d4e',
+    hydrant: '#c0392b', roof: '#4f6f8f', glass: '#9fc6d8', signRed: '#b23b2e',
+    signYellow: '#e8c832', concrete: '#9a968c', dark: '#2c343c',
+  };
+  const G = { lampAmber: '#ffd98a', bulbRed: '#e0483c', bulbGreen: '#4fae5c' };
+
+  // ---- world-space road polylines (layout - 300) with cumulative lengths ----
+  const roads = (map.roadPaths || []).map((r) => {
+    const pts = r.pts.map((p) => [p[0] - 300, p[1] - 300]);
+    const cum = [0];
+    for (let i = 1; i < pts.length; i++) {
+      cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+    }
+    return { pts, cum, w: r.w, len: cum[cum.length - 1] };
+  });
+
+  const PIER = { minX: -280, maxX: -178, minZ: -8, maxZ: 8 }; // mirror of map.js v7a PIER
+  const onPier = (x, z) => x >= PIER.minX && x <= PIER.maxX && z >= PIER.minZ && z <= PIER.maxZ;
+  const inBounds = (x, z) => x > -295 && x < 295 && z > -295 && z < 295;
+  const ground = (x, z) => {
+    const y = (map.groundAt || map.heightAt || (() => 0))(x, z);
+    return Number.isFinite(y) ? y : 0;
+  };
+
+  // ---- geometry accumulation helpers ----
+  const M = new THREE.Matrix4(), NM = new THREE.Matrix3(), V = new THREE.Vector3();
+  const E = new THREE.Euler();
+  function Acc() { return { pos: [], nor: [], col: [] }; }
+  function addTo(acc, geo, color, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0) {
+    const g = geo.index ? geo.toNonIndexed() : geo;
+    E.set(rx, ry, rz); M.makeRotationFromEuler(E); M.setPosition(x, y, z);
+    NM.setFromMatrix4(M);
+    const p = g.attributes.position.array, n = g.attributes.normal.array;
+    const c = new THREE.Color(color);
+    for (let i = 0; i < p.length; i += 3) {
+      V.set(p[i], p[i + 1], p[i + 2]).applyMatrix4(M); acc.pos.push(V.x, V.y, V.z);
+      V.set(n[i], n[i + 1], n[i + 2]).applyMatrix3(NM).normalize(); acc.nor.push(V.x, V.y, V.z);
+      acc.col.push(c.r, c.g, c.b);
+    }
+    if (g !== geo) g.dispose();
+    geo.dispose();
+  }
+  function stamp(dst, src, x, y, z, yaw) { // place a built prop type into the world arrays
+    M.makeRotationY(yaw); M.setPosition(x, y, z);
+    NM.setFromMatrix4(M);
+    const p = src.pos, n = src.nor, c = src.col;
+    for (let i = 0; i < p.length; i += 3) {
+      V.set(p[i], p[i + 1], p[i + 2]).applyMatrix4(M); dst.pos.push(V.x, V.y, V.z);
+      V.set(n[i], n[i + 1], n[i + 2]).applyMatrix3(NM).normalize(); dst.nor.push(V.x, V.y, V.z);
+      dst.col.push(c[i], c[i + 1], c[i + 2]);
+    }
+  }
+
+  // ---- prop types, built once in local space (base at y=0, front faces -Z) ----
+  function tLamppost() { // ~5.9 m tall, curved-head street light
+    const m = Acc(), g = Acc();
+    addTo(m, new THREE.CylinderGeometry(0.16, 0.2, 0.5, 7), P.concrete, 0, 0.25, 0);
+    addTo(m, new THREE.CylinderGeometry(0.07, 0.1, 5.2, 7, 1, true), P.pole, 0, 3.0, 0);
+    addTo(m, new THREE.CylinderGeometry(0.045, 0.045, 1.05, 5, 1, true), P.pole, 0, 5.78, -0.4, Math.PI / 2 - 0.32);
+    addTo(m, new THREE.CapsuleGeometry(0.11, 0.3, 2, 6), P.metal, 0, 5.95, -0.82, Math.PI / 2);
+    addTo(g, new THREE.SphereGeometry(0.085, 6, 5), G.lampAmber, 0, 5.86, -0.82);
+    return { m, g };
+  }
+  function tBench() { // 1.8 m park bench
+    const m = Acc(), g = Acc();
+    addTo(m, new THREE.BoxGeometry(1.8, 0.09, 0.55), P.wood, 0, 0.45, 0);
+    addTo(m, new THREE.BoxGeometry(1.8, 0.5, 0.07), P.wood, 0, 0.78, 0.26, -0.16);
+    addTo(m, new THREE.CylinderGeometry(0.05, 0.05, 0.45, 6), P.dark, -0.75, 0.22, 0);
+    addTo(m, new THREE.CylinderGeometry(0.05, 0.05, 0.45, 6), P.dark, 0.75, 0.22, 0);
+    addTo(m, new THREE.CapsuleGeometry(0.04, 0.4, 2, 6), P.metal, -0.9, 0.62, 0.05, Math.PI / 2, 0, 0.35);
+    addTo(m, new THREE.CapsuleGeometry(0.04, 0.4, 2, 6), P.metal, 0.9, 0.62, 0.05, Math.PI / 2, 0, -0.35);
+    return { m, g };
+  }
+  function tBin() { // street litter bin ~0.95 m
+    const m = Acc(), g = Acc();
+    addTo(m, new THREE.CylinderGeometry(0.32, 0.27, 0.8, 8), P.bin, 0, 0.42, 0);
+    addTo(m, new THREE.TorusGeometry(0.32, 0.035, 5, 8), P.dark, 0, 0.83, 0, Math.PI / 2);
+    addTo(m, new THREE.SphereGeometry(0.3, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2), P.dark, 0, 0.86, 0);
+    return { m, g };
+  }
+  function tHydrant() { // ~0.75 m fire hydrant
+    const m = Acc(), g = Acc();
+    addTo(m, new THREE.CylinderGeometry(0.15, 0.18, 0.12, 7), P.hydrant, 0, 0.06, 0);
+    addTo(m, new THREE.CapsuleGeometry(0.14, 0.34, 2, 7), P.hydrant, 0, 0.42, 0);
+    addTo(m, new THREE.SphereGeometry(0.1, 6, 5), P.metal, 0, 0.66, 0);
+    addTo(m, new THREE.CylinderGeometry(0.06, 0.06, 0.14, 6), P.metal, -0.16, 0.42, 0, 0, 0, Math.PI / 2);
+    addTo(m, new THREE.CylinderGeometry(0.06, 0.06, 0.14, 6), P.metal, 0.16, 0.42, 0, 0, 0, Math.PI / 2);
+    return { m, g };
+  }
+  function tShelter() { // 3.4 m bus-stop shelter (registers collision)
+    const m = Acc(), g = Acc();
+    for (const sx of [-1.5, 1.5]) for (const sz of [-0.6, 0.6]) {
+      addTo(m, new THREE.CylinderGeometry(0.05, 0.05, 2.4, 6), P.pole, sx, 1.2, sz);
+    }
+    addTo(m, new THREE.BoxGeometry(3.4, 0.1, 1.6), P.roof, 0, 2.48, 0);
+    addTo(m, new THREE.BoxGeometry(3.5, 0.14, 0.12), P.roof, 0, 2.42, -0.78);
+    addTo(m, new THREE.BoxGeometry(3.2, 1.3, 0.06), P.glass, 0, 1.15, 0.58);
+    addTo(m, new THREE.BoxGeometry(3.0, 0.08, 0.4), P.wood, 0, 0.5, 0.3);
+    return { m, g };
+  }
+  function tTrafficLight(greenFirst) { // 4.4 m signal, head faces -Z; one bulb lit
+    const m = Acc(), g = Acc();
+    addTo(m, new THREE.CylinderGeometry(0.14, 0.18, 0.35, 7), P.concrete, 0, 0.17, 0);
+    addTo(m, new THREE.CylinderGeometry(0.06, 0.08, 3.9, 7, 1, true), P.pole, 0, 2.1, 0);
+    addTo(m, new THREE.BoxGeometry(0.36, 1.0, 0.3), P.dark, 0, 4.05, 0);
+    const ys = [4.38, 4.05, 3.72];
+    const cols = [G.bulbRed, '#c99030', G.bulbGreen];
+    for (let i = 0; i < 3; i++) {
+      addTo(m, new THREE.BoxGeometry(0.22, 0.05, 0.16), P.dark, 0, ys[i] + 0.1, -0.14); // visor
+      const lit = (greenFirst ? i === 2 : i === 0);
+      const acc = lit ? g : m;
+      addTo(acc, new THREE.CylinderGeometry(0.085, 0.085, 0.05, 8), lit ? cols[i] : '#4a4a4a', 0, ys[i], -0.16, Math.PI / 2);
+    }
+    return { m, g };
+  }
+  function tSign(color) { // 2.6 m octagon road sign, plate faces -Z
+    const m = Acc(), g = Acc();
+    addTo(m, new THREE.CylinderGeometry(0.035, 0.045, 2.5, 6, 1, true), P.metal, 0, 1.25, 0);
+    addTo(m, new THREE.CylinderGeometry(0.34, 0.34, 0.04, 8), color, 0, 2.35, -0.02, Math.PI / 2);
+    addTo(m, new THREE.CylinderGeometry(0.26, 0.26, 0.045, 8), '#e8e4d0', 0, 2.35, -0.015, Math.PI / 2);
+    addTo(m, new THREE.CylinderGeometry(0.2, 0.2, 0.05, 8), color, 0, 2.35, -0.01, Math.PI / 2);
+    return { m, g };
+  }
+
+  const TYPES = {
+    lamp: tLamppost(), bench: tBench(), bin: tBin(), hydrant: tHydrant(),
+    shelter: tShelter(), signRed: tSign(P.signRed), signYellow: tSign(P.signYellow),
+  };
+
+  // ---- placement validation ----
+  const placed = []; // {x, z, r} for spacing dedupe
+  const isRoad = map.isRoadAt || (() => false);
+  const isBlk = map.isBlocked || map.blockedAt || (() => false);
+  function free(x, z, r, spacing) {
+    if (!inBounds(x, z) || onPier(x, z)) return false;
+    if (isRoad(x, z)) return false;
+    if (isBlk(x, z, r)) return false;
+    for (const q of placed) {
+      if ((x - q.x) * (x - q.x) + (z - q.z) * (z - q.z) < spacing * spacing) return false;
+    }
+    return true;
+  }
+  const world = Acc(), glow = Acc();
+  const placements = [];
+  function put(typeKey, x, z, yaw, r, spacing) {
+    const y = ground(x, z);
+    stamp(world, TYPES[typeKey].m, x, y, z, yaw);
+    if (TYPES[typeKey].g.pos.length) stamp(glow, TYPES[typeKey].g, x, y, z, yaw);
+    placed.push({ x, z, r });
+    placements.push({ type: typeKey, x, z, yaw });
+  }
+
+  // point + direction at arc distance s along a road
+  function pointAt(road, s) {
+    let i = 1;
+    while (i < road.cum.length - 1 && road.cum[i] < s) i++;
+    const t = (s - road.cum[i - 1]) / Math.max(1e-6, road.cum[i] - road.cum[i - 1]);
+    const a = road.pts[i - 1], b = road.pts[i];
+    const x = a[0] + (b[0] - a[0]) * t, z = a[1] + (b[1] - a[1]) * t;
+    const L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+    return { x, z, ux: (b[0] - a[0]) / L, uz: (b[1] - a[1]) / L, seg: i - 1 };
+  }
+  // yaw that faces local -Z toward (tx,tz)
+  const faceYaw = (x, z, tx, tz) => Math.atan2(-(tx - x), -(tz - z));
+
+  // ---- junctions: segment intersections between different roads ----
+  function segInt(a, b, c, d) {
+    const r = [b[0] - a[0], b[1] - a[1]], s = [d[0] - c[0], d[1] - c[1]];
+    const den = r[0] * s[1] - r[1] * s[0];
+    if (Math.abs(den) < 1e-9) {
+      // collinear-ish: treat endpoint touch as junction (ramp/hillcrest share endpoints)
+      for (const [p, q0, q1] of [[a, c, d], [b, c, d], [c, a, b], [d, a, b]]) {
+        if (Math.hypot(p[0] - q0[0], p[1] - q0[1]) < 0.5) return { x: p[0], z: p[1] };
+        if (Math.hypot(p[0] - q1[0], p[1] - q1[1]) < 0.5) return { x: p[0], z: p[1] };
+      }
+      return null;
+    }
+    const t = ((c[0] - a[0]) * s[1] - (c[1] - a[1]) * s[0]) / den;
+    const u = ((c[0] - a[0]) * r[1] - (c[1] - a[1]) * r[0]) / den;
+    if (t < -0.02 || t > 1.02 || u < -0.02 || u > 1.02) return null;
+    return { x: a[0] + t * r[0], z: a[1] + t * r[1], dirA: r, dirB: s };
+  }
+  const junctions = [];
+  for (let i = 0; i < roads.length; i++) {
+    for (let j = i + 1; j < roads.length; j++) {
+      const A = roads[i], B = roads[j];
+      for (let a = 0; a < A.pts.length - 1; a++) {
+        for (let b = 0; b < B.pts.length - 1; b++) {
+          const hit = segInt(A.pts[a], A.pts[a + 1], B.pts[b], B.pts[b + 1]);
+          if (!hit) continue;
+          if (junctions.some((q) => Math.hypot(q.x - hit.x, q.z - hit.z) < 8)) continue;
+          const la = Math.hypot(hit.dirA ? hit.dirA[0] : 1, hit.dirA ? hit.dirA[1] : 0) || 1;
+          const lb = Math.hypot(hit.dirB ? hit.dirB[0] : 1, hit.dirB ? hit.dirB[1] : 0) || 1;
+          junctions.push({
+            x: hit.x, z: hit.z,
+            ax: (hit.dirA ? hit.dirA[0] : 1) / la, az: (hit.dirA ? hit.dirA[1] : 0) / la,
+            bx: (hit.dirB ? hit.dirB[0] : 0) / lb, bz: (hit.dirB ? hit.dirB[1] : 1) / lb,
+            wA: A.w, wB: B.w,
+          });
+        }
+      }
+    }
+  }
+
+  // ---- traffic lights + signs at junctions ----
+  let tlCount = 0;
+  for (const J of junctions) {
+    // corner offset: perpendiculars of both road directions
+    const n1x = -J.az, n1z = J.ax, n2x = -J.bz, n2z = J.bx;
+    const o1 = J.wA / 2 + 1.0, o2 = J.wB / 2 + 1.0;
+    const corners = [
+      { x: J.x + n1x * o1 + n2x * o2, z: J.z + n1z * o1 + n2z * o2 },
+      { x: J.x - n1x * o1 - n2x * o2, z: J.z - n1z * o1 - n2z * o2 },
+    ];
+    if (J.wA >= 8 && J.wB >= 8) {
+      for (const c of corners) {
+        if (!free(c.x, c.z, 0.4, 2)) continue;
+        const key = 'tl' + (tlCount % 2);
+        if (!TYPES[key]) TYPES[key] = tTrafficLight(tlCount % 2 === 0);
+        put(key, c.x, c.z, faceYaw(c.x, c.z, J.x, J.z), 0.4, 2);
+        tlCount++;
+      }
+      // one stop-style sign on a third corner
+      const sx = J.x + n1x * o1 - n2x * o2, sz = J.z + n1z * o1 - n2z * o2;
+      if (free(sx, sz, 0.3, 2)) put('signRed', sx, sz, faceYaw(sx, sz, J.x, J.z), 0.3, 2);
+    } else {
+      // minor junction: single yield-style sign
+      const c = corners[0];
+      if (free(c.x, c.z, 0.3, 2)) put('signYellow', c.x, c.z, faceYaw(c.x, c.z, J.x, J.z), 0.3, 2);
+    }
+  }
+
+  // ---- street furniture along every road ----
+  const LAMP_EVERY = 38, BENCH_EVERY = 95, BIN_EVERY = 60, HYD_EVERY = 170;
+  let sheltersPlaced = 0;
+  for (const road of roads) {
+    const h = road.w / 2;
+    // lampposts, alternating sides
+    for (let s = 19, k = 0; s < road.len - 8; s += LAMP_EVERY, k++) {
+      const p = pointAt(road, s);
+      const side = k % 2 === 0 ? 1 : -1;
+      const x = p.x + -p.uz * side * (h + 1.2), z = p.z + p.ux * side * (h + 1.2);
+      if (!free(x, z, 0.4, 3)) continue;
+      // arm toward the road: face the road centerline
+      put('lamp', x, z, faceYaw(x, z, p.x, p.z), 0.4, 3);
+    }
+    // benches (skip short roads), facing the road
+    if (road.len > 120) {
+      for (let s = 47; s < road.len - 10; s += BENCH_EVERY) {
+        const p = pointAt(road, s);
+        const side = (Math.floor(s / BENCH_EVERY) % 2 === 0) ? -1 : 1;
+        const x = p.x + -p.uz * side * (h + 1.5), z = p.z + p.ux * side * (h + 1.5);
+        if (!free(x, z, 0.5, 2.5)) continue;
+        put('bench', x, z, faceYaw(x, z, p.x, p.z), 0.5, 2.5);
+      }
+    }
+    // bins
+    for (let s = 30; s < road.len - 6; s += BIN_EVERY) {
+      const p = pointAt(road, s);
+      const side = (Math.floor(s / BIN_EVERY) % 2 === 0) ? 1 : -1;
+      const x = p.x + -p.uz * side * (h + 1.1), z = p.z + p.ux * side * (h + 1.1);
+      if (!free(x, z, 0.35, 1.5)) continue;
+      put('bin', x, z, Math.random() * Math.PI * 2, 0.35, 1.5);
+    }
+    // hydrants on the wider downtown streets only
+    if (road.w >= 8 && road.len > 200) {
+      for (let s = 90; s < road.len - 10; s += HYD_EVERY) {
+        const p = pointAt(road, s);
+        const x = p.x + -p.uz * (h + 1.0), z = p.z + p.ux * (h + 1.0);
+        if (!free(x, z, 0.3, 2)) continue;
+        put('hydrant', x, z, Math.random() * Math.PI * 2, 0.3, 2);
+      }
+    }
+    // bus shelters: one per long straight-ish wide road, max 6 city-wide, not on the beach
+    if (road.w >= 8 && road.len > 250 && sheltersPlaced < 6) {
+      const s = road.len * 0.55;
+      const p = pointAt(road, s);
+      const x = p.x + -p.uz * (h + 1.9), z = p.z + p.ux * (h + 1.9);
+      if (x < -160) continue; // keep shelters on the city side of the boardwalk sand
+      // needs a wide clear area; check center + 4 footprint corners
+      const along = Math.abs(p.ux) > Math.abs(p.uz); // road runs E-W -> shelter long axis X
+      const ex = along ? 1.8 : 1.0, ez = along ? 1.0 : 1.8;
+      const ok = free(x, z, 0.5, 4) &&
+        [[ex, ez], [-ex, ez], [ex, -ez], [-ex, -ez]].every(([dx, dz]) =>
+          !isRoad(x + dx, z + dz) && !isBlk(x + dx, z + dz, 0.3) && inBounds(x + dx, z + dz));
+      if (ok) {
+        const yaw = faceYaw(x, z, p.x, p.z);
+        put('shelter', x, z, yaw, 0.5, 4);
+        if (map.addBlock) map.addBlock(x - ex, z - ez, x + ex, z + ez); // WORLD coords
+        sheltersPlaced++;
+      }
+    }
+  }
+
+  // ---- merge to 2 static meshes ----
+  const matMatte = new THREE.MeshLambertMaterial({ vertexColors: true });
+  const matGlow = new THREE.MeshBasicMaterial({ vertexColors: true });
+  function toMesh(acc, mat, name) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(acc.pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(acc.nor, 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(acc.col, 3));
+    const mesh = new THREE.Mesh(g, mat);
+    mesh.name = name;
+    scene.add(mesh);
+    return mesh;
+  }
+  const meshMatte = toMesh(world, matMatte, 'props:matte');
+  const triCount =
+    meshMatte.geometry.attributes.position.count / 3 +
+    (glow.pos.length ? (() => { const mm = toMesh(glow, matGlow, 'props:glow'); return mm.geometry.attributes.position.count / 3; })() : 0);
+
+  return {
+    update(dt) {}, // fully static; API kept for the brief
+    count: placements.length,
+    triCount: Math.round(triCount),
+    placements, // for tests/coordinator verification
+  };
+}
+
+
+// ===== pedestrians.js =====
+// js/pedestrians.js — original low-poly rounded pedestrians (~1.8 m) for Coastal City.
+// Soft street ambience: they walk the road edges (half-width + ~2 m offset), turn at
+// junctions or reverse at road ends, hurry across open road at junction crossings,
+// and never register collision (brief: vehicles/players may pass through).
+//
+// Coordinator notes:
+//   main.js wiring (exact one-line calls):
+//     const pedestrians = createPedestrians({ THREE, scene, map, getPlayerPos });
+//     // per frame: pedestrians.update(dt);
+//   getPlayerPos() -> {x, z} in WORLD coords; called at most once per frame.
+//   No map.addBlock calls, no collision, no shadows, no lights.
+//
+// Shared palette (one shared MeshLambertMaterial({vertexColors:true}); colors baked):
+//   skin  #c68b59 #8d5a3a #e0ac82 #6b4a2f
+//   shirt #c94f4f #4f7dc9 #d8c94f #5aa66b #d8d4c8 #7a5ac8
+//   pants #26344c #4a4a52 #6e5a3a #2e5d4c
+//   hair  #2c241c #4a3826 #6e6e6e   shoe #152335
+//
+// Perf: 5 meshes per pedestrian (body, 2 leg groups, 2 arm groups); limb geometries
+// are cached per color combo and shared. Full swing animation only within 60 m of the
+// player; 60-140 m glide (no limb animation); past 140 m hidden and respawned near the
+// player on a random road. Walk speed 1.2-1.8 m/s. No skinned meshes, no AnimationMixer.
+function createPedestrians({ THREE, scene, map, getPlayerPos }) {
+  const SKIN = ['#c68b59', '#8d5a3a', '#e0ac82', '#6b4a2f'];
+  const SHIRT = ['#c94f4f', '#4f7dc9', '#d8c94f', '#5aa66b', '#d8d4c8', '#7a5ac8'];
+  const PANTS = ['#26344c', '#4a4a52', '#6e5a3a', '#2e5d4c'];
+  const HAIR = ['#2c241c', '#4a3826', '#6e6e6e'];
+  const SHOE = '#152335';
+  const pick = (a) => a[Math.floor(Math.random() * a.length)];
+
+  const PED_COUNT = 20; // coordinator dial (parent Nov 20): 28->20 for FPS headroom
+  const ANIM_NEAR = 60, HIDE_FAR = 140, SIDEWALK = 2.0;
+
+  // ---- world-space road polylines (layout - 300) with cumulative lengths ----
+  const roads = (map.roadPaths || []).map((r) => {
+    const pts = r.pts.map((p) => [p[0] - 300, p[1] - 300]);
+    const cum = [0];
+    for (let i = 1; i < pts.length; i++) {
+      cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+    }
+    return { pts, cum, w: r.w, len: cum[cum.length - 1] };
+  }).filter((r) => r.len > 30);
+
+  const isRoad = map.isRoadAt || (() => false);
+  const isBlk = map.isBlocked || map.blockedAt || (() => false);
+  const ground = (x, z) => {
+    const y = (map.groundAt || map.heightAt || (() => 0))(x, z);
+    return Number.isFinite(y) ? y : 0;
+  };
+  const inBounds = (x, z) => x > -295 && x < 295 && z > -295 && z < 295;
+
+  // point + unit direction at arc distance s along a road
+  function pointAt(road, s) {
+    let i = 1;
+    while (i < road.cum.length - 1 && road.cum[i] < s) i++;
+    const t = (s - road.cum[i - 1]) / Math.max(1e-6, road.cum[i] - road.cum[i - 1]);
+    const a = road.pts[i - 1], b = road.pts[i];
+    const L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+    return {
+      x: a[0] + (b[0] - a[0]) * t, z: a[1] + (b[1] - a[1]) * t,
+      ux: (b[0] - a[0]) / L, uz: (b[1] - a[1]) / L, seg: i - 1,
+    };
+  }
+  // sidewalk position for a ped state
+  function spot(road, s, side) {
+    const p = pointAt(road, s);
+    const off = road.w / 2 + SIDEWALK;
+    return { x: p.x + -p.uz * side * off, z: p.z + p.ux * side * off, ux: p.ux, uz: p.uz, seg: p.seg };
+  }
+
+  // ---- geometry helpers ----
+  const M = new THREE.Matrix4(), NM = new THREE.Matrix3(), V = new THREE.Vector3(), E = new THREE.Euler();
+  function Acc() { return { pos: [], nor: [], col: [] }; }
+  function addTo(acc, geo, color, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0, sx = 1, sy = 1, sz = 1) {
+    const g = geo.index ? geo.toNonIndexed() : geo;
+    E.set(rx, ry, rz); M.makeRotationFromEuler(E);
+    M.scale(new THREE.Vector3(sx, sy, sz)); M.setPosition(x, y, z);
+    NM.setFromMatrix4(M);
+    const p = g.attributes.position.array, n = g.attributes.normal.array;
+    const c = new THREE.Color(color);
+    for (let i = 0; i < p.length; i += 3) {
+      V.set(p[i], p[i + 1], p[i + 2]).applyMatrix4(M); acc.pos.push(V.x, V.y, V.z);
+      V.set(n[i], n[i + 1], n[i + 2]).applyMatrix3(NM).normalize(); acc.nor.push(V.x, V.y, V.z);
+      acc.col.push(c.r, c.g, c.b);
+    }
+    if (g !== geo) g.dispose();
+    geo.dispose();
+  }
+  function toGeo(acc) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(acc.pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(acc.nor, 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(acc.col, 3));
+    return g;
+  }
+  const mat = new THREE.MeshLambertMaterial({ vertexColors: true });
+
+  // ---- cached part geometries (local space; feet at y=0; limbs pivot at top) ----
+  const bodyCache = new Map(), legCache = new Map(), armCache = new Map();
+  function bodyGeo(skin, shirt, pants, hair) {
+    const key = [skin, shirt, pants, hair].join('|');
+    if (!bodyCache.has(key)) {
+      const a = Acc();
+      addTo(a, new THREE.CapsuleGeometry(0.17, 0.4, 2, 6), shirt, 0, 1.12, 0);       // torso
+      addTo(a, new THREE.SphereGeometry(1, 7, 5), pants, 0, 0.88, 0, 0, 0, 0, 0.19, 0.14, 0.15); // pelvis
+      addTo(a, new THREE.CylinderGeometry(0.06, 0.07, 0.1, 6), skin, 0, 1.42, 0);      // neck
+      addTo(a, new THREE.SphereGeometry(0.14, 7, 6), skin, 0, 1.6, 0);                 // head
+      addTo(a, new THREE.SphereGeometry(0.145, 7, 5, 0, Math.PI * 2, 0, Math.PI / 2), hair, 0, 1.63, 0.005, 0, 0, 0, 1, 0.75, 1); // hair cap
+      addTo(a, new THREE.SphereGeometry(0.032, 5, 4), skin, 0, 1.58, -0.13);           // nose
+      bodyCache.set(key, toGeo(a));
+    }
+    return bodyCache.get(key);
+  }
+  function legGeo(pants) {
+    if (!legCache.has(pants)) {
+      const a = Acc();
+      addTo(a, new THREE.CapsuleGeometry(0.09, 0.28, 2, 6), pants, 0, -0.2, 0);        // thigh
+      addTo(a, new THREE.CapsuleGeometry(0.075, 0.26, 2, 6), pants, 0, -0.58, 0);      // shin
+      addTo(a, new THREE.SphereGeometry(1, 6, 5), SHOE, 0, -0.8, -0.05, 0, 0, 0, 0.1, 0.07, 0.17); // shoe
+      legCache.set(pants, toGeo(a));
+    }
+    return legCache.get(pants);
+  }
+  function armGeo(skin, shirt) {
+    const key = skin + '|' + shirt;
+    if (!armCache.has(key)) {
+      const a = Acc();
+      addTo(a, new THREE.CapsuleGeometry(0.07, 0.22, 2, 6), shirt, 0, -0.15, 0);       // sleeve
+      addTo(a, new THREE.CapsuleGeometry(0.06, 0.22, 2, 6), skin, 0, -0.44, 0);        // forearm
+      addTo(a, new THREE.SphereGeometry(0.07, 5, 4), skin, 0, -0.6, 0);                // hand
+      armCache.set(key, toGeo(a));
+    }
+    return armCache.get(key);
+  }
+
+  // ---- build a pedestrian ----
+  function makePed() {
+    const skin = pick(SKIN), shirt = pick(SHIRT), pants = pick(PANTS), hair = pick(HAIR);
+    const root = new THREE.Group();
+    const body = new THREE.Group(); // bobs with the walk cycle
+    root.add(body);
+    body.add(new THREE.Mesh(bodyGeo(skin, shirt, pants, hair), mat));
+    const legL = new THREE.Group(); legL.position.set(-0.11, 0.86, 0);
+    const legR = new THREE.Group(); legR.position.set(0.11, 0.86, 0);
+    legL.add(new THREE.Mesh(legGeo(pants), mat));
+    legR.add(new THREE.Mesh(legGeo(pants), mat));
+    const armL = new THREE.Group(); armL.position.set(-0.26, 1.36, 0);
+    const armR = new THREE.Group(); armR.position.set(0.26, 1.36, 0);
+    armL.add(new THREE.Mesh(armGeo(skin, shirt), mat));
+    armR.add(new THREE.Mesh(armGeo(skin, shirt), mat));
+    body.add(legL, legR, armL, armR);
+    scene.add(root);
+    return {
+      root, body, legL, legR, armL, armR,
+      road: null, s: 0, dir: 1, side: 1, speed: 1.2 + Math.random() * 0.6,
+      phase: Math.random() * 6.283, lastSeg: -1, respawnCd: 0, turnCd: 0, x: 0, z: 0,
+    };
+  }
+
+  function validSpot(x, z) {
+    return inBounds(x, z) && !isRoad(x, z) && !isBlk(x, z, 0.35);
+  }
+  // place a ped on a random road/s/side; near ({x,z}, minD, maxD) when given
+  function spawn(p, near, minD, maxD) {
+    for (let t = 0; t < 10; t++) {
+      const road = roads[Math.floor(Math.random() * roads.length)];
+      if (!road) return false;
+      const s = 6 + Math.random() * Math.max(1, road.len - 12);
+      const side = Math.random() < 0.5 ? 1 : -1;
+      const q = spot(road, s, side);
+      if (!validSpot(q.x, q.z)) continue;
+      if (near) {
+        const d = Math.hypot(q.x - near.x, q.z - near.z);
+        if (d < minD || d > maxD) continue;
+      }
+      p.road = road; p.s = s; p.side = side;
+      p.dir = Math.random() < 0.5 ? 1 : -1;
+      p.x = q.x; p.z = q.z; p.lastSeg = q.seg;
+      return true;
+    }
+    return false;
+  }
+
+  const peds = [];
+  for (let i = 0; i < Math.min(PED_COUNT, Math.max(1, roads.length ? PED_COUNT : 0)); i++) {
+    const p = makePed();
+    spawn(p, null, 0, 0);
+    peds.push(p);
+  }
+
+  // junction hand-off: when crossing a polyline vertex, maybe switch to a crossing road
+  function maybeTurn(p, q) {
+    if (q.seg === p.lastSeg) return;
+    p.lastSeg = q.seg;
+    const vtx = p.road.pts[q.seg]; // vertex just crossed
+    if (!vtx || Math.random() > 0.35) return;
+    for (const r of roads) {
+      if (r === p.road) continue;
+      for (let i = 0; i < r.pts.length; i++) {
+        if (Math.hypot(r.pts[i][0] - vtx[0], r.pts[i][1] - vtx[1]) < r.w / 2 + 3) {
+          p.road = r; p.s = r.cum[i];
+          p.dir = Math.random() < 0.5 ? 1 : -1;
+          p.side = Math.random() < 0.5 ? 1 : -1;
+          p.lastSeg = -1;
+          return;
+        }
+      }
+    }
+  }
+
+  function update(dt) {
+    if (!Number.isFinite(dt) || dt <= 0) return;
+    dt = Math.min(dt, 0.05);
+    const pp = (getPlayerPos && getPlayerPos()) || { x: 0, z: 0 }; // once per frame
+    for (const p of peds) {
+      if (!p.road) { p.root.visible = false; continue; }
+      const dPlayer = Math.hypot(p.x - pp.x, p.z - pp.z);
+      if (dPlayer > HIDE_FAR) { // too far: hide, try to respawn near the player
+        p.root.visible = false;
+        p.respawnCd -= dt;
+        if (p.respawnCd <= 0) {
+          p.respawnCd = 2;
+          if (spawn(p, pp, 45, HIDE_FAR - 25)) {
+            const q = spot(p.road, p.s, p.side);
+            p.x = q.x; p.z = q.z;
+          }
+        }
+        continue;
+      }
+      // crosswalk hurry: brief says stay off the road surface; at junction crossings the
+      // sidewalk line crosses the side road, so they hurry across instead of strolling.
+      const onRoad = isRoad(p.x, p.z);
+      const v = p.speed * (onRoad ? 2.5 : 1);
+      p.s += p.dir * v * dt;
+      if (p.s >= p.road.len - 1) { p.s = p.road.len - 1; p.dir = -1; }
+      else if (p.s <= 1) { p.s = 1; p.dir = 1; }
+      let q = spot(p.road, p.s, p.side);
+      maybeTurn(p, q);
+      q = spot(p.road, p.s, p.side);
+      // blocked-ahead probe: swap sidewalk side, else reverse
+      const ax = q.x + q.ux * p.dir * 1.1, az = q.z + q.uz * p.dir * 1.1;
+      if (isBlk(ax, az, 0.3)) {
+        const q2 = spot(p.road, p.s, -p.side);
+        const bx = q2.x + q2.ux * p.dir * 1.1, bz = q2.z + q2.uz * p.dir * 1.1;
+        if (!isBlk(bx, bz, 0.3) && !isRoad(q2.x, q2.z)) { p.side = -p.side; q = q2; }
+        else { p.dir = -p.dir; q = spot(p.road, p.s, p.side); }
+      }
+      p.x = q.x; p.z = q.z;
+      p.root.visible = true;
+      p.root.position.set(p.x, ground(p.x, p.z), p.z);
+      p.root.rotation.y = -Math.atan2(q.ux * p.dir, -q.uz * p.dir); // actors heading convention
+      if (dPlayer < ANIM_NEAR) { // full cheap walk cycle
+        p.phase += dt * v * 3.6;
+        const sw = Math.sin(p.phase);
+        p.legL.rotation.x = sw * 0.55;
+        p.legR.rotation.x = -sw * 0.55;
+        p.armL.rotation.x = -sw * 0.4;
+        p.armR.rotation.x = sw * 0.4;
+        p.body.position.y = Math.abs(Math.sin(p.phase * 2)) * 0.045;
+      } else { // glide: relax limbs
+        p.legL.rotation.x *= 0.85; p.legR.rotation.x *= 0.85;
+        p.armL.rotation.x *= 0.85; p.armR.rotation.x *= 0.85;
+        p.body.position.y *= 0.85;
+      }
+    }
+  }
+
+  return { update, count: peds.length };
+}
+
+
 // ===== adaptive-resolution.js =====
 // adaptive-resolution.js — NEW drop-in module (complete file). Graphics+FPS builder, v1.
 // No THREE import (project module discipline): the renderer arrives as an argument.
@@ -1855,7 +2471,7 @@ function createAdaptiveResolution({ renderer, min = 0.75, max = 1.25, start = 1 
 // main.js — game loop, camera, HUD glue, module wiring. Coordinator-owned. Contract v1.1.
 // Only this file imports THREE; every module receives it (or DOM hosts) via arguments.
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-// houses v1b: every road lined with homes; adaptive-resolution = P1
+// houses v1b: every road lined with homes; adaptive-resolution = P1; props/pedestrians: street life
 
 const canvas = document.getElementById('game');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
@@ -1950,6 +2566,8 @@ class RepoMapGLTFLoader extends GLTFLoader {
 const map = createMap({ THREE, scene, GLTFLoader: RepoMapGLTFLoader }); // class, not instance: swapToModels news it up
 const houses = createHouses({ THREE, scene, map, GLTFLoader: RepoMapGLTFLoader }); // houses v1b: 150 homes, 13 draw calls
 skyDome.matrixAutoUpdate = true; // map's P2 freeze covers the whole scene; the dome must follow the camera
+const props = createProps({ THREE, scene, map }); // 296 street props in 2 draw calls
+const pedestrians = createPedestrians({ THREE, scene, map, getPlayerPos: () => ({ x: actors.cameraTarget.x, z: actors.cameraTarget.z }) }); // 20 walkers
 
 let paused = false;
 
@@ -2149,6 +2767,8 @@ function frame(now) {
     taxiJob.update(dt);
     deliveryJob.update(dt);
     pizzaJob.update(dt);
+    props.update(dt);
+    pedestrians.update(dt);
     if (marker && marker.visible) marker.rotation.y += dt; // spin marker lightly
     if (deliveryMarker && deliveryMarker.visible) deliveryMarker.rotation.y += dt;
     if (pizzaMarker && pizzaMarker.visible) pizzaMarker.rotation.y += dt;
