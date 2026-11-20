@@ -3228,7 +3228,33 @@ function createProps({ THREE, scene, map }) {
     addTo(m, new THREE.CylinderGeometry(0.2, 0.2, 0.05, 6), color, 0, 2.35, -0.01, Math.PI / 2);
     return { m, g };
   }
-
+  function tLifeguardTower() {
+    const m = Acc(), g = Acc();
+    for (const x of [-1.25, 1.25]) for (const z of [-1, 1])
+      addTo(m, new THREE.CylinderGeometry(0.10, 0.14, 2.1, 6), '#b79971', x, 1.05, z);
+    addTo(m, new THREE.BoxGeometry(3.3, 0.18, 2.8), '#c6b18e', 0, 2.1, 0);
+    addTo(m, new THREE.BoxGeometry(2.4, 1.65, 1.85), '#9ac9c5', 0, 3.0, 0.18);
+    addTo(m, new THREE.BoxGeometry(0.035, 0.62, 1.55), '#416c82', -1.22, 3.28, 0.18);
+    for (const side of [-1, 1])
+      addTo(m, new THREE.BoxGeometry(1.8, 0.12, 2.6), '#d7b977', side*0.78, 4.0, 0.18, 0, 0, side*-0.18);
+    for (const z of [-1.3, 1.3]) {
+      addTo(m, new THREE.CylinderGeometry(0.045, 0.045, 0.8, 5), '#eee4cc', -1.5, 2.55, z);
+      addTo(m, new THREE.BoxGeometry(3.0, 0.065, 0.065), '#eee4cc', 0, 2.9, z);
+    }
+    for (const x of [-0.42, 0.42])
+      addTo(m, new THREE.CylinderGeometry(0.055, 0.055, 2.5, 5), '#b79971', x, 1.1, -2.0, -0.4);
+    for (let i=0;i<6;i++) addTo(m, new THREE.BoxGeometry(0.9,0.065,0.13), '#e1cda6', 0, 0.25+i*0.32, -2.4+i*0.14);
+    addTo(m, new THREE.SphereGeometry(0.22, 6, 4), '#e66b43', -1.25, 2.5, -0.8);
+    return { m, g };
+  }
+  function tVolleyballNet() {
+    const m=Acc(), g=Acc();
+    for (const x of [-4,4]) addTo(m,new THREE.CylinderGeometry(0.065,0.085,2.5,6),'#e9dfca',x,1.25,0);
+    for (let i=0;i<=16;i++) addTo(m,new THREE.BoxGeometry(0.014,0.9,0.014),'#e4dfd3',-4+i*0.5,1.95,0);
+    for (let i=0;i<=3;i++) addTo(m,new THREE.BoxGeometry(8,0.014,0.014),'#e4dfd3',0,1.5+i*0.3,0);
+    addTo(m,new THREE.BoxGeometry(8.1,0.08,0.035),'#fcf3db',0,2.43,0);
+    return {m,g};
+  }
   function tRailing() { // round 5: one full pier-edge railing (98 m): rounded posts + 2 rails
     const m = Acc(), g = Acc();
     const wood = '#8a6a48', woodDark = '#6e5336';
@@ -3323,13 +3349,27 @@ function createProps({ THREE, scene, map }) {
     return true;
   }
   const world = Acc(), glow = Acc();
+  const beachBatches = [];
+  let separateBeach = false;
   const placements = [];
+  let meterTradeIndex = 0;
+  const tradeRemoved = [];
   const det01 = (x, z) => { const h = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453; return h - Math.floor(h); };
   const detYaw = (x, z) => det01(x, z) * Math.PI * 2;
   function put(typeKey, x, z, yaw, r, spacing, recordKey) {
+    if (typeKey === 'meter' && meterTradeIndex++ < 10) {
+      placed.push({x,z,r}); tradeRemoved.push({type:'meter',x,z,yaw}); return;
+    }
     const y = ground(x, z);
-    stamp(world, TYPES[typeKey].m, x, y, z, yaw);
-    if (TYPES[typeKey].g.pos.length) stamp(glow, TYPES[typeKey].g, x, y, z, yaw);
+    if (separateBeach) {
+      const matte = Acc(), lit = Acc();
+      stamp(matte, TYPES[typeKey].m, 0, 0, 0, yaw);
+      if (TYPES[typeKey].g.pos.length) stamp(lit, TYPES[typeKey].g, 0, 0, 0, yaw);
+      beachBatches.push({matte, lit, x, y, z, type: recordKey || typeKey});
+    } else {
+      stamp(world, TYPES[typeKey].m, x, y, z, yaw);
+      if (TYPES[typeKey].g.pos.length) stamp(glow, TYPES[typeKey].g, x, y, z, yaw);
+    }
     placed.push({ x, z, r });
     placements.push({ type: recordKey || typeKey, x, z, yaw }); // v6: towels stamp towel geometry, record as 'bench'
   }
@@ -3843,11 +3883,34 @@ function createProps({ THREE, scene, map }) {
       if (done) continue;
     }
   }
+  TYPES.lifeguardTower = tLifeguardTower();
+  TYPES.volleyballNet = tVolleyballNet();
+  const beachFootFree = (x,z,hx,hz) => {
+    for(let xx=x-hx;xx<=x+hx+0.01;xx+=0.5)
+      for(let zz=z-hz;zz<=z+hz+0.01;zz+=0.5)
+        if(xx < WATER_X+1 || onPier(xx,zz) || isRoad(xx,zz) || isBlk(xx,zz,0.2)) return false;
+    return !placed.some(q => Math.abs(q.x-x)<hx+1.3 && Math.abs(q.z-z)<hz+1.3);
+  };
+  const addBeach = (type, wanted, hx,hz, zs, yaw=0, record) => {
+    let n=0;
+    for(const z of zs) for(const x of [-205,-198,-190]) {
+      if(n>=wanted) break;
+      if(!beachFootFree(x,z,hx,hz)) continue;
+      put(type,x,z,yaw,Math.max(hx,hz),1,record); n++;
+    }
+  };
+  separateBeach = true;
+  addBeach('lifeguardTower',1,2.2,3.0,[-35,-48,-62,-76,35,48]);
+  addBeach('volleyballNet',2,4.5,8.5,[45,68,92,-92,-118]);
+  addBeach('umbrellaB',2,2.5,2.5,[-20,-55,22,115,-140],0,'umbrella');
+  addBeach('towelB',2,1.0,1.0,[-24,-59,26,119,-144],0,'bench');
+
+  separateBeach = false;
   const matMatte = new THREE.MeshLambertMaterial({ vertexColors: true });
   const matGlow = new THREE.MeshBasicMaterial({ vertexColors: true });
   const PROPS_CHUNK_CELL = 100;
   const FOG_CULL_DIST = 260; // scene fog far (main.js scene.fog = 70..260)
-  function toMesh(acc, mat, name) {
+  function toMesh(acc, mat, name) { // fog-cull restored verbatim from the live v29 bundle: 100 m cells, empty LOD far level
     const cells = new Map();
     for (let t = 0; t < acc.pos.length; t += 9) { // non-indexed triangle soup
       const cx = (acc.pos[t] + acc.pos[t + 3] + acc.pos[t + 6]) / 3;
@@ -3881,6 +3944,22 @@ function createProps({ THREE, scene, map }) {
     first.userData.chunkTris = tris; // total across all cells of this material
     return first;
   }
+  function toLocalMesh(acc, mat, name) { // round-18 beach pieces: local geometry, LOD-wrapped at anchor
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(acc.pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(acc.nor, 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(acc.col, 3));
+    g.computeBoundingBox();
+    g.computeBoundingSphere();
+    const mesh = new THREE.Mesh(g, mat);
+    mesh.name = name;
+    mesh.matrixAutoUpdate = false;
+    const lod = new THREE.LOD();
+    lod.addLevel(mesh, 0);
+    lod.addLevel(new THREE.Object3D(), FOG_CULL_DIST + g.boundingSphere.radius);
+    scene.add(lod);
+    return lod;
+  }
   const meshMatte = toMesh(world, matMatte, 'props:matte');
   let glowTris = 0;
   if (glow.pos.length) {
@@ -3895,14 +3974,26 @@ function createProps({ THREE, scene, map }) {
     scene.add(gm);
     glowTris = glow.pos.length / 9;
   }
-  const triCount =
-    meshMatte.userData.chunkTris + glowTris;
+  let triCount = meshMatte.userData.chunkTris + glowTris;
+
+  beachBatches.forEach((b,i) => {
+    const lod = toLocalMesh(b.matte, matMatte, 'props:beach:' + i + ':' + b.type);
+    lod.position.set(b.x,b.y,b.z);
+    lod.updateMatrix();
+    triCount += b.matte.pos.length / 9;
+    if (b.lit.pos.length) {
+      const gl = toLocalMesh(b.lit, matGlow, 'props:beach-glow:' + i);
+      gl.position.set(b.x,b.y,b.z); gl.updateMatrix(); triCount += b.lit.pos.length / 9;
+    }
+  });
 
   return {
     update(dt) {}, // fully static; API kept for the brief
     count: placements.length,
     triCount: Math.round(triCount),
     placements, // for tests/coordinator verification
+    tradeRemoved,
+    templateTriCounts: Object.fromEntries(Object.entries(TYPES).map(([k,t]) => [k,(t.m.pos.length+t.g.pos.length)/9])),
   };
 }
 
@@ -4083,13 +4174,14 @@ scene.background = new THREE.Color(0xa9c6e2);
 scene.fog = new THREE.Fog(0xa9c6e2, 70, 260); // F5: warmer haze, slightly nearer start
 
 const skyDome = (() => { // F2: gradient sky dome; follows the camera so the horizon never slides
-  const skyGeo = new THREE.SphereGeometry(200, 16, 8); // AUDIT-2 MAIN-DOME: 528 -> 224 tris
+  const SKY_FAR = true, SKY_R = SKY_FAR ? 268 : 200; // gfxfps round 16 (proposed): dome rim just inside far plane (270) so the depth test can cull it behind world content; false restores the r200 always-overdrawn dome
+  const skyGeo = new THREE.SphereGeometry(SKY_R, 16, 8); // AUDIT-2 MAIN-DOME: 528 -> 224 tris
   const posA = skyGeo.attributes.position;
   const cols = new Float32Array(posA.count * 3);
   const top = new THREE.Color(0x5f97d6), hor = new THREE.Color(0xa9c6e2); // horizon = fog colour
   const tmp = new THREE.Color();
   for (let i = 0; i < posA.count; i++) {
-    const t = Math.max(0, Math.min(1, posA.getY(i) / 200 * 0.5 + 0.5));
+    const t = Math.max(0, Math.min(1, posA.getY(i) / SKY_R * 0.5 + 0.5));
     tmp.copy(hor).lerp(top, t * t);
     cols[i * 3] = tmp.r; cols[i * 3 + 1] = tmp.g; cols[i * 3 + 2] = tmp.b;
   }
@@ -4098,6 +4190,7 @@ const skyDome = (() => { // F2: gradient sky dome; follows the camera so the hor
     vertexColors: true, side: THREE.BackSide, fog: false, depthWrite: false,
   }));
   sky.frustumCulled = false;
+  if (SKY_FAR) sky.renderOrder = 1; // after all renderOrder-0 opaque geometry: depth test keeps only visible-sky fragments
   sky.onBeforeRender = () => { sky.position.copy(camera.position); }; // stays centred on the eye
   scene.add(sky);
   return sky;
