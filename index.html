@@ -184,7 +184,7 @@ function createMap({ THREE, scene, GLTFLoader }) {
       const ax = r.pts[i][0], ay = r.pts[i][1], bx = r.pts[i + 1][0], by = r.pts[i + 1][1];
       const segLen = Math.hypot(bx - ax, by - ay);
       const ux = (bx - ax) / segLen, uy = (by - ay) / segLen;
-      const nx = -uy * halfW, ny = ux * halfW;
+      const nx = uy * halfW, ny = -ux * halfW; // winding matches the merge code's up-facing convention
       if (dashLen) { // dashed centerline: dashLen metres every dashPitch metres
         for (let d0 = 6; d0 + dashLen <= segLen - 2; d0 += dashPitch) {
           qs.push(quad(lw(ax + ux * d0) + uy * halfW, lz(ay + uy * d0) - ux * halfW,
