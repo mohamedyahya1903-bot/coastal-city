@@ -3908,30 +3908,82 @@ function createProps({ THREE, scene, map }) {
   separateBeach = false;
   const matMatte = new THREE.MeshLambertMaterial({ vertexColors: true });
   const matGlow = new THREE.MeshBasicMaterial({ vertexColors: true });
-  function toMesh(acc, mat, name) {
+  const PROPS_CHUNK_CELL = 100;
+  const FOG_CULL_DIST = 260; // scene fog far (main.js scene.fog = 70..260)
+  function toMesh(acc, mat, name) { // fog-cull restored verbatim from the live v29 bundle: 100 m cells, empty LOD far level
+    const cells = new Map();
+    for (let t = 0; t < acc.pos.length; t += 9) { // non-indexed triangle soup
+      const cx = (acc.pos[t] + acc.pos[t + 3] + acc.pos[t + 6]) / 3;
+      const cz = (acc.pos[t + 2] + acc.pos[t + 5] + acc.pos[t + 8]) / 3;
+      const key = Math.floor(cx / PROPS_CHUNK_CELL) + ':' + Math.floor(cz / PROPS_CHUNK_CELL);
+      let c = cells.get(key);
+      if (!c) { c = { pos: [], nor: [], col: [] }; cells.set(key, c); }
+      for (let k = 0; k < 9; k++) { c.pos.push(acc.pos[t + k]); c.nor.push(acc.nor[t + k]); c.col.push(acc.col[t + k]); }
+    }
+    let tris = 0, first = null;
+    for (const [key, c] of cells) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(c.pos, 3));
+      g.setAttribute('normal', new THREE.Float32BufferAttribute(c.nor, 3));
+      g.setAttribute('color', new THREE.Float32BufferAttribute(c.col, 3));
+      g.computeBoundingSphere();
+      const ctr = g.boundingSphere.center, r = g.boundingSphere.radius;
+      const mesh = new THREE.Mesh(g, mat);
+      mesh.name = name + ':' + key;
+      mesh.position.set(-ctr.x, -ctr.y, -ctr.z); // cancel: geometry is world-baked
+      mesh.updateMatrix();
+      mesh.matrixAutoUpdate = false;
+      const lod = new THREE.LOD();
+      lod.position.set(ctr.x, ctr.y, ctr.z);
+      lod.addLevel(mesh, 0);
+      lod.addLevel(new THREE.Object3D(), FOG_CULL_DIST + r); // nearest surface past fog far -> invisible
+      scene.add(lod);
+      tris += c.pos.length / 9;
+      if (!first) first = mesh;
+    }
+    first.userData.chunkTris = tris; // total across all cells of this material
+    return first;
+  }
+  function toLocalMesh(acc, mat, name) { // round-18 beach pieces: local geometry, LOD-wrapped at anchor
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(acc.pos, 3));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(acc.nor, 3));
     g.setAttribute('color', new THREE.Float32BufferAttribute(acc.col, 3));
-    const mesh = new THREE.Mesh(g, mat);
-    mesh.name = name;
     g.computeBoundingBox();
     g.computeBoundingSphere();
-    scene.add(mesh);
-    return mesh;
+    const mesh = new THREE.Mesh(g, mat);
+    mesh.name = name;
+    mesh.matrixAutoUpdate = false;
+    const lod = new THREE.LOD();
+    lod.addLevel(mesh, 0);
+    lod.addLevel(new THREE.Object3D(), FOG_CULL_DIST + g.boundingSphere.radius);
+    scene.add(lod);
+    return lod;
   }
   const meshMatte = toMesh(world, matMatte, 'props:matte');
-  let triCount =
-    meshMatte.geometry.attributes.position.count / 3 +
-    (glow.pos.length ? (() => { const mm = toMesh(glow, matGlow, 'props:glow'); return mm.geometry.attributes.position.count / 3; })() : 0);
+  let glowTris = 0;
+  if (glow.pos.length) {
+    const gg = new THREE.BufferGeometry();
+    gg.setAttribute('position', new THREE.Float32BufferAttribute(glow.pos, 3));
+    gg.setAttribute('normal', new THREE.Float32BufferAttribute(glow.nor, 3));
+    gg.setAttribute('color', new THREE.Float32BufferAttribute(glow.col, 3));
+    gg.computeBoundingSphere();
+    const gm = new THREE.Mesh(gg, matGlow);
+    gm.name = 'props:glow:all';
+    gm.matrixAutoUpdate = false;
+    scene.add(gm);
+    glowTris = glow.pos.length / 9;
+  }
+  let triCount = meshMatte.userData.chunkTris + glowTris;
 
   beachBatches.forEach((b,i) => {
-    const m = toMesh(b.matte, matMatte, 'props:beach:' + i + ':' + b.type);
-    m.position.set(b.x,b.y,b.z);
+    const lod = toLocalMesh(b.matte, matMatte, 'props:beach:' + i + ':' + b.type);
+    lod.position.set(b.x,b.y,b.z);
+    lod.updateMatrix();
     triCount += b.matte.pos.length / 9;
     if (b.lit.pos.length) {
-      const g = toMesh(b.lit, matGlow, 'props:beach-glow:' + i);
-      g.position.set(b.x,b.y,b.z); triCount += b.lit.pos.length / 9;
+      const gl = toLocalMesh(b.lit, matGlow, 'props:beach-glow:' + i);
+      gl.position.set(b.x,b.y,b.z); gl.updateMatrix(); triCount += b.lit.pos.length / 9;
     }
   });
 
