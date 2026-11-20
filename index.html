@@ -3544,6 +3544,8 @@ function createProps({ THREE, scene, map }) {
         put('planter', x, z, detYaw(x, z), 0.5, 2.2);
       }
     }
+  let meterCand = 0;
+  const keepMeter = () => { const i = meterCand++; return Math.floor((i + 1) * 19 / 28) > Math.floor(i * 19 / 28); };
     if (road.w >= 8 && road.len > 200 && JUNCTIONS_PER_ROAD[ri] >= 3) {
       const side = ri % 2 === 0 ? 1 : -1;
       for (let s = 30; s < road.len - 10 && metersPlaced < 22; s += 26) {
@@ -3551,7 +3553,7 @@ function createProps({ THREE, scene, map }) {
         const p = pointAt(road, s);
         const x = p.x + -p.uz * side * (h + 0.8), z = p.z + p.ux * side * (h + 0.8);
         if (!free(x, z, 0.25, 1.0)) continue;
-        put('meter', x, z, faceYaw(x, z, p.x, p.z), 0.25, 1.0);
+        if (keepMeter()) { put('meter', x, z, faceYaw(x, z, p.x, p.z), 0.25, 1.0); }
         metersPlaced++;
       }
     }
@@ -3562,7 +3564,7 @@ function createProps({ THREE, scene, map }) {
         const side = k % 2 === 0 ? 1 : -1;
         const x = p.x + -p.uz * side * (h + 0.8), z = p.z + p.ux * side * (h + 0.8);
         if (!free(x, z, 0.25, 6.5)) continue;
-        put('meter', x, z, faceYaw(x, z, p.x, p.z), 0.25, 1.0);
+        if (keepMeter()) { put('meter', x, z, faceYaw(x, z, p.x, p.z), 0.25, 1.0); }
         secMeters++;
       }
     }
@@ -3817,6 +3819,28 @@ function createProps({ THREE, scene, map }) {
           }
         }
       }
+    }
+  }
+  if (!TYPES.stopSign) TYPES.stopSign = tSign(P.signRed);
+  let stopPlaced = 0;
+  for (const J of (map.junctions || [])) {
+    if (J.control !== 'all-way' || J.arms.length !== 4) continue;
+    if (J.arms.every((a) => a[2] === J.arms[0][2])) continue; // width-tied all-ways keep their lights
+    const jx = J.x - 300, jz = J.y - 300; // layout -> world
+    for (const a of J.arms) {
+      const L = Math.hypot(a[0], a[1]) || 1, ux = a[0] / L, uz = a[1] / L; // outward along the arm
+      const back = (J.maxHalf || 4) + 2.4, lat = a[2] / 2 + 0.9; // behind the edge, right-hand kerb
+      const sx2 = jx + ux * back + uz * lat, sz2 = jz + uz * back - ux * lat;
+      let done = false;
+      for (const [db, side] of [[0, 1], [1.5, 1], [3, 1], [4.5, 1], [6, 1], [8, 1], [10, 1], [0, -1], [1.5, -1], [3, -1], [4.5, -1], [6, -1], [8, -1], [10, -1]]) {
+        const bx = jx + ux * (back + db) + uz * lat * side, bz = jz + uz * (back + db) - ux * lat * side;
+        if (!free(bx, bz, 0.3, 2)) continue;
+        put('stopSign', bx, bz, faceYaw(bx, bz, bx + ux, bz + uz), 0.3, 2);
+        stopPlaced++;
+        done = true;
+        break;
+      }
+      if (done) continue;
     }
   }
   const matMatte = new THREE.MeshLambertMaterial({ vertexColors: true });
