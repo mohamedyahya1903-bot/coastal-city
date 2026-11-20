@@ -2,6 +2,10 @@
 //   Round 6 (peds v6, 2026-11-20, map v10): beach idlers - 2-3 wanderers instead live at the
 //   beach umbrella clusters (towel spots arrive via the existing idleSpots wiring): sit, lie
 //   on the towel, stand facing the sea, short amble on the sand; never touch roads/crosswalks.
+//   Round 10 (peds v11, 2026-11-20, map v17): count 20 -> 22; the 2 new walkers are pinned to
+//   the remaining Hillcrest switchback sidewalks (leg 2 east via the Bench F run, leg 3 via the
+//   Bench B run) so all three legs stay dressed; same stayOnRoad pin + sub-road slice as Bench A.
+//   Far-shell patch (PED-1/PED-2) kept intact.
 //   Round 9b (peds v10, 2026-11-20, map v16): one pinned stroller on the Bench A frontage
 //   (houses v7 bench homes) - reuses the stayOnRoad pin on a synthetic sub-road sliced from
 //   the switchback leg alongside the pad (map.hillBenches + nearest road arc only). Cafe
@@ -97,7 +101,7 @@ export function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots =
   const SHOE = '#152335';
   const pick = (a) => a[Math.floor(Math.random() * a.length)];
 
-  const PED_COUNT = 20; // coordinator dial (parent Nov 20): 28->20 for FPS headroom
+  const PED_COUNT = 22; // coordinator dial (parent Nov 20): 28->20->22 (round 10: +2 Hillcrest switchback walkers)
   const ANIM_NEAR = 60, HIDE_FAR = 140, SIDEWALK = 2.0;
 
   // ---- world-space road polylines (layout - 300) with cumulative lengths ----
@@ -461,9 +465,12 @@ export function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots =
       }
     }
   }
-  { // round 9 phase 2: one pinned stroller on the Bench A frontage (houses v7 bench homes)
-    const benchA = (map.hillBenches || []).find((b) => (b.name || '').indexOf('Bench A') === 0);
-    if (benchA) {
+  { // round 9 phase 2 + round 10: pinned strollers on the Hillcrest switchback sidewalks - one per
+    // bench pad frontage (Bench A: leg 1 row; Bench F: leg 2 east; Bench B: leg 3), each pinned to a
+    // synthetic sub-road sliced from the contiguous pts run alongside its pad (houses v7 bench homes).
+    for (const padName of ['Bench A', 'Bench F', 'Bench B']) {
+      const benchA = (map.hillBenches || []).find((b) => (b.name || '').indexOf(padName) === 0);
+      if (!benchA) continue;
       const bx = benchA.layout[0] - 300, bz = benchA.layout[1] - 300;
       let best = null, bd = 1e9;
       for (const r of roads) {
@@ -475,17 +482,31 @@ export function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots =
           if (d < bd) { bd = d; best = r; }
         }
       }
-      if (best) { // slice the contiguous pts run alongside the pad into a synthetic sub-road
-        const R = Math.max(benchA.w, benchA.h) / 2 + 14;
-        let bi = 0, bs = 1e9;
-        for (let i = 0; i < best.pts.length; i++) {
-          const d = Math.hypot(best.pts[i][0] - bx, best.pts[i][1] - bz);
-          if (d < bs) { bs = d; bi = i; }
+      if (best) { // slice a synthetic sub-road out of the switchback spine
+        let pts = null;
+        if (padName === 'Bench F') { // round 10: leg 2 = the run between the spine's two hairpins
+          // (the pad-radius slice breaks at the hairpin tip and comes out under the 25 m minimum)
+          const rev = [];
+          for (let i = 1; i < best.pts.length - 1; i++) {
+            const ux = best.pts[i][0] - best.pts[i - 1][0], uz = best.pts[i][1] - best.pts[i - 1][1];
+            const vx = best.pts[i + 1][0] - best.pts[i][0], vz = best.pts[i + 1][1] - best.pts[i][1];
+            const lu = Math.hypot(ux, uz), lv = Math.hypot(vx, vz);
+            if (lu && lv) rev.push([i, (ux * vx + uz * vz) / (lu * lv)]);
+          }
+          const sharp = rev.filter(([, dot]) => dot < 0.35).sort((a, b) => a[1] - b[1]).slice(0, 2).map(([i]) => i).sort((a, b) => a - b);
+          if (sharp.length === 2 && sharp[1] - sharp[0] >= 1) pts = best.pts.slice(sharp[0], sharp[1] + 1);
+        } else { // Bench A / Bench B: contiguous pts run alongside the pad
+          const R = Math.max(benchA.w, benchA.h) / 2 + 14;
+          let bi = 0, bs = 1e9;
+          for (let i = 0; i < best.pts.length; i++) {
+            const d = Math.hypot(best.pts[i][0] - bx, best.pts[i][1] - bz);
+            if (d < bs) { bs = d; bi = i; }
+          }
+          let lo = bi, hi = bi;
+          while (lo > 0 && Math.hypot(best.pts[lo - 1][0] - bx, best.pts[lo - 1][1] - bz) < R) lo--;
+          while (hi < best.pts.length - 1 && Math.hypot(best.pts[hi + 1][0] - bx, best.pts[hi + 1][1] - bz) < R) hi++;
+          pts = best.pts.slice(lo, hi + 1);
         }
-        let lo = bi, hi = bi;
-        while (lo > 0 && Math.hypot(best.pts[lo - 1][0] - bx, best.pts[lo - 1][1] - bz) < R) lo--;
-        while (hi < best.pts.length - 1 && Math.hypot(best.pts[hi + 1][0] - bx, best.pts[hi + 1][1] - bz) < R) hi++;
-        const pts = best.pts.slice(lo, hi + 1);
         if (pts.length >= 2) {
           const cum = [0];
           for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
@@ -494,8 +515,11 @@ export function createPedestrians({ THREE, scene, map, getPlayerPos, idleSpots =
             let done = false;
             for (const i of order) {
               if (done) break;
-              if (peds[i].role !== 'wander' || peds[i].stayOnRoad) continue;
+              if (peds[i].stayOnRoad) continue;
+              if (peds[i].role !== 'wander' && peds[i].role !== 'stroll') continue; // wander pool first, a stroller if it is empty
+              if (peds[i].role === 'stroll' && peds.some((q) => q.role === 'wander' && !q.stayOnRoad)) continue;
               const p = peds[i];
+              p.role = 'wander'; // a converted stroller becomes a plain pinned walker (shipped flip at the stroll fallback)
               p.road = front; p.stayOnRoad = true;
               p.s = 4 + Math.random() * Math.max(1, front.len - 8);
               p.dir = Math.random() < 0.5 ? 1 : -1;
