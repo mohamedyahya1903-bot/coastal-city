@@ -1,0 +1,1592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Coastal City</title>
+<style>
+  html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#0b1a2a;
+    touch-action:none; overscroll-behavior:none; font-family:Arial, Helvetica, sans-serif;
+    -webkit-user-select:none; user-select:none; }
+  #game { position:fixed; inset:0; display:block; }
+  .hud { position:fixed; z-index:10; color:#fff; text-shadow:0 1px 3px rgba(0,0,0,.8); pointer-events:none; }
+  #hud-fps { top:calc(8px + env(safe-area-inset-top)); left:50%; transform:translateX(-50%);
+    font-size:13px; opacity:.85; }
+  #toast { top:24%; left:50%; transform:translateX(-50%); font-size:17px; font-weight:bold;
+    background:rgba(0,0,0,.65); padding:8px 18px; border-radius:16px; opacity:0; transition:opacity .25s; }
+  #controls-root { position:fixed; inset:0; z-index:20; pointer-events:none; }
+  #phone-root { position:fixed; inset:0; z-index:30; pointer-events:none; }
+  #phone-root button, #phone-root .taxi-backdrop { pointer-events:auto; }
+  #loading { position:fixed; inset:0; z-index:100; background:#0b1a2a; display:flex;
+    flex-direction:column; align-items:center; justify-content:center; color:#fff; }
+  #loading .title { font-size:34px; font-weight:bold; color:#ffd23e; letter-spacing:1px; }
+  #loading .sub { margin-top:10px; font-size:14px; opacity:.8; }
+  #loading .bar { margin-top:22px; width:200px; height:8px; background:#223; border-radius:4px; overflow:hidden; }
+  #loading .bar i { display:block; height:100%; width:40%; background:#ffd23e; border-radius:4px;
+    animation:slide 1s infinite ease-in-out; }
+  @keyframes slide { 0%{margin-left:-40%} 100%{margin-left:100%} }
+  #bench { position:fixed; inset:0; z-index:90; display:flex; align-items:center; justify-content:center;
+    background:rgba(4,12,22,.55); pointer-events:auto; }
+  #bench .bench-card { background:rgba(8,18,30,.94); border:1px solid #ffffff44; border-radius:14px;
+    padding:14px 16px; max-width:92vw; max-height:88vh; overflow:auto; color:#fff; }
+  #bench .bench-title { font:bold 15px Arial,Helvetica,sans-serif; color:#ffd23e; letter-spacing:1px; margin-bottom:8px; }
+  #bench pre { font:13px/1.5 monospace; white-space:pre-wrap; margin:0 0 10px; }
+  #bench .bench-row { display:flex; gap:10px; margin-bottom:8px; }
+  #bench button { flex:1; min-height:52px; font:bold 15px Arial,Helvetica,sans-serif; color:#fff;
+    background:#1d3a52; border:1px solid #ffffff65; border-radius:12px; }
+  #bench .bench-hint { font:11px Arial,Helvetica,sans-serif; color:#ffffff99; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="hud-fps" class="hud"></div>
+<div id="toast" class="hud"></div>
+<div id="controls-root"></div>
+<div id="phone-root"></div>
+<div id="bench" hidden>
+  <div class="bench-card">
+    <div class="bench-title">COASTAL CITY BENCHMARK</div>
+    <pre id="bench-body"></pre>
+    <div class="bench-row">
+      <button id="bench-copy" type="button">COPY RESULTS</button>
+      <button id="bench-again" type="button">RUN AGAIN</button>
+    </div>
+    <div class="bench-hint">Diagnostic build - not the game. Needs a full browser over http(s): Chrome, Samsung Internet, Firefox or Opera. Opera Mini cannot run WebGL and is not supported.</div>
+  </div>
+</div>
+<div id="loading"><div class="title">COASTAL CITY</div><div class="sub">loading…</div><div class="bar"><i></i></div></div>
+<script>
+// classic-script guard for browsers that can never run the module game code
+(function () {
+  var sub = document.querySelector('#loading .sub');
+  if (window.operamini) {
+    sub.textContent = 'Opera Mini cannot run this game (no WebGL). Please open this page in Chrome, Samsung Internet, Firefox or full Opera.';
+    document.querySelector('#loading .bar').style.display = 'none';
+  } else if (!(window.HTMLScriptElement && HTMLScriptElement.supports && HTMLScriptElement.supports('importmap'))) {
+    sub.textContent = 'This browser is too old for ES module import maps. Please update or use current Chrome, Samsung Internet, Firefox or Opera.';
+  }
+})();
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+// ===== map.js =====
+// map.js — Solana Bay trial city (BUILDER 2). Contract v1.1 - API unchanged from the stub.
+// Original layout + names throughout (inspired coastal-city arrangement, nothing copied).
+// From the approved-pending trial drawing solana-bay-trial-map-v1.png / layout JSON v1:
+// ocean + Sunset Strand beach west, boardwalk shops + Pelican Pier, Downtown Solana core,
+// Palm Court houses east, Bayshore Highway north with one ramp, Fuel Stop, Seaside Park.
+// Owner 10:13 PM: no plain box look - every building gets structure: textured facades with
+// window grids + door, roof trim, and rounded roof pieces (domes, pyramids, cylinders).
+// Still low-poly + one merged mesh for all roads/dashes for the Galaxy M02s budget.
+// v2: buildings/props swap to Kenney CC0 GLBs (assets/models/) when a GLTFLoader is
+// available (arg or importmap 'three/addons/'); primitive fallback stays otherwise.
+// v6 (owner via lead Nov 19): starter bungalow + garage on the Palm Court street (Forum-Drive
+// style), procedural original geometry, driveway the starter white car can park on.
+// v7 (coordinator, Nov 20, standing work 1 - closest-version Los Santos layout): roads are
+// centerline paths, so curved/winding/diagonal streets are possible. First new layout: winding
+// Hillcrest Road climb (Palm Court -> Bayshore Highway) + denser Southside residential streets.
+// Taxi stops, spawns and gameplay anchors unchanged and still road-safe.
+// v3 (owner via lead Nov 19): real elevation - analytic terrain, hills east, rise north,
+// roads + highway draped on it (grades verified <=9%, drivable at 19 m/s), building lots
+// flattened into pads, ground = one subdivided vertex-colored mesh. groundAt = real height.
+// Coordinates: Y-up meters, y=0 at sea level, X east, -Z north. Layout (600x600, y south)
+// converts as world.x = layout.x - 300, world.z = layout.y - 300. Heading 0 = north.
+
+function createMap({ THREE, scene, GLTFLoader }) {
+  const C = 300; // layout -> world offset
+  const lw = (lx) => lx - C;
+  const lz = (ly) => ly - C;
+
+  // ---- merged flat quads: ALL ground planes, roads and dashes in a handful of draws ----
+  const matWater = new THREE.MeshLambertMaterial({ color: 0x2e6f9e });
+  const matRoad  = new THREE.MeshLambertMaterial({ color: 0x3a3e44 });
+  const matHwy   = new THREE.MeshLambertMaterial({ color: 0x33373d });
+  const matLine  = new THREE.MeshBasicMaterial({ color: 0xe8e4d0 });
+  const matHwyLn = new THREE.MeshBasicMaterial({ color: 0xf4c430 });
+  const matPier  = new THREE.MeshLambertMaterial({ color: 0xa87f4f });
+  const matDrive = new THREE.MeshLambertMaterial({ color: 0x9d9a92 }); // bungalow driveway concrete
+
+  const S = new THREE.Group(); S.name = 'fallbackBuildings'; scene.add(S); // primitive buildings until GLBs land
+
+  // ---- terrain (owner via lead Nov 19: real elevation - hills, sloped districts, sloped highway) ----
+  const smooth = (t) => { t = t < 0 ? 0 : t > 1 ? 1 : t; return t * t * (3 - 2 * t); };
+  const BEACH_X = lw(122); // west of here land fades to flat sand
+  const LOTS_L = [ // building pads [name, x0,y0,x1,y1, heightCap] (layout coords)
+    ['Tower 1',212,212,244,244,40],['Tower 2',252,212,276,240,30],['Tower 3',212,252,240,276,46],
+    ['Tower 4',252,252,276,276,24],['Tower 5',292,212,324,244,34],['Tower 6',292,252,324,276,27],
+    ['Office 1',212,292,244,324,20],['Office 2',252,292,276,324,17],['Office 3',292,292,324,324,20],
+    ['Shop 1',160,210,186,232,8],['Shop 2',160,240,186,262,8],['Cafe',160,296,186,318,8],
+    ['Shop 3',160,330,186,352,8],['Shop 4',160,360,186,382,8],
+    ['House 1',460,220,480,238,5],['House 2',495,220,515,238,5],['House 3',530,220,550,238,5],
+    ['House 4',460,300,480,318,5],['House 5',530,300,550,318,5],
+    ['House 6',460,380,480,398,5],['House 7',495,380,515,398,5],['House 8',530,380,550,398,5],
+    ['Apartments 1',380,210,410,250,14],['Apartments 2',380,290,410,330,14],['Fuel Stop',520,100,556,130,5],
+    ['Starter Bungalow',494,300,516,318,5],
+  ];
+  const LOTS = LOTS_L.map((b) => ({ minX: lw(b[1]), maxX: lw(b[3]), minZ: lz(b[2]), maxZ: lz(b[4]) }));
+  function baseH(x, z) { // gentle hills; max gradient ~7-8% anywhere (verified in test)
+    const h = 3.0 * Math.sin(x * 0.009 + 1.7) * Math.cos(z * 0.008)
+            + 1.8 * Math.cos(x * 0.014 - 0.6) * Math.sin(z * 0.011 + 0.9)
+            + 8 * smooth((x - 140) / 240)   // Palm Court hillside, east
+            + 4 * smooth((-z - 160) / 160); // rise toward Bayshore Highway, north
+    return h * smooth((x - (BEACH_X - 30)) / 30); // flat sand at the waterline
+  }
+  for (const L of LOTS) L.padY = baseH((L.minX + L.maxX) / 2, (L.minZ + L.maxZ) / 2);
+  function terrainH(x, z) { // building pads flatten inside each lot (blended inward): roads keep natural slope
+    let h = baseH(x, z);
+    for (const L of LOTS) {
+      const d = Math.min(x - L.minX, L.maxX - x, z - L.minZ, L.maxZ - z);
+      if (d <= 0) continue;
+      const w = smooth(d / 6); // pad blend inward only: roads always keep the natural slope
+      h = h * (1 - w) + L.padY * w;
+    }
+    return h;
+  }
+
+  // ocean: flat plane west of the beach
+  const ocean = new THREE.Mesh(new THREE.PlaneGeometry(300, 680), matWater);
+  ocean.rotation.x = -Math.PI / 2; ocean.position.set(-368, -0.25, 0); scene.add(ocean);
+
+  // ground: one subdivided terrain-following mesh, vertex colors (sand / grass / park), one draw call
+  {
+    const X0 = -218, X1 = 320, Z0 = -320, Z1 = 320, NX = 60, NZ = 72; // ~8.6k tris (was 15.4k)
+    const pos = [], col = [], idx = [];
+    const cSand = new THREE.Color(0xe3d3a0), cGrass = new THREE.Color(0x6f9b52), cPark = new THREE.Color(0x7cb85e);
+    for (let j = 0; j <= NZ; j++) for (let i = 0; i <= NX; i++) {
+      const x = X0 + (X1 - X0) * i / NX, z = Z0 + (Z1 - Z0) * j / NZ;
+      pos.push(x, terrainH(x, z), z);
+      const c = x < BEACH_X ? cSand
+        : (x >= lw(210) && x <= lw(350) && z >= lz(368) && z <= lz(432) ? cPark : cGrass);
+      col.push(c.r, c.g, c.b);
+    }
+    for (let j = 0; j < NZ; j++) for (let i = 0; i < NX; i++) {
+      const a = j * (NX + 1) + i, b = a + 1, c2 = a + NX + 1, d2 = c2 + 1;
+      idx.push(a, c2, b, b, c2, d2);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    g.setIndex(idx); g.computeVertexNormals();
+    scene.add(new THREE.Mesh(g, new THREE.MeshLambertMaterial({ vertexColors: true })));
+  }
+
+  // Pelican Pier: walkable deck out over the water
+  const pier = new THREE.Mesh(new THREE.BoxGeometry(102, 0.4, 16), matPier);
+  pier.position.set(lw(71), 0.2, lz(300)); scene.add(pier);
+  for (let px = 24; px <= 116; px += 23) { // pier posts
+    for (const pz of [293, 307]) {
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.6, 2.2, 8), matPier);
+      post.position.set(lw(px), -0.7, lz(pz)); scene.add(post);
+    }
+  }
+
+  // ---- roads (v7: centerline paths - curved/winding/diagonal streets now possible) ----
+  // Every street is a path of layout-coord points [[x,y],...]; straight streets use 2 points.
+  const ROADS = [
+    { pts: [[130,80],[130,520]], w: 8 },  // Boardwalk
+    { pts: [[200,80],[200,480]], w: 8 },
+    { pts: [[280,80],[280,480]], w: 8 },
+    { pts: [[360,80],[360,480]], w: 8 },
+    { pts: [[440,80],[440,480]], w: 8 },
+    { pts: [[500,80],[500,200]], w: 10 }, // highway ramp
+    { pts: [[130,200],[560,200]], w: 8 },
+    { pts: [[130,280],[560,280]], w: 8 },
+    { pts: [[130,360],[560,360]], w: 8 },
+    { pts: [[130,440],[560,440]], w: 8 },
+    // v7 (Phase A, standing work 1): Southside - denser South-Los-Santos-style residential blocks
+    { pts: [[245,440],[245,520]], w: 7 },
+    { pts: [[375,440],[375,520]], w: 7 },
+    { pts: [[130,500],[440,500]], w: 7 },
+    // v7 (Phase A): Hillcrest Road - winding Vinewood-Hills-style climb, Palm Court -> highway
+    { pts: [[500,200],[545,175],[580,140],[588,100],[580,84]], w: 7 },
+  ];
+  const HWY = { pts: [[126,80],[600,80]], w: 14 }; // Bayshore Highway
+  const DRIVES = [{ pts: [[497,284],[497,304]], w: 6 }]; // bungalow driveway (drivable, no dashes)
+
+  // roads + highway drape the terrain: path pieces subdivided to <=step m, offset by halfW,
+  // sampling terrainH, so every street follows the hills (grades verified <=9%)
+  const strips = [];
+  function strip(r, mat, halfW, off, step, dashLen, dashPitch) {
+    const qs = [];
+    for (let i = 0; i < r.pts.length - 1; i++) {
+      const ax = r.pts[i][0], ay = r.pts[i][1], bx = r.pts[i + 1][0], by = r.pts[i + 1][1];
+      const segLen = Math.hypot(bx - ax, by - ay);
+      const ux = (bx - ax) / segLen, uy = (by - ay) / segLen;
+      const nx = uy * halfW, ny = -ux * halfW; // winding matches the merge code's up-facing convention
+      if (dashLen) { // dashed centerline: dashLen metres every dashPitch metres
+        for (let d0 = 6; d0 + dashLen <= segLen - 2; d0 += dashPitch) {
+          qs.push(quad(lw(ax + ux * d0) + uy * halfW, lz(ay + uy * d0) - ux * halfW,
+                       lw(ax + ux * (d0 + dashLen)) + uy * halfW, lz(ay + uy * (d0 + dashLen)) - ux * halfW,
+                       lw(ax + ux * (d0 + dashLen)) - uy * halfW, lz(ay + uy * (d0 + dashLen)) + ux * halfW,
+                       lw(ax + ux * d0) - uy * halfW, lz(ay + uy * d0) + ux * halfW, off));
+        }
+      } else {
+        for (let d0 = 0; d0 < segLen; d0 += step) {
+          const d1 = Math.min(d0 + step, segLen);
+          qs.push(quad(lw(ax + ux * d0) + nx, lz(ay + uy * d0) + ny,
+                       lw(ax + ux * d1) + nx, lz(ay + uy * d1) + ny,
+                       lw(ax + ux * d1) - nx, lz(ay + uy * d1) - ny,
+                       lw(ax + ux * d0) - nx, lz(ay + uy * d0) - ny, off));
+        }
+      }
+    }
+    strips.push({ mat, qs });
+  }
+  function quad(x0, z0, x1, z1, x2, z2, x3, z3, off) {
+    return [x0, terrainH(x0, z0) + off, z0, x1, terrainH(x1, z1) + off, z1,
+            x2, terrainH(x2, z2) + off, z2, x3, terrainH(x3, z3) + off, z3];
+  }
+  for (const r of ROADS) strip(r, matRoad, r.w / 2, 0.04, 8, 0, 0);
+  strip(HWY, matHwy, HWY.w / 2, 0.05, 8, 0, 0);
+  for (const d of DRIVES) strip(d, matDrive, d.w / 2, 0.045, 4, 0, 0);
+  for (const r of ROADS) strip(r, matLine, 0.2, 0.08, 8, 3, 12);
+  strip(HWY, matHwyLn, 0.2, 0.09, 8, 4, 16);
+  { // merge strip segments into one mesh per material
+    const byMat = new Map();
+    for (const s of strips) {
+      if (!byMat.has(s.mat)) byMat.set(s.mat, []);
+      byMat.get(s.mat).push(...s.qs);
+    }
+    for (const [mat, qs] of byMat) {
+      const pos = [], norm = [], idx = [];
+      qs.forEach((q, i) => {
+        const b = i * 4;
+        pos.push(...q);
+        const ux = q[3] - q[0], uy = q[4] - q[1], uz = q[5] - q[2];
+        const vx = q[6] - q[0], vy = q[7] - q[1], vz = q[8] - q[2];
+        let nx = vy * uz - vz * uy, ny = vz * ux - vx * uz, nz = vx * uy - vy * ux;
+        const nl = Math.hypot(nx, ny, nz) || 1; nx /= nl; ny /= nl; nz /= nl;
+        for (let k = 0; k < 4; k++) norm.push(nx, ny, nz);
+        idx.push(b, b + 2, b + 1, b, b + 3, b + 2);
+      });
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      g.setAttribute('normal', new THREE.Float32BufferAttribute(norm, 3));
+      g.setIndex(idx);
+      scene.add(new THREE.Mesh(g, mat));
+    }
+  }
+
+  // ---- facade textures: drawn once on canvas, window grid + entrance (original art) ----
+  function facadeTex(w, h, kind) {
+    const pxm = 8, cw = Math.min(256, Math.max(64, Math.round(w * pxm)));
+    const ch = Math.min(512, Math.max(64, Math.round(h * pxm)));
+    const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
+    const g = cv.getContext('2d');
+    const wall = { tower: '#66788f', office: '#8395a9', apartment: '#a4b0bd',
+                   shop: '#cfa871', house: '#de9873', gas: '#d46a6a', far: '#a9b8c7' }[kind] || '#999999';
+    g.fillStyle = wall; g.fillRect(0, 0, cw, ch);
+    const floors = Math.max(1, Math.round(h / 3));
+    const cols = Math.max(1, Math.floor(w / 3.4));
+    const wy = ch / floors, wx = cw / cols;
+    for (let f = 0; f < floors; f++) {
+      for (let c = 0; c < cols; c++) {
+        const x0 = c * wx + wx * 0.22, y0 = f * wy + wy * 0.2, ww = wx * 0.56, wh = wy * 0.52;
+        g.fillStyle = kind === 'far' ? 'rgba(74,94,116,0.55)' : 'rgba(20,34,52,0.9)'; // window glass
+        g.beginPath(); g.roundRect(x0, y0, ww, wh, 2); g.fill();
+        g.fillStyle = 'rgba(160,210,235,0.55)';                   // sky glint
+        g.beginPath(); g.roundRect(x0, y0, ww, wh * 0.35, 2); g.fill();
+      }
+    }
+    // ground floor: entrance door + lintel
+    const dw = Math.min(cw * 0.22, 26), dx = (cw - dw) / 2, dh = Math.min(wy * 0.9, 30);
+    g.fillStyle = '#2c343c'; g.fillRect(dx - 2, ch - dh - 2, dw + 4, dh + 2);
+    g.fillStyle = '#4a3828'; g.fillRect(dx, ch - dh, dw, dh);
+    g.fillStyle = 'rgba(160,210,235,0.5)'; g.fillRect(dx + 2, ch - dh + 2, dw - 4, dh * 0.4);
+    const t = new THREE.CanvasTexture(cv);
+    t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  }
+
+  const roofMat = new THREE.MeshLambertMaterial({ color: 0x4a5058 });
+  const trimMat = new THREE.MeshLambertMaterial({ color: 0xd8d4c8 });
+  const doorMat = new THREE.MeshLambertMaterial({ color: 0x3a2e22 });
+  const awnMat  = new THREE.MeshLambertMaterial({ color: 0xc94f4f });
+  const domeMat = new THREE.MeshLambertMaterial({ color: 0x7fb7c9 });
+  const pentMat = new THREE.MeshLambertMaterial({ color: 0x8d9db0 });
+
+  // face: which side the entrance is on ('n' = -z north street, 'w' = -x boardwalk)
+  function building(name, x0, y0, x1, y1, floors, kind, face, roof) {
+    const w = x1 - x0, d = y1 - y0, h = floors * 3;
+    const cx = lw((x0 + x1) / 2), cz = lz((y0 + y1) / 2);
+    const gy = terrainH(cx, cz) - 0.6; // lot pad height, sunk 0.6 as a foundation
+    const g = new THREE.Group(); g.name = 'bld:' + name;
+    const side = new THREE.MeshLambertMaterial({ map: facadeTex(Math.max(w, d), h, kind) });
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), [side, side, roofMat, roofMat, side, side]);
+    m.position.set(cx, gy + h / 2, cz); g.add(m);
+    // roof trim slab (cornice)
+    const trim = new THREE.Mesh(new THREE.BoxGeometry(w + 0.8, 0.6, d + 0.8), trimMat);
+    trim.position.set(cx, gy + h + 0.3, cz); g.add(trim);
+    // entrance door (proud of the facade)
+    const dw2 = Math.min(2.2, w * 0.25);
+    const door = new THREE.Mesh(new THREE.BoxGeometry(face === 'w' ? 0.35 : dw2, 2.4, face === 'w' ? dw2 : 0.35), doorMat);
+    door.position.set(face === 'w' ? lw(x0) - 0.15 : cx, gy + 1.2, face === 'w' ? cz : lz(y0) - 0.15);
+    g.add(door);
+    // roof structure (rounded, low-poly)
+    if (roof === 'dome') {
+      const dome = new THREE.Mesh(new THREE.SphereGeometry(Math.min(w, d) * 0.38, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2), domeMat);
+      dome.position.set(cx, gy + h + 0.6, cz); g.add(dome);
+    } else if (roof === 'pent') {
+      const p = new THREE.Mesh(new THREE.CylinderGeometry(Math.min(w, d) * 0.26, Math.min(w, d) * 0.3, 3, 10), pentMat);
+      p.position.set(cx, gy + h + 2.1, cz); g.add(p);
+    } else if (roof === 'hip') { // house hip roof: 4-sided cone, rounded silhouette
+      const r = new THREE.Mesh(new THREE.ConeGeometry(Math.hypot(w, d) / 2 * 0.92, 2.6, 4, 1), awnMat);
+      r.rotation.y = Math.PI / 4 + Math.atan2(d, w) - Math.PI / 4;
+      r.scale.set(1, 1, d / w);
+      r.position.set(cx, gy + h + 1.3, cz); g.add(r);
+    } else if (roof === 'awning') { // shop awning angled over the entrance
+      const a = new THREE.Mesh(new THREE.BoxGeometry(face === 'w' ? 2.4 : w * 0.7, 0.18, face === 'w' ? d * 0.7 : 2.4), awnMat);
+      a.position.set(face === 'w' ? lw(x0) - 1.2 : cx, gy + 2.9, face === 'w' ? cz : lz(y0) - 1.2);
+      a.rotation[face === 'w' ? 'z' : 'x'] = face === 'w' ? 0.35 : -0.35;
+      g.add(a);
+    }
+        S.add(g);
+  blocks.push({ minX: lw(x0), maxX: lw(x1), minZ: lz(y0), maxZ: lz(y1) });
+  }
+
+  const blocks = [];
+  // Downtown Solana (n = entrance on the north street side)
+  building('Tower 1', 212, 212, 244, 244, 12, 'tower', 'n', 'pent');
+  building('Tower 2', 252, 212, 276, 240, 9,  'tower', 'n', null);
+  building('Tower 3', 212, 252, 240, 276, 14, 'tower', 'n', 'dome');
+  building('Tower 4', 252, 252, 276, 276, 7,  'tower', 'n', null);
+  building('Tower 5', 292, 212, 324, 244, 10, 'tower', 'n', 'pent');
+  building('Tower 6', 292, 252, 324, 276, 8,  'tower', 'n', null);
+  building('Office 1', 212, 292, 244, 324, 6, 'office', 'n', null);
+  building('Office 2', 252, 292, 276, 324, 5, 'office', 'n', null);
+  building('Office 3', 292, 292, 324, 324, 6, 'office', 'n', null);
+  // Boardwalk shops (entrances face west to the boardwalk), red awnings
+  building('Shop 1', 160, 210, 186, 232, 2, 'shop', 'w', 'awning');
+  building('Shop 2', 160, 240, 186, 262, 2, 'shop', 'w', 'awning');
+  building('Cafe',   160, 296, 186, 318, 2, 'shop', 'w', 'awning'); // nudged south of H280 (v4)
+  building('Shop 3', 160, 330, 186, 352, 2, 'shop', 'w', 'awning');
+  building('Shop 4', 160, 360, 186, 382, 2, 'shop', 'w', 'awning');
+  // Palm Court houses (hip roofs)
+  building('House 1', 460, 220, 480, 238, 1, 'house', 'n', 'hip');
+  building('House 2', 495, 220, 515, 238, 1, 'house', 'n', 'hip');
+  building('House 3', 530, 220, 550, 238, 1, 'house', 'n', 'hip');
+  building('House 4', 460, 300, 480, 318, 1, 'house', 'n', 'hip');
+  building('House 5', 530, 300, 550, 318, 1, 'house', 'n', 'hip');
+  building('House 6', 460, 380, 480, 398, 1, 'house', 'n', 'hip');
+  building('House 7', 495, 380, 515, 398, 1, 'house', 'n', 'hip');
+  building('House 8', 530, 380, 550, 398, 1, 'house', 'n', 'hip');
+  // Apartments
+  building('Apartments 1', 380, 210, 410, 250, 4, 'apartment', 'n', null);
+  building('Apartments 2', 380, 290, 410, 330, 4, 'apartment', 'n', null);
+  // Fuel Stop: kiosk + rounded canopy on two posts
+  building('Fuel Stop', 520, 100, 556, 130, 1, 'gas', 'n', null);
+  {
+    const cx = lw(538), cz = lz(97);
+    const gy = terrainH(cx, cz);
+    const can = new THREE.Mesh(new THREE.CylinderGeometry(14, 14, 0.5, 16), trimMat);
+    can.position.set(cx, gy + 5.2, cz); scene.add(can);
+    for (const dx of [-9, 9]) {
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 5, 8), pentMat);
+      post.position.set(cx + dx, gy + 2.5, cz); scene.add(post);
+    }
+  }
+
+
+  // ---- Starter Bungalow (v6): procedural original - walls, hip roof, garage, driveway ----
+  {
+    const HX0 = lw(500), HX1 = lw(512), HZ0 = lz(304), HZ1 = lz(312); // house 12x8
+    const GX0 = lw(494), GX1 = lw(500), GZ0 = lz(304), GZ1 = lz(310); // garage 6x6
+    const gcx = (HX0 + HX1) / 2, gcz = (HZ0 + HZ1) / 2;
+    const gy = terrainH(gcx, gcz);
+    const bg = new THREE.Group(); bg.name = 'bld:Starter Bungalow';
+    const stucco = new THREE.MeshLambertMaterial({ color: 0xe8dcc8 });
+    const roofB  = new THREE.MeshLambertMaterial({ color: 0x7a5c48 });
+    const glass  = new THREE.MeshLambertMaterial({ color: 0x2a3d52 });
+    const doorW  = new THREE.MeshLambertMaterial({ color: 0x6b4a2e });
+    // house walls + hip roof
+    const hw = new THREE.Mesh(new THREE.BoxGeometry(HX1 - HX0, 3, HZ1 - HZ0), stucco);
+    hw.position.set(gcx, gy + 1.5, gcz); bg.add(hw);
+    const hip = new THREE.Mesh(new THREE.ConeGeometry(Math.hypot(HX1 - HX0, HZ1 - HZ0) / 2 * 0.95, 2.4, 4, 1), roofB);
+    hip.rotation.y = Math.PI / 4;
+    hip.scale.set(1, 1, (HZ1 - HZ0) / (HX1 - HX0));
+    hip.position.set(gcx, gy + 3 + 1.2, gcz); bg.add(hip);
+    const eave = new THREE.Mesh(new THREE.BoxGeometry(HX1 - HX0 + 0.8, 0.25, HZ1 - HZ0 + 0.8), roofB);
+    eave.position.set(gcx, gy + 3, gcz); bg.add(eave);
+    // garage + flat roof + roll-up door on the street (north) face
+    const gw = new THREE.Mesh(new THREE.BoxGeometry(GX1 - GX0, 2.6, GZ1 - GZ0), stucco);
+    gw.position.set((GX0 + GX1) / 2, gy + 1.3, (GZ0 + GZ1) / 2); bg.add(gw);
+    const gtrim = new THREE.Mesh(new THREE.BoxGeometry(GX1 - GX0 + 0.6, 0.3, GZ1 - GZ0 + 0.6), roofB);
+    gtrim.position.set((GX0 + GX1) / 2, gy + 2.75, (GZ0 + GZ1) / 2); bg.add(gtrim);
+    { // garage door: canvas texture with horizontal slats (original art)
+      const cv = document.createElement('canvas'); cv.width = 128; cv.height = 64;
+      const g2 = cv.getContext('2d');
+      g2.fillStyle = '#c9cdd4'; g2.fillRect(0, 0, 128, 64);
+      g2.fillStyle = '#8d939e';
+      for (let y = 6; y < 64; y += 10) g2.fillRect(4, y, 120, 3);
+      g2.strokeStyle = '#5a606b'; g2.lineWidth = 5; g2.strokeRect(2, 2, 124, 60);
+      g2.fillStyle = '#5a606b'; g2.fillRect(58, 34, 12, 4); // handle
+      const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace;
+      const door = new THREE.Mesh(new THREE.BoxGeometry(5.2, 2.1, 0.15), new THREE.MeshLambertMaterial({ map: t }));
+      door.position.set((GX0 + GX1) / 2, gy + 1.05, GZ0 - 0.08); bg.add(door); // faces the street (north)
+    }
+    // front door + two windows on the street face
+    const fd = new THREE.Mesh(new THREE.BoxGeometry(1.1, 2.2, 0.15), doorW);
+    fd.position.set(HX0 + 2.2, gy + 1.1, HZ0 - 0.08); bg.add(fd);
+    for (const wx of [HX0 + 5.5, HX0 + 9]) {
+      const win = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.2, 0.12), glass);
+      win.position.set(wx, gy + 1.7, HZ0 - 0.07); bg.add(win);
+      const wf = new THREE.Mesh(new THREE.BoxGeometry(1.9, 1.5, 0.06), stucco);
+      wf.position.set(wx, gy + 1.7, HZ0 - 0.04); bg.add(wf);
+    }
+    // porch slab
+    const porch = new THREE.Mesh(new THREE.BoxGeometry(4, 0.18, 2.4), matDrive);
+    porch.position.set(HX0 + 2.2, gy + 0.09, HZ0 - 1.3); bg.add(porch);
+    scene.add(bg);
+    blocks.push({ minX: HX0, maxX: HX1, minZ: HZ0, maxZ: HZ1 });
+    blocks.push({ minX: GX0, maxX: GX1, minZ: GZ0, maxZ: GZ1 });
+  }
+
+  // ---- Kenney CC0 model swap (owner 10:25 PM: real 3D models; coordinator: GLTFLoader in importmap) ----
+  // Every building keeps its primitive fallback in group S until its GLB lands, then swaps.
+  // Assets: assets/models/{commercial,suburban,roads}/*.glb (+ Textures/colormap.png), all Kenney CC0 1.0.
+  const MODEL_BASE = 'assets/models/';
+  // key = building() name; f = glb under MODEL_BASE; rot = rotY; lod = low-detail partner
+  const MODELS = [
+    { k: 'Tower 1', f: 'commercial/building-skyscraper-a', rot: Math.PI, lod: 'primitive' },
+    { k: 'Tower 2', f: 'commercial/building-skyscraper-b', rot: Math.PI, lod: 'primitive' },
+    { k: 'Tower 3', f: 'commercial/building-skyscraper-c', rot: Math.PI, lod: 'primitive' },
+    { k: 'Tower 4', f: 'commercial/building-skyscraper-d', rot: Math.PI, lod: 'primitive' },
+    { k: 'Tower 5', f: 'commercial/building-skyscraper-e', rot: Math.PI, lod: 'primitive' },
+    { k: 'Tower 6', f: 'commercial/building-skyscraper-a', rot: 0, lod: 'primitive' },
+    { k: 'Office 1', f: 'commercial/building-a', rot: Math.PI, lod: 'commercial/low-detail-building-a' },
+    { k: 'Office 2', f: 'commercial/building-b', rot: Math.PI, lod: 'commercial/low-detail-building-b' },
+    { k: 'Office 3', f: 'commercial/building-c', rot: Math.PI, lod: 'commercial/low-detail-building-c' },
+    { k: 'Shop 1', f: 'commercial/building-d', rot: -Math.PI / 2, lod: 'commercial/low-detail-building-d' },
+    { k: 'Shop 2', f: 'commercial/building-e', rot: -Math.PI / 2, lod: 'commercial/low-detail-building-e' },
+    { k: 'Cafe',    f: 'commercial/building-f', rot: -Math.PI / 2, lod: 'commercial/low-detail-building-f' },
+    { k: 'Shop 3', f: 'commercial/building-g', rot: -Math.PI / 2, lod: 'commercial/low-detail-building-g' },
+    { k: 'Shop 4', f: 'commercial/building-h', rot: -Math.PI / 2, lod: 'commercial/low-detail-building-h' },
+    { k: 'House 1', f: 'suburban/building-type-a', rot: Math.PI },
+    { k: 'House 2', f: 'suburban/building-type-b', rot: Math.PI },
+    { k: 'House 3', f: 'suburban/building-type-c', rot: Math.PI },
+    { k: 'House 4', f: 'suburban/building-type-d', rot: Math.PI },
+    { k: 'House 5', f: 'suburban/building-type-e', rot: Math.PI },
+    { k: 'House 6', f: 'suburban/building-type-f', rot: Math.PI },
+    { k: 'House 7', f: 'suburban/building-type-b', rot: Math.PI },
+    { k: 'House 8', f: 'suburban/building-type-c', rot: Math.PI },
+    { k: 'Apartments 1', f: 'commercial/building-j', rot: Math.PI, lod: 'commercial/low-detail-building-j' },
+    { k: 'Apartments 2', f: 'commercial/building-k', rot: Math.PI, lod: 'commercial/low-detail-building-k' },
+    { k: 'Fuel Stop', f: 'commercial/building-i', rot: Math.PI, lod: 'commercial/low-detail-building-i' },
+  ];
+  const FOOT = {}; // name -> layout footprint (pad list lives up top with the terrain)
+  for (const b of LOTS_L) FOOT[b[0]] = { x0: b[1], y0: b[2], x1: b[3], y1: b[4], h: b[5] };
+
+  function lodify(obj) { // glTF PBR -> cheap Lambert, static shadows off (M02s budget)
+    obj.traverse((o) => {
+      if (o.isMesh) {
+        if (o.geometry && !o.geometry.attributes.normal) o.geometry.computeVertexNormals(); // props ship no normals: some three versions light them black
+        const col = o.geometry && o.geometry.attributes.color;
+        if (col && col.itemSize === 4) { // VEC4 COLOR_0 -> vec3 (version-safe vertex colors)
+          const n = col.count, a = new Float32Array(n * 3);
+          for (let i = 0; i < n; i++) { a[i*3] = col.getX(i); a[i*3+1] = col.getY(i); a[i*3+2] = col.getZ(i); }
+          o.geometry.setAttribute('color', new THREE.BufferAttribute(a, 3));
+        }
+        const m = o.material;
+        o.material = new THREE.MeshLambertMaterial({
+          map: m.map || null,
+          color: (m.color && m.color.clone) ? m.color.clone() : new THREE.Color(0xffffff),
+          transparent: m.transparent === true, opacity: m.opacity, side: m.side,
+          vertexColors: m.vertexColors === true, // Mohamed's props carry vertex colors, no textures
+        });
+        o.castShadow = false; o.receiveShadow = false;
+      }
+    });
+    return obj;
+  }
+  function fitFootprint(obj, ft, rot) { // rotate, scale uniformly into the footprint, sit on ground
+    obj.rotation.y = rot;
+    let box = new THREE.Box3().setFromObject(obj);
+    const size = box.getSize(new THREE.Vector3());
+    const sx = (ft.x1 - ft.x0) / size.x, sz = (ft.y1 - ft.y0) / size.z;
+    const sy = Math.min((sx + sz) / 2, (ft.h || 60) / size.y); // fill the lot, cap height
+    obj.scale.set(sx, sy, sz);
+    box.setFromObject(obj);
+    const c = box.getCenter(new THREE.Vector3());
+    const gx = lw((ft.x0 + ft.x1) / 2), gz = lz((ft.y0 + ft.y1) / 2);
+    obj.position.set(gx - c.x, terrainH(gx, gz) - 0.6 - box.min.y, gz - c.z); // on its pad, sunk 0.6 foundation
+    return obj;
+  }
+  function fitHeight(obj, x, z, rot, h) { // props: scale to a target height, sit at (x,z)
+    obj.rotation.y = rot;
+    let box = new THREE.Box3().setFromObject(obj);
+    const size = box.getSize(new THREE.Vector3());
+    obj.scale.setScalar(h / size.y);
+    box.setFromObject(obj);
+    const c = box.getCenter(new THREE.Vector3());
+    obj.position.set(x - c.x, terrainH(x, z) - 0.15 - box.min.y, z - c.z); // prop sits on the terrain
+    return obj;
+  }
+
+  function swapToModels(GL) {
+    const loader = new GL();
+    for (const m of MODELS) {
+      const ft = FOOT[m.k];
+      loader.load(MODEL_BASE + m.f + '.glb', (g) => {
+        const obj = fitFootprint(lodify(g.scene), ft, m.rot);
+        const old = S.getObjectByName('bld:' + m.k);
+        if (m.lod === 'primitive' && old) { // towers: detailed GLB near, lightened primitive far
+          S.remove(old);
+          const farSide = new THREE.MeshLambertMaterial({
+            map: facadeTex(Math.max(ft.x1 - ft.x0, ft.y1 - ft.y0), ft.h || 30, 'far') });
+          old.traverse((o) => { // swap the dark near facade for the light far one
+            if (o.isMesh && Array.isArray(o.material)) o.material = [farSide, farSide, o.material[2], o.material[3], farSide, farSide];
+          });
+          const lod = new THREE.LOD();
+          lod.addLevel(obj, 0); lod.addLevel(old, 70); // towers: far level past 70 m
+          scene.add(lod);
+        } else if (m.lod) {
+          if (old) S.remove(old);
+          loader.load(MODEL_BASE + m.lod + '.glb', (g2) => {
+            const low = fitFootprint(lodify(g2.scene), ft, m.rot);
+            const lod = new THREE.LOD();
+            lod.addLevel(obj, 0); lod.addLevel(low, 55); // shops/offices: low detail past 55 m
+            scene.add(lod);
+          }, undefined, () => scene.add(obj));
+        } else {
+          if (old) S.remove(old);
+          scene.add(obj);
+        }
+      }, undefined, () => {}); // load failed: primitive fallback stays
+    }
+    // street props (no fallback; small and cheap)
+    const PROPS = [];
+    for (const x of [-100, -20, 60, 140]) for (const z of [-100, -20, 60, 140])
+      PROPS.push(['roads/light-curved', x + 5.5, z + 5.5, Math.PI, 6]);
+    PROPS.push(
+      ['roads/traffic-light', -14, -26, 0, 4.2], ['roads/traffic-light', 66, 54, Math.PI / 2, 4.2],
+      ['roads/road-sign-stop', -94, -26, Math.PI, 2.6], ['roads/road-sign-stop', 66, 146, Math.PI / 2, 2.6],
+      ['roads/sign-highway', 100, -208, Math.PI, 4],
+      ['roads/dumpster', -137, -30, Math.PI / 2, 1.6], ['roads/dumpster', -137, 50, Math.PI / 2, 1.6],
+      ['suburban/planter', -160, -40, 0, 0.9], ['suburban/planter', -160, -10, 0, 0.9],
+      ['suburban/planter', -160, 20, 0, 0.9], ['suburban/planter', -160, 50, 0, 0.9],
+      // Seaside Park trees + Palm Court greenery (no palm model in the kits - gap noted)
+      ['suburban/tree-large', -70, 80, 0, 6], ['suburban/tree-small', -40, 75, 1, 4],
+      ['suburban/tree-large', -10, 85, 2, 6.5], ['suburban/tree-small', 20, 78, 0, 4],
+      ['suburban/tree-large', 35, 100, 1, 6], ['suburban/tree-small', -55, 110, 2, 4.5],
+      ['suburban/tree-large', -20, 120, 0, 6], ['suburban/tree-small', 10, 115, 1, 4],
+      ['suburban/tree-small', 160, -55, 0, 4.5], ['suburban/tree-large', 215, -55, 1, 6],
+      ['suburban/tree-small', 160, 100, 2, 4.5], ['suburban/tree-large', 215, 100, 0, 6],
+    );
+    for (const [f, x, z, rot, h] of PROPS) {
+      loader.load(MODEL_BASE + f + '.glb', (g) => {
+        scene.add(fitHeight(lodify(g.scene), x, z, rot, h));
+      }, undefined, () => {});
+    }
+    // Mohamed's six props (palm, streetlight, bench, bin, hydrant, traffic light) - GLB zip pending;
+    // each load silently skips until assets/models/props/<name>.glb exists (v4 pre-wiring)
+    const PROPS2 = [
+      // palms along the boardwalk west side (fills the no-palm gap in the Kenney kits)
+      ['props/palm', -178, -180, 0, 7], ['props/palm', -178, -140, 1.2, 6.5], ['props/palm', -178, -100, 2.1, 7],
+      ['props/palm', -178, -60, 0.6, 6], ['props/palm', -178, 20, 1.7, 7], ['props/palm', -178, 60, 2.9, 6.5],
+      ['props/palm', -178, 100, 0.4, 7], ['props/palm', -178, 140, 1.1, 6], ['props/palm', -178, 180, 2.4, 7],
+      // benches: pier entrance, Seaside Park, Palm Court
+      ['props/bench', -150, -12, Math.PI / 2, 1], ['props/bench', -40, 95, 0, 1], ['props/bench', 15, 90, Math.PI, 1],
+      ['props/bench', 190, 30, Math.PI / 2, 1],
+      // bins by the shops and downtown corners
+      ['props/bin', -146, 26, 0, 1], ['props/bin', -146, 66, 0, 1], ['props/bin', -66, -26, 0, 1],
+      // hydrants downtown
+      ['props/hydrant', -66, 14, 0, 0.8], ['props/hydrant', 14, -26, 0, 0.8],
+      // streetlights on the downtown corners not covered by the roads kit
+      ['props/streetlight', -24, 54, Math.PI, 5.5], ['props/streetlight', 66, -26, 0, 5.5],
+      // traffic light at the H280 x V280 junction (the roads-kit lights cover two other junctions)
+      ['props/traffic_light', -24, -104, Math.PI / 2, 4.2],
+    ];
+    for (const [f, x, z, rot, h] of PROPS2) {
+      loader.load(MODEL_BASE + f + '.glb', (g) => {
+        scene.add(fitHeight(lodify(g.scene), x, z, rot, h));
+      }, undefined, () => {}); // zip not here yet: skip silently
+    }
+  }
+  if (GLTFLoader) swapToModels(GLTFLoader);
+  else {
+    import('three/addons/loaders/GLTFLoader.js')
+      .then((m) => swapToModels(m.GLTFLoader))
+      .catch(() => {}); // no loader wired: stay on primitives
+  }
+
+  // ---- API ----
+  const WATER_X = lw(82);
+  const PIER = { minX: lw(20), maxX: lw(122), minZ: lz(292), maxZ: lz(308) };
+  const onPier = (x, z) => x >= PIER.minX && x <= PIER.maxX && z >= PIER.minZ && z <= PIER.maxZ;
+
+  function groundAt(x, z) { return onPier(x, z) ? 0.4 : terrainH(x, z); } // real elevation
+
+  function isBlocked(x, z, r) {
+    for (const b of blocks) {
+      if (x + r > b.minX && x - r < b.maxX && z + r > b.minZ && z - r < b.maxZ) return true;
+    }
+    if (x - r < WATER_X && !onPier(x, z)) return true;          // water (pier stays walkable)
+    if (x < -C || x > C || z < -C || z > C) return true;        // world edge
+    return false;
+  }
+
+  // v7: point-to-segment distance against every path piece (works for straight + curved)
+  function roadHit(r, x, z) {
+    const h = r.w / 2;
+    for (let i = 0; i < r.pts.length - 1; i++) {
+      const ax = lw(r.pts[i][0]), az = lz(r.pts[i][1]), bx = lw(r.pts[i + 1][0]), bz = lz(r.pts[i + 1][1]);
+      const dx = bx - ax, dz = bz - az, L2 = dx * dx + dz * dz;
+      let t = L2 ? ((x - ax) * dx + (z - az) * dz) / L2 : 0;
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const px = ax + t * dx - x, pz = az + t * dz - z;
+      if (px * px + pz * pz <= h * h) return true;
+    }
+    return false;
+  }
+  function isRoadAt(x, z) {
+    for (const r of ROADS) if (roadHit(r, x, z)) return true;
+    for (const d of DRIVES) if (roadHit(d, x, z)) return true;
+    return roadHit(HWY, x, z);
+  }
+
+  // Named, road-safe taxi stops (original names), all >>20 m apart, 2.5 m off centerline
+  const taxiStops = [
+    { x: lw(132.5), z: lz(300), name: 'Pelican Pier' },
+    { x: lw(282.5), z: lz(240), name: 'Downtown Solana' },
+    { x: lw(442.5), z: lz(320), name: 'Palm Court' },
+    { x: lw(240),   z: lz(442.5), name: 'Seaside Park' },
+    { x: lw(480),   z: lz(84.5),  name: 'Bayshore Fuel' },
+  ];
+
+  return {
+    bounds: { minX: -C, maxX: C, minZ: -C, maxZ: C },
+    spawnPoints: {
+      player: { x: lw(145), z: lz(320), heading: Math.PI / 2 }, // boardwalk, facing the shops (east)
+      car:    { x: lw(497), z: lz(294), heading: 0 },           // v6: starter car on the bungalow driveway, facing the street
+    },
+    groundAt, heightAt: groundAt,
+    isBlocked, blockedAt: isBlocked,
+    isRoadAt, taxiStops,
+    starterHome: { x: lw(505), z: lz(309), name: 'Palm Court Bungalow' },
+    // v7a (coordinator, additive): road centerlines in LAYOUT coords [[x,y],...] with width w,
+    // for placement modules (houses, props, pedestrians). Convert world = layout - 300.
+    roadPaths: ROADS.map((r) => ({ pts: r.pts, w: r.w })),
+    // v7a: register an extra collision footprint (world coords), e.g. a placed house.
+    addBlock(minX, minZ, maxX, maxZ) { blocks.push({ minX, minZ, maxX, maxZ }); },
+    update(dt) {},
+  };
+}
+
+
+// ===== controls.js =====
+function createControls({container=document.body,onInteract=()=>{}}={}) {
+ const state={steer:0,throttle:0,moveX:0,moveY:0,brake:false};
+ const held=new Set(), pointers=new Map();let joy=null,stick=null;
+ const root=document.createElement('div');root.className='city-controls';root.innerHTML=`<style>.city-controls{position:fixed;inset:0;pointer-events:none;z-index:50;touch-action:none;user-select:none;-webkit-user-select:none}.city-controls button{position:absolute;pointer-events:auto;border:1px solid #ffffff65;background:#132536bb;color:#fff;border-radius:18px;font:bold 15px system-ui;min-width:64px;min-height:58px;touch-action:none}.city-controls .city-stick{position:absolute;left:max(24px,env(safe-area-inset-left));bottom:24px;width:122px;height:122px;border-radius:50%;border:2px solid #ffffff65;background:#13253677;pointer-events:auto;touch-action:none}.city-controls .city-knob{position:absolute;left:38px;top:38px;width:46px;height:46px;border-radius:50%;background:#e8f1e5cc;pointer-events:none}.city-controls .city-action{right:max(26px,env(safe-area-inset-right));bottom:104px;padding:0 18px}.city-controls .city-brake{right:max(26px,env(safe-area-inset-right));bottom:28px;padding:0 18px}.city-controls .city-help{position:absolute;bottom:8px;left:170px;right:130px;text-align:center;color:#fff9;font:11px system-ui;pointer-events:none}@media(max-height:330px){.city-controls .city-stick{bottom:16px;transform:scale(.8);transform-origin:bottom left}.city-controls .city-action{bottom:86px}.city-controls .city-brake{bottom:18px}}</style><div class="city-stick" role="application" aria-label="Move or steer"><div class="city-knob"></div></div><button class="city-action" aria-label="Enter or exit car">ENTER CAR</button><button class="city-brake" aria-label="Brake">BRAKE</button><div class="city-help">Left stick: move / steer · E: enter / exit · Space: brake</div>`;
+ container.append(root);stick=root.querySelector('.city-stick');const knob=root.querySelector('.city-knob'),action=root.querySelector('.city-action'),brake=root.querySelector('.city-brake');let sx=0,sy=0;
+ function refresh(){const x=Math.max(-1,Math.min(1,sx+(held.has('KeyD')||held.has('ArrowRight')?1:0)-(held.has('KeyA')||held.has('ArrowLeft')?1:0))),y=Math.max(-1,Math.min(1,-sy+(held.has('KeyW')||held.has('ArrowUp')?1:0)-(held.has('KeyS')||held.has('ArrowDown')?1:0)));state.moveX=x;state.moveY=y;state.steer=x;state.throttle=y;state.brake=held.has('Space')||pointers.size>0;}
+ function drag(e){const r=stick.getBoundingClientRect(),dx=(e.clientX-r.left-r.width/2)/(r.width*.34),dy=(e.clientY-r.top-r.height/2)/(r.height*.34),n=Math.max(1,Math.hypot(dx,dy));sx=dx/n;sy=dy/n;if(Math.hypot(sx,sy)<.1)sx=sy=0;knob.style.transform=`translate(${sx*38}px,${sy*38}px)`;refresh();}
+ stick.addEventListener('pointerdown',e=>{if(joy!==null)return;joy=e.pointerId;stick.setPointerCapture(joy);drag(e);e.preventDefault();});stick.addEventListener('pointermove',e=>{if(e.pointerId===joy)drag(e);});function release(e){if(e.pointerId!==joy)return;joy=null;sx=sy=0;knob.style.transform='';refresh();}stick.addEventListener('pointerup',release);stick.addEventListener('pointercancel',release);stick.addEventListener('lostpointercapture',release);
+ brake.addEventListener('pointerdown',e=>{pointers.set(e.pointerId,true);brake.setPointerCapture(e.pointerId);refresh();});for(const ev of ['pointerup','pointercancel','lostpointercapture'])brake.addEventListener(ev,e=>{pointers.delete(e.pointerId);refresh();});action.addEventListener('click',onInteract);
+ const relevant=new Set(['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space','KeyE']);function keydown(e){if(/INPUT|TEXTAREA|SELECT/.test(e.target.tagName))return;if(relevant.has(e.code))e.preventDefault();if(e.code==='KeyE'&&!e.repeat)onInteract();held.add(e.code);refresh();}function keyup(e){held.delete(e.code);refresh();}function reset(){held.clear();pointers.clear();joy=null;sx=sy=0;knob.style.transform='';refresh();}addEventListener('keydown',keydown);addEventListener('keyup',keyup);addEventListener('blur',reset);document.addEventListener('visibilitychange',reset);
+ return{state,root,setMode(driving){action.textContent=driving?'EXIT CAR':'ENTER CAR';},setActionLabel(text){action.textContent=text;},reset,destroy(){removeEventListener('keydown',keydown);removeEventListener('keyup',keyup);removeEventListener('blur',reset);document.removeEventListener('visibilitychange',reset);root.remove();}};
+}
+
+
+// ===== actors.js =====
+// Original primitive geometry. No external models, names, textures or paid dependencies.
+// v009: adds original white sport sedan (starter car, ~4.6 m) and green cruiser bike (~2.2 m,
+// lean-in riding). sedan parks at map.spawnPoints.car (map v6 driveway); taxi keeps actors.car.
+function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onModeChange=()=>{}}){
+ const ground=(x,z)=>{const y=(map.groundAt||map.heightAt||(()=>0))(x,z);return Number.isFinite(y)?y:0;};
+ const blocked=(x,z,r)=>!!((map.isBlocked||map.blockedAt||(()=>false))(x,z,r));
+ const material=c=>new T.MeshLambertMaterial({color:c});const mats={skin:material('#c68b59'),shirt:material('#ecebdf'),pants:material('#26344c'),shoe:material('#152335'),body:material('#e6b32e'),dark:material('#243247'),glass:material('#71b7cb'),rubber:material('#202733'),lamp:material('#fff0b2'),rim:material('#b8c7c9'),tail:material('#ce594e'),white:material('#f2f1ea'),glass2:material('#2b3a47'),red:material('#c0392b'),green:material('#2e7d4f'),chrome:material('#c3cdcf'),black:material('#1c242e')};
+ const geometries=[];
+ function mesh(parent,geo,mat,x=0,y=0,z=0){geometries.push(geo);const o=new T.Mesh(geo,mat);o.position.set(x,y,z);parent.add(o);return o;}
+ function sphere(parent,x,y,z,rx,ry,rz,mat){const o=mesh(parent,new T.SphereGeometry(1,12,8),mat,x,y,z);o.scale.set(rx,ry,rz);return o;}
+ function capsule(parent,x,y,z,r,len,mat){return mesh(parent,new T.CapsuleGeometry(r,len,4,8),mat,x,y,z);}
+ function rounded(parent,w,h,d,mat,x,y,z,r=Math.min(w,h,d)*.3){r=Math.min(r,w*.45,h*.45,d*.45);const a=w/2-r,b=h/2-r,s=new T.Shape();s.moveTo(-a-r,-b);s.lineTo(-a-r,b);s.quadraticCurveTo(-a-r,b+r,-a,b+r);s.lineTo(a,b+r);s.quadraticCurveTo(a+r,b+r,a+r,b);s.lineTo(a+r,-b);s.quadraticCurveTo(a+r,-b-r,a,-b-r);s.lineTo(-a,-b-r);s.quadraticCurveTo(-a-r,-b-r,-a-r,-b);const g=new T.ExtrudeGeometry(s,{depth:Math.max(.005,d-2*r),bevelEnabled:true,bevelSegments:2,steps:1,bevelSize:r*.45,bevelThickness:r,curveSegments:3});g.translate(0,0,-(d-2*r)/2);return mesh(parent,g,mat,x,y,z);}
+ function hull(parent,rings,mat){const vs=[],ix=[],N=12;for(const [z,w,cy,h]of rings)for(let i=0;i<N;i++){const a=i/N*Math.PI*2;vs.push(Math.cos(a)*w,cy+Math.sin(a)*h,z);}for(let j=0;j<rings.length-1;j++)for(let i=0;i<N;i++){const a=j*N+i,b=j*N+(i+1)%N,c=a+N,d=b+N;ix.push(a,b,c,b,d,c);}for(let i=1;i<N-1;i++){ix.push(0,i+1,i);const o=(rings.length-1)*N;ix.push(o,o+i,o+i+1);}const g=new T.BufferGeometry();g.setAttribute('position',new T.Float32BufferAttribute(vs,3));g.setIndex(ix);g.computeVertexNormals();return mesh(parent,g,mat);}
+ // Batch static root meshes by material, leaving limb/wheel groups movable.
+ function batchStatic(group){const buckets=new Map();for(const o of [...group.children])if(o.isMesh){o.updateMatrix();const g=o.geometry.index?o.geometry.toNonIndexed():o.geometry.clone();g.applyMatrix4(o.matrix);const a=buckets.get(o.material)||[];a.push({o,g});buckets.set(o.material,a);}for(const [mat,items]of buckets){if(items.length<2){items.forEach(i=>i.g.dispose());continue;}const positions=[],normals=[];for(const {o,g}of items){positions.push(...g.attributes.position.array);normals.push(...g.attributes.normal.array);group.remove(o);g.dispose();}const joined=new T.BufferGeometry();joined.setAttribute('position',new T.Float32BufferAttribute(positions,3));joined.setAttribute('normal',new T.Float32BufferAttribute(normals,3));mesh(group,joined,mat);}}
+ function normalize(group,len){group.updateMatrixWorld(true);const b=new T.Box3().setFromObject(group,true),s=b.getSize(new T.Vector3());const k=len/s.z;group.scale.setScalar(k);group.position.y=-b.min.y*k;return k;}
+ const pm=new T.Group();pm.name='Original rounded courier character';scene.add(pm);
+ sphere(pm,0,1.18,0,.29,.43,.2,mats.shirt);sphere(pm,0,.87,0,.27,.17,.19,mats.pants);capsule(pm,0,1.58,0,.09,.08,mats.skin);sphere(pm,0,1.82,0,.2,.25,.19,mats.skin);sphere(pm,0,1.99,.015,.205,.11,.19,mats.dark);sphere(pm,0,1.8,-.183,.065,.06,.055,mats.skin);
+ for(const x of[-.072,.072])sphere(pm,x,1.87,-.175,.024,.028,.02,mats.dark);
+ const legs=[],arms=[];for(const s of[-1,1]){const leg=new T.Group();leg.position.set(s*.145,.83,0);pm.add(leg);capsule(leg,0,-.23,0,.1,.31,mats.pants);capsule(leg,0,-.58,-.012,.085,.24,mats.pants);sphere(leg,0,-.76,-.07,.115,.09,.2,mats.shoe);legs.push(leg);const arm=new T.Group();arm.position.set(s*.31,1.43,0);pm.add(arm);capsule(arm,s*.025,-.14,0,.085,.18,mats.skin);capsule(arm,s*.04,-.39,0,.066,.19,mats.skin);sphere(arm,s*.045,-.56,0,.07,.095,.07,mats.skin);arms.push(arm);}
+ const cm=new T.Group();cm.name='Original curved compact taxi';scene.add(cm);
+ hull(cm,[[-1.98,.58,.69,.13],[-1.82,.83,.73,.26],[-1.22,.94,.79,.34],[.95,.94,.79,.34],[1.65,.83,.76,.28],[1.91,.62,.73,.16]],mats.body);
+ hull(cm,[[-1.12,.65,1.18,.1],[-.56,.77,1.4,.34],[.67,.74,1.4,.34],[1.11,.63,1.16,.09]],mats.glass);
+ hull(cm,[[-.57,.63,1.68,.06],[-.35,.69,1.73,.075],[.55,.65,1.73,.075],[.73,.57,1.65,.045]],mats.body);
+ for(const x of[-.77,.77]){rounded(cm,.055,.58,.095,mats.body,x,1.38,.12,.02);rounded(cm,.08,.09,1.65,mats.body,x,1.12,.07,.025);for(const z of[-.39,.55])rounded(cm,.06,.055,.24,mats.dark,x*1.17,1.03,z,.02);sphere(cm,x*1.25,1.24,-.65,.14,.07,.1,mats.body);}
+ for(const x of[-.92,.92])for(const z of[-1.22,1.2]){const pivot=new T.Group();pivot.position.set(x,.4,z);cm.add(pivot);const tire=mesh(pivot,new T.TorusGeometry(.285,.105,6,12),mats.rubber);tire.rotation.y=Math.PI/2;const rim=mesh(pivot,new T.CylinderGeometry(.245,.245,.12,10),mats.rim);rim.rotation.z=Math.PI/2;sphere(pivot,Math.sign(x)*.09,0,0,.04,.11,.11,mats.dark);}
+ for(const x of[-.61,.61]){sphere(cm,x,.85,-1.82,.22,.12,.095,mats.lamp);sphere(cm,x,.85,1.78,.21,.1,.09,mats.tail);}
+ rounded(cm,1.15,.16,.12,mats.dark,0,.59,-1.92,.055);rounded(cm,1.42,.11,.12,mats.dark,0,.54,1.85,.045);rounded(cm,.52,.22,.37,mats.lamp,0,1.91,.03,.07);rounded(cm,.31,.1,.015,mats.dark,0,1.93,-.174,.02);
+ batchStatic(cm);
+ // Original white sport sedan (starter car, own design, ~4.6 m long). Not a copy of any game car.
+ const sm=new T.Group();sm.name='Original white sport sedan';
+ hull(sm,[[-2.3,.5,.58,.1],[-2.14,.74,.62,.2],[-1.45,.86,.68,.26],[1.5,.86,.68,.26],[2.08,.76,.64,.2],[2.3,.56,.6,.11]],mats.white);
+ hull(sm,[[-1.02,.54,.92,.06],[-.5,.64,1.14,.24],[.7,.63,1.14,.24],[1.2,.53,.95,.05]],mats.glass2);
+ hull(sm,[[-.5,.52,1.4,.045],[-.28,.57,1.45,.05],[.56,.56,1.45,.05],[.74,.5,1.38,.04]],mats.white);
+ for(const x of[-.82,.82]){rounded(sm,.06,.34,.08,mats.white,x,1.18,.5,.02);rounded(sm,.14,.06,.08,mats.white,x*1.12,1.06,-.35,.02);}
+ for(const x of[-.85,.85])for(const z of[-1.42,1.45]){const pivot=new T.Group();pivot.position.set(x,.42,z);sm.add(pivot);const tire=mesh(pivot,new T.TorusGeometry(.3,.11,6,12),mats.rubber);tire.rotation.y=Math.PI/2;const rim=mesh(pivot,new T.CylinderGeometry(.25,.25,.12,10),mats.rim);rim.rotation.z=Math.PI/2;}
+ for(const x of[-.58,.58]){sphere(sm,x,.7,-2.22,.18,.09,.07,mats.lamp);sphere(sm,x,.68,2.24,.17,.08,.06,mats.red);}
+ rounded(sm,1,.12,.06,mats.black,0,.62,-2.27,.03);rounded(sm,1.5,.1,.06,mats.black,0,.56,2.28,.03);
+ rounded(sm,1.1,.045,.26,mats.white,0,1.04,2.16,.02);for(const x of[-.4,.4])rounded(sm,.04,.1,.05,mats.black,x,.97,2.16,.015);
+ batchStatic(sm);normalize(sm,4.6);scene.add(sm);
+ // Original green cruiser bike (own design, ~2.2 m long). Whole visual sits in a lean group.
+ const bm=new T.Group();bm.name='Original green cruiser bike';const lean=new T.Group();bm.add(lean);
+ for(const z of[-.78,.74]){const pivot=new T.Group();pivot.position.set(0,.45,z);lean.add(pivot);const tire=mesh(pivot,new T.TorusGeometry(.33,.12,6,14),mats.rubber);tire.rotation.y=Math.PI/2;const rim=mesh(pivot,new T.CylinderGeometry(.26,.26,.1,10),mats.black);rim.rotation.z=Math.PI/2;for(const a of[0,1,2]){const spoke=mesh(pivot,new T.BoxGeometry(.03,.5,.05),mats.chrome);spoke.rotation.x=a*Math.PI/3;}}
+ for(const x of[-.07,.07]){const f=mesh(lean,new T.CylinderGeometry(.035,.035,.78,8),mats.chrome,x,.82,-.88);f.rotation.x=.42;}
+ const bar=mesh(lean,new T.CylinderGeometry(.03,.03,.62,8),mats.chrome,0,1.05,-.98);bar.rotation.z=Math.PI/2;
+ for(const x of[-.29,.29])sphere(lean,x,1.05,-.98,.05,.05,.09,mats.black);
+ sphere(lean,0,.88,-1.02,.13,.13,.13,mats.lamp);
+ rounded(lean,.26,.32,.6,mats.black,0,.5,-.02,.08);
+ sphere(lean,0,.8,-.3,.24,.18,.4,mats.green);
+ rounded(lean,.3,.12,.6,mats.black,0,.74,.38,.05);
+ const ff=mesh(lean,new T.TorusGeometry(.46,.07,6,10,Math.PI),mats.green,0,.45,-.78);ff.rotation.y=Math.PI/2;
+ const rf=mesh(lean,new T.TorusGeometry(.44,.09,6,10,Math.PI),mats.green,0,.45,.74);rf.rotation.y=Math.PI/2;
+ for(const x of[-.3,.3])rounded(lean,.2,.3,.44,mats.green,x,.52,.86,.05);
+ const ex=mesh(lean,new T.CylinderGeometry(.06,.07,1.3,8),mats.chrome,.22,.3,.3);ex.rotation.x=Math.PI/2-.06;
+ sphere(lean,0,.6,1.06,.05,.1,.1,mats.tail);
+ batchStatic(lean);const bikeK=normalize(bm,2.2);scene.add(bm);
+ const start=map.spawnPoints||{},ps=start.player||spawn;
+ const mkV=(key,root,leanG,cfg,def)=>{const v={key,mesh:root,leanGroup:leanG,...def,x:cfg.x??def.x,z:cfg.z??def.z,y:0,yaw:cfg.heading??def.heading??0,speed:0,lean:0};delete v.heading;return v;};
+ const car=mkV('taxi',cm,null,start.taxi||{},{x:(spawn.x??0)+4,z:spawn.z??8,heading:0,label:'yellow car',foot:[-1.25,0,1.25],circleR:1.02,exitR:1.7,seatY:.8,tune:{accel:9,maxF:19,maxR:6,turn:1.55}});
+ const sedan=mkV('sedan',sm,null,start.sedan||start.car||{},{x:(spawn.x??0)-4,z:(spawn.z??8)+2,heading:0,label:'white sedan',foot:[-1.5,0,1.5],circleR:1.05,exitR:1.75,seatY:.6,tune:{accel:12,maxF:24,maxR:6,turn:1.7}});
+ const bike=mkV('bike',bm,lean,start.bike||{},{x:(spawn.x??0)+7,z:(spawn.z??8)+2,heading:0,label:'green bike',foot:[-.7,0,.7],circleR:.5,exitR:1.1,seatY:.74*bikeK,tune:{accel:13,maxF:22,maxR:5,turn:2.3,leanMax:.42}});
+ const vehicles=[car,sedan,bike];
+ const player={x:ps.x??0,z:ps.z??8,y:0,yaw:ps.heading??0,mesh:pm,inCar:false};
+ let phase=0,driving=false,driveV=null,disposed=false,lastBlocked=false,mixer=null,walkAction=null,idleAction=null,loadedModels=false,hipY=.83,seated=false,boneRest=null,boneMap=null;
+ function vehicleBlocked(v,x,z,yaw=v.yaw){for(const d of v.foot)if(blocked(x+Math.sin(yaw)*d,z-Math.cos(yaw)*d,v.circleR))return true;return false;}
+ function move(entity,dx,dz,r,veh){const n=Math.max(1,Math.ceil(Math.hypot(dx,dz)/.22));let hit=false;for(let i=0;i<n;i++){const x=entity.x+dx/n,z=entity.z+dz/n;if(!(veh?vehicleBlocked(veh,x,entity.z):blocked(x,entity.z,r)))entity.x=x;else hit=true;if(!(veh?vehicleBlocked(veh,entity.x,z):blocked(entity.x,z,r)))entity.z=z;else hit=true;}return hit;}
+ function captureBones(){boneMap={};boneRest={};pm.traverse(o=>{if(o.isBone&&/^(UpperLeg|LowerLeg|UpperArm|LowerArm)\.?[LR]$/.test(o.name)){boneMap[o.name]=o;boneRest[o.name]=o.quaternion.clone();}});const hips=pm.getObjectByName('Hips');if(hips){const p=new T.Vector3();hips.getWorldPosition(p);const h=p.y-pm.position.y;if(h>.5&&h<1.5)hipY=h;}}
+ function poseSeat(on,bikePose){
+  if(boneMap){if(!on){if(seated){for(const n in boneRest)boneMap[n].quaternion.copy(boneRest[n]);seated=false;}return;}seated=true;for(const n in boneRest)boneMap[n].quaternion.copy(boneRest[n]);const leg=bikePose?1.05:.9,knee=bikePose?.8:.7,arm=bikePose?.55:.4,fore=bikePose?.35:.25,K=n=>boneMap[n]||boneMap[n.replace('.','')];K('UpperLeg.L').rotateX(leg);K('UpperLeg.R').rotateX(leg);K('LowerLeg.L').rotateX(-knee);K('LowerLeg.R').rotateX(-knee);K('UpperArm.L').rotateZ(-arm);K('UpperArm.R').rotateZ(arm);K('LowerArm.L').rotateZ(-fore);K('LowerArm.R').rotateZ(fore);return;}
+  if(on){if(!seated){seated=true;legs.forEach(l=>l.rotation.x=1.05);arms.forEach(a=>a.rotation.x=.7);}}
+  else if(seated){seated=false;legs.forEach(l=>l.rotation.x=0);arms.forEach(a=>a.rotation.x=0);}}
+ function sync(){player.y=ground(player.x,player.z);
+  for(const v of vehicles){v.y=ground(v.x,v.z);v.mesh.position.set(v.x,v.y,v.z);v.mesh.rotation.y=-v.yaw;if(v.leanGroup)v.leanGroup.rotation.z=v.lean||0;}
+  if(driving&&driveV){const v=driveV,back=v.key==='bike'?.22:0;pm.position.set(v.x-Math.sin(v.yaw)*back,v.y+v.seatY-hipY,v.z+Math.cos(v.yaw)*back);pm.rotation.set(0,-v.yaw,0);if(v.key==='bike')pm.rotateZ(v.lean);poseSeat(true,v.key==='bike');}
+  else{pm.position.set(player.x,player.y,player.z);pm.rotation.set(0,-player.yaw,0);poseSeat(false);}}
+ function clearPath(x1,z1,x2,z2,r=.3){const n=Math.max(1,Math.ceil(Math.hypot(x2-x1,z2-z1)/.2));for(let i=1;i<=n;i++)if(blocked(x1+(x2-x1)*i/n,z1+(z2-z1)*i/n,r))return false;return true;}
+ function interact(){if(disposed)return false;
+  if(!driving){let best=null,bd=1e9;for(const v of vehicles){const d=Math.hypot(player.x-v.x,player.z-v.z);if(d<bd){bd=d;best=v;}}
+   if(!best||bd>4){notify('Walk closer to a vehicle');return false;}
+   if(!clearPath(player.x,player.z,best.x,best.z)){notify('Go around to the '+best.label+'. A wall is in the way.');return false;}
+   driving=true;driveV=best;best.speed=0;best.lean=0;player.x=best.x;player.z=best.z;
+   notify(best.key==='bike'?'Ride with the left stick. BRAKE slows the bike.':'Drive with the left stick. BRAKE slows the car.');}
+  else{const v=driveV;
+   if(Math.abs(v.speed)>1){notify('Stop the '+(v.key==='bike'?'bike':'car')+' before getting out');return false;}
+   let exit=null;for(const s of[1,-1]){const x=v.x+Math.cos(v.yaw)*s*v.exitR,z=v.z+Math.sin(v.yaw)*s*v.exitR;if(!blocked(x,z,.4)&&clearPath(v.x,v.z,x,z,.37)){exit={x,z};break;}}
+   if(!exit){notify('Both sides are blocked. Move first.');return false;}
+   driving=false;driveV=null;player.x=exit.x;player.z=exit.z;player.yaw=v.yaw;v.speed=0;v.lean=0;}
+  sync();onModeChange(driving);return true;}
+ function update(dt,input={}){if(disposed||!Number.isFinite(dt)||dt<=0)return;dt=Math.min(dt,.05);
+  if(driving&&driveV){const v=driveV,t=v.tune,throttle=Math.max(-1,Math.min(1,Number(input.throttle)||0)),steer=Math.max(-1,Math.min(1,Number(input.steer)||0));
+   if(input.brake){v.speed=Math.sign(v.speed)*Math.max(0,Math.abs(v.speed)-20*dt);}else if(throttle){v.speed+=throttle*t.accel*dt;}else v.speed*=Math.exp(-1.2*dt);
+   v.speed=Math.max(-t.maxR,Math.min(t.maxF,v.speed));
+   const nextYaw=v.yaw+steer*Math.min(1,Math.abs(v.speed)/3)*t.turn*dt*Math.sign(v.speed);
+   if(!vehicleBlocked(v,v.x,v.z,nextYaw))v.yaw=nextYaw;
+   const hit=move(v,Math.sin(v.yaw)*v.speed*dt,-Math.cos(v.yaw)*v.speed*dt,null,v);
+   if(hit){if(!lastBlocked){v.speed*=.25;notify('Road blocked');}else v.speed*=Math.exp(-3*dt);}// v011: damp once per impact, gentle decay while scraping (per-frame x.2 pinned vehicles dead on walls)
+   lastBlocked=hit;
+   if(v.key==='bike'){const tgt=steer*Math.min(1,Math.abs(v.speed)/7)*(t.leanMax||0);v.lean+=(tgt-v.lean)*Math.min(1,dt*8);}
+   player.x=v.x;player.z=v.z;}
+  else{let x=Number.isFinite(input.moveX)?Math.max(-1,Math.min(1,input.moveX)):0,z=Number.isFinite(input.moveY)?-Math.max(-1,Math.min(1,input.moveY)):0,n=Math.max(1,Math.hypot(x,z));x/=n;z/=n;const moving=Math.hypot(x,z)>.05;if(moving){move(player,x*4.5*dt,z*4.5*dt,.37);player.yaw=Math.atan2(x,-z);phase+=dt*9;}else phase=0;for(let i=0;i<2;i++){legs[i].rotation.x=Math.sin(phase+i*Math.PI)*.5;arms[i].rotation.x=-Math.sin(phase+i*Math.PI)*.35;}}
+  if(mixer){const moving=!driving&&(Math.abs(input.moveX||0)+Math.abs(input.moveY||0)>.1);walkAction.enabled=moving;idleAction.enabled=!moving&&!driving;mixer.update(dt);}
+  sync();}
+ function snapshot(){const vs={};for(const v of vehicles)vs[v.key]={x:v.x,z:v.z,yaw:v.yaw};return{version:2,player:{x:player.x,z:player.z,yaw:player.yaw},car:{x:car.x,z:car.z,yaw:car.yaw},vehicles:vs,driving,vehicle:driving&&driveV?driveV.key:null};}
+ function restore(data){if(!data||typeof data.driving!=='boolean')return false;
+  let vehs=null,vehKey=null;
+  if(data.version===2&&data.vehicles){vehs=data.vehicles;vehKey=data.driving?data.vehicle:null;if(data.driving&&!vehicles.some(v=>v.key===vehKey))return false;}
+  else if(data.car){vehs={sedan:data.car};vehKey=data.driving?'sedan':null;}// v1 legacy 'car' slot = driveway car = sedan in v009+ (taxi has its own spawn)
+  else return false;
+  const chk=o=>o&&['x','z','yaw'].every(k=>Number.isFinite(o[k])&&Math.abs(o[k])<100000);
+  if(!chk(data.player))return false;
+  for(const v of vehicles){const s=vehs[v.key];if(!s)continue;if(!chk(s))return false;if(vehicleBlocked(v,s.x,s.z,s.yaw))return false;}
+  if(!data.driving&&blocked(data.player.x,data.player.z,.37))return false;
+  for(const k of['x','z','yaw'])player[k]=data.player[k];
+  for(const v of vehicles){const s=vehs[v.key];if(s)for(const k of['x','z','yaw'])v[k]=s[k];v.speed=0;v.lean=0;}
+  driving=data.driving===true;driveV=driving?vehicles.find(v=>v.key===vehKey):null;
+  sync();onModeChange(driving);return true;}
+ async function loadModels({GLTFLoader,baseURL='./models/'}={}){if(!GLTFLoader)throw new Error('GLTFLoader is required');const loader=new GLTFLoader();const [human,taxi]=await Promise.all([loader.loadAsync(baseURL+'player-vest-cc0.glb'),loader.loadAsync(baseURL+'taxi.glb')]);if(disposed)return false;for(const o of [...pm.children])pm.remove(o);for(const o of [...cm.children])cm.remove(o);human.scene.updateMatrixWorld(true);human.scene.traverse(o=>{if(o.isSkinnedMesh)o.skeleton.update();});const hb=new T.Box3().setFromObject(human.scene,true),hs=hb.getSize(new T.Vector3());human.scene.scale.setScalar(1.9/hs.y);human.scene.position.y=-hb.min.y*human.scene.scale.x;human.scene.rotation.y=Math.PI;pm.add(human.scene);const tb=new T.Box3().setFromObject(taxi.scene),ts=tb.getSize(new T.Vector3());const scale=3.8/ts.z;taxi.scene.scale.setScalar(scale);taxi.scene.rotation.y=Math.PI;taxi.scene.position.y=-tb.min.y*scale;cm.add(taxi.scene);human.scene.traverse(o=>{if(o.isMesh){o.frustumCulled=false;geometries.push(o.geometry);}});taxi.scene.traverse(o=>{if(o.isMesh)geometries.push(o.geometry);});mixer=new T.AnimationMixer(human.scene);walkAction=mixer.clipAction(human.animations.find(a=>a.name==='Walk'));idleAction=mixer.clipAction(human.animations.find(a=>a.name==='Idle'));walkAction.play();idleAction.play();walkAction.enabled=false;idleAction.enabled=false;loadedModels=true;captureBones();sync();return true;}
+ sync();return{player,car,sedan,bike,vehicles,update,interact,loadModels,get modelsLoaded(){return loadedModels;},snapshot,restore,get driving(){return driving;},get drivingVehicle(){return driveV?driveV.key:null;},get current(){return driveV||car;},get cameraTarget(){return driving&&driveV?driveV:player;},dispose(){disposed=true;scene.remove(pm,cm,sm,bm);geometries.forEach(g=>g.dispose());Object.values(mats).forEach(m=>m.dispose());}};
+}
+
+
+// ===== jobs.js =====
+// Original game logic. No external assets or runtime dependencies.
+// jobs.js v2: taxi work (unchanged behaviour, plus a wallet deposit for side jobs)
+// and the new parcel-delivery side job (on foot or any vehicle).
+
+function createTaxiJob({routes, getVehicle, onChange=()=>{}, initialState=null}) {
+  if (!Array.isArray(routes) || routes.length < 1) throw new Error('Taxi routes required');
+  const point = p => p && Number.isFinite(p.x) && Number.isFinite(p.z);
+  const validRoutes = routes.filter(r => r && typeof r.id==='string' && point(r.pickup) && point(r.dropoff) && Math.hypot(r.pickup.x-r.dropoff.x,r.pickup.z-r.dropoff.z)>=20);
+  if (validRoutes.length!==routes.length) throw new Error('Taxi routes need distinct, finite road-safe stops');
+  const money = n => Number.isSafeInteger(n) && n>=0 && n<=100000000;
+  const state = {version:1,balance:0,completed:0,routeIndex:0,phase:'idle',dwell:0,message:'Open Phone to find taxi work.',lastFare:0};
+  if (initialState && initialState.version===1) {
+    if(money(initialState.balance))state.balance=initialState.balance;
+    if(money(initialState.completed))state.completed=initialState.completed;
+    if(Number.isSafeInteger(initialState.routeIndex)&&initialState.routeIndex>=0)state.routeIndex=initialState.routeIndex%routes.length;
+  }
+  let changed=true,uiTimer=0,lastUiKey='';
+  const route = () => routes[state.routeIndex];
+  const fare = () => Math.max(30,Math.min(500,Math.round(25+Math.hypot(route().pickup.x-route().dropoff.x,route().pickup.z-route().dropoff.z)*.3)));
+  const snapshot = () => {
+    const target=state.phase==='pickup'?route().pickup:state.phase==='dropoff'?route().dropoff:null,v=getVehicle?.();
+    const distance=target&&v&&Number.isFinite(v.x)&&Number.isFinite(v.z)?Math.hypot(v.x-target.x,v.z-target.z):null;
+    const arrival=target?(v?.driving!==true?'enter-car':distance===null?'unavailable':distance>5?'travel':!Number.isFinite(v.speed)||Math.abs(v.speed)>.8?'stop':'boarding'):'idle';
+    return {...state,route:route(),fare:fare(),target,distance,arrival};
+  };
+  function emit(){changed=true;onChange(snapshot());}
+  function accept(){if(state.phase!=='idle')return false;state.phase='pickup';state.dwell=0;state.message='Drive to '+route().pickup.name+'. Stop in the marked zone.';emit();return true;}
+  function cancel(){if(state.phase==='idle')return false;state.phase='idle';state.dwell=0;state.message='Taxi job canceled. No money lost.';emit();return true;}
+  // Side jobs pay into this single wallet so the HUD and save keep one balance.
+  function deposit(n){if(!money(n))return state.balance;state.balance=Math.min(100000000,state.balance+n);state.lastFare=n;emit();return state.balance;}
+  function update(dt){
+    if(state.phase==='idle')return;
+    const v=getVehicle?.(),target=state.phase==='pickup'?route().pickup:route().dropoff;
+    const ready=v && v.driving===true && Number.isFinite(v.x)&&Number.isFinite(v.z)&&Number.isFinite(v.speed) && Math.hypot(v.x-target.x,v.z-target.z)<=5 && Math.abs(v.speed)<=.8;
+    const step=Number.isFinite(dt)?Math.max(0,Math.min(.1,dt)):0;
+    // Refresh navigation at most four times a second while travelling. No save event for distance changes.
+    uiTimer+=step;if(uiTimer>=.25){uiTimer=0;const q=snapshot(),key=q.arrival+':'+Math.round(q.distance??-1);if(key!==lastUiKey){lastUiKey=key;changed=true;}}
+    if(!ready){if(state.dwell!==0){state.dwell=0;emit();}return;}
+    state.dwell+=step;changed=true;
+    if(state.dwell<1.5)return;
+    state.dwell=0;
+    if(state.phase==='pickup'){
+      state.phase='dropoff';state.message='Passenger aboard. Drive to '+route().dropoff.name+'.';
+    } else {
+      const paid=fare();state.balance=Math.min(100000000,state.balance+paid);state.completed=Math.min(100000000,state.completed+1);state.lastFare=paid;state.phase='idle';state.routeIndex=(state.routeIndex+1)%routes.length;state.message='Ride complete. Earned '+paid+' credits.';
+    }
+    emit();
+  }
+  return {accept,cancel,update,snapshot,deposit,consumeDirty(){const v=changed;changed=false;return v;},serialize(){return{version:1,balance:state.balance,completed:state.completed,routeIndex:state.routeIndex};}};
+}
+
+// Parcel delivery side job (v1). Walk up or drive any vehicle: collect the parcel at
+// the depot, then stop inside the delivery marker. Pays into the shared taxi wallet.
+function createDeliveryJob({depot, drops, getCourier, onChange=()=>{}, onPayout=()=>{}, initialState=null}) {
+  const point = p => p && Number.isFinite(p.x) && Number.isFinite(p.z);
+  if (!point(depot) || typeof depot.name!=='string') throw new Error('Delivery depot required');
+  if (!Array.isArray(drops) || drops.length < 1) throw new Error('Delivery drops required');
+  const validDrops = drops.filter(d => d && typeof d.name==='string' && point(d) && Math.hypot(d.x-depot.x,d.z-depot.z)>=20);
+  if (validDrops.length!==drops.length) throw new Error('Delivery drops need distinct, finite road-safe stops');
+  const money = n => Number.isSafeInteger(n) && n>=0 && n<=100000000;
+  const state = {version:1,completed:0,dropIndex:0,earned:0,phase:'idle',dwell:0,message:'Parcel delivery: collect at the depot, drop off across town.',lastPayout:0};
+  if (initialState && initialState.version===1) {
+    if(money(initialState.completed))state.completed=initialState.completed;
+    if(money(initialState.earned))state.earned=initialState.earned;
+    if(Number.isSafeInteger(initialState.dropIndex)&&initialState.dropIndex>=0)state.dropIndex=initialState.dropIndex%drops.length;
+  }
+  let changed=true,uiTimer=0,lastUiKey='';
+  const drop = () => drops[state.dropIndex];
+  const payout = () => Math.max(25,Math.min(400,Math.round(20+Math.hypot(depot.x-drop().x,depot.z-drop().z)*.25)));
+  const targetOf = () => state.phase==='collect'?depot:state.phase==='deliver'?drop():null;
+  const snapshot = () => {
+    const target=targetOf(),c=getCourier?.();
+    const distance=target&&c&&Number.isFinite(c.x)&&Number.isFinite(c.z)?Math.hypot(c.x-target.x,c.z-target.z):null;
+    const arrival=target?(distance===null?'unavailable':distance>5?'travel':!Number.isFinite(c.speed)||Math.abs(c.speed)>.8?'stop':'boarding'):'idle';
+    return {...state,depot,drop:drop(),payout:payout(),target,distance,arrival};
+  };
+  function emit(){changed=true;onChange(snapshot());}
+  function accept(){if(state.phase!=='idle')return false;state.phase='collect';state.dwell=0;state.message='Collect the parcel at '+depot.name+'.';emit();return true;}
+  function cancel(){if(state.phase==='idle')return false;state.phase='idle';state.dwell=0;state.message='Delivery canceled. No money lost.';emit();return true;}
+  function update(dt){
+    if(state.phase==='idle')return;
+    const c=getCourier?.(),target=targetOf();
+    const ready=c && Number.isFinite(c.x)&&Number.isFinite(c.z)&&Number.isFinite(c.speed) && Math.hypot(c.x-target.x,c.z-target.z)<=5 && Math.abs(c.speed)<=.8;
+    const step=Number.isFinite(dt)?Math.max(0,Math.min(.1,dt)):0;
+    uiTimer+=step;if(uiTimer>=.25){uiTimer=0;const q=snapshot(),key=q.arrival+':'+Math.round(q.distance??-1);if(key!==lastUiKey){lastUiKey=key;changed=true;}}
+    if(!ready){if(state.dwell!==0){state.dwell=0;emit();}return;}
+    state.dwell+=step;changed=true;
+    if(state.dwell<1.5)return;
+    state.dwell=0;
+    if(state.phase==='collect'){
+      state.phase='deliver';state.message='Parcel aboard. Deliver to '+drop().name+'.';
+    } else {
+      const paid=payout();onPayout(paid);state.earned=Math.min(100000000,state.earned+paid);state.completed=Math.min(100000000,state.completed+1);state.lastPayout=paid;state.phase='idle';state.dropIndex=(state.dropIndex+1)%drops.length;state.message='Parcel delivered. Earned '+paid+' credits.';
+    }
+    emit();
+  }
+  return {accept,cancel,update,snapshot,consumeDirty(){const v=changed;changed=false;return v;},serialize(){return{version:1,completed:state.completed,dropIndex:state.dropIndex,earned:state.earned};}};
+}
+
+// Pizza delivery side job (v1): timed. Collect at the pizzeria, then beat the timer for
+// full pay; a late delivery still pays a share. Pays into the shared taxi wallet.
+function createPizzaJob({shop, drops, getCourier, onChange=()=>{}, onPayout=()=>{}, initialState=null}) {
+  const point = p => p && Number.isFinite(p.x) && Number.isFinite(p.z);
+  if (!point(shop) || typeof shop.name!=='string') throw new Error('Pizza shop required');
+  if (!Array.isArray(drops) || drops.length < 1) throw new Error('Pizza drops required');
+  const validDrops = drops.filter(d => d && typeof d.name==='string' && point(d) && Math.hypot(d.x-shop.x,d.z-shop.z)>=20);
+  if (validDrops.length!==drops.length) throw new Error('Pizza drops need distinct, finite road-safe stops');
+  const money = n => Number.isSafeInteger(n) && n>=0 && n<=100000000;
+  const state = {version:1,completed:0,onTime:0,dropIndex:0,earned:0,phase:'idle',dwell:0,timeLeft:0,limit:0,message:'Pizza delivery: beat the timer for full pay.',lastPayout:0};
+  if (initialState && initialState.version===1) {
+    if(money(initialState.completed))state.completed=initialState.completed;
+    if(money(initialState.onTime))state.onTime=initialState.onTime;
+    if(money(initialState.earned))state.earned=initialState.earned;
+    if(Number.isSafeInteger(initialState.dropIndex)&&initialState.dropIndex>=0)state.dropIndex=initialState.dropIndex%drops.length;
+  }
+  let changed=true,uiTimer=0,lastUiKey='';
+  const drop = () => drops[state.dropIndex];
+  const dist = () => Math.hypot(shop.x-drop().x,shop.z-drop().z);
+  const fullPay = () => Math.max(40,Math.min(600,Math.round(30+dist()*.35)));
+  const limitFor = () => Math.round(25+dist()/8); // seconds; generous for 19-24 m/s roads
+  const targetOf = () => state.phase==='collect'?shop:state.phase==='deliver'?drop():null;
+  const snapshot = () => {
+    const target=targetOf(),c=getCourier?.();
+    const distance=target&&c&&Number.isFinite(c.x)&&Number.isFinite(c.z)?Math.hypot(c.x-target.x,c.z-target.z):null;
+    const arrival=target?(distance===null?'unavailable':distance>5?'travel':!Number.isFinite(c.speed)||Math.abs(c.speed)>.8?'stop':'boarding'):'idle';
+    return {...state,shop,drop:drop(),fullPay:fullPay(),latePay:Math.round(fullPay()*.4),target,distance,arrival};
+  };
+  function emit(){changed=true;onChange(snapshot());}
+  function accept(){if(state.phase!=='idle')return false;state.phase='collect';state.dwell=0;state.message='Pick up the pizza at '+shop.name+'.';emit();return true;}
+  function cancel(){if(state.phase==='idle')return false;state.phase='idle';state.dwell=0;state.timeLeft=0;state.message='Pizza job canceled. No money lost.';emit();return true;}
+  function update(dt){
+    if(state.phase==='idle')return;
+    const c=getCourier?.(),target=targetOf();
+    const ready=c && Number.isFinite(c.x)&&Number.isFinite(c.z)&&Number.isFinite(c.speed) && Math.hypot(c.x-target.x,c.z-target.z)<=5 && Math.abs(c.speed)<=.8;
+    const step=Number.isFinite(dt)?Math.max(0,Math.min(.1,dt)):0;
+    if(state.phase==='deliver'&&state.timeLeft>0){state.timeLeft=Math.max(0,state.timeLeft-step);}
+    uiTimer+=step;if(uiTimer>=.25){uiTimer=0;const q=snapshot(),key=q.arrival+':'+Math.round(q.distance??-1)+':'+Math.ceil(q.timeLeft);if(key!==lastUiKey){lastUiKey=key;changed=true;}}
+    if(!ready){if(state.dwell!==0){state.dwell=0;emit();}return;}
+    state.dwell+=step;changed=true;
+    if(state.dwell<1.5)return;
+    state.dwell=0;
+    if(state.phase==='collect'){
+      state.phase='deliver';state.limit=limitFor();state.timeLeft=state.limit;state.message='Pizza is hot. Deliver to '+drop().name+' in '+state.limit+' s.';
+    } else {
+      const hot=state.timeLeft>0,paid=hot?fullPay():Math.round(fullPay()*.4);
+      onPayout(paid);state.earned=Math.min(100000000,state.earned+paid);state.completed=Math.min(100000000,state.completed+1);if(hot)state.onTime=Math.min(100000000,state.onTime+1);
+      state.lastPayout=paid;state.phase='idle';state.timeLeft=0;state.dropIndex=(state.dropIndex+1)%drops.length;
+      state.message=(hot?'Delivered hot. Earned ':'Late, still paid. Earned ')+paid+' credits.';
+    }
+    emit();
+  }
+  return {accept,cancel,update,snapshot,consumeDirty(){const v=changed;changed=false;return v;},serialize(){return{version:1,completed:state.completed,onTime:state.onTime,dropIndex:state.dropIndex,earned:state.earned};}};
+}
+
+function mountTaxiPhone({host=document.body,job,delivery=null,pizza=null,onPause=()=>{},onSave=()=>{}}) {
+  const root=document.createElement('div');root.className='taxi-system';
+  root.innerHTML=`<style>
+  .taxi-system{font-family:system-ui,Arial,sans-serif;color:#f4f4ea;--gold:#ffd36a;--ink:#102329}
+  .taxi-system button{font:600 14px system-ui;min-height:44px;min-width:48px;touch-action:manipulation;border-radius:10px;border:1px solid #78928e;background:#17343b;color:#fff;padding:9px 14px;cursor:pointer}
+  .taxi-system button:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
+  .taxi-system .taxi-phone-open{position:absolute;right:16px;top:16px;z-index:20;background:#17343bee}
+  .taxi-system .taxi-hud{position:absolute;top:16px;left:16px;z-index:15;background:#102329eb;border:1px solid #68817d;border-radius:12px;padding:10px 14px;max-width:min(450px,65vw);pointer-events:none}
+  .taxi-system .taxi-money{font-weight:800;color:var(--gold);font-size:18px}.taxi-system .taxi-goal{font-size:13px;margin-top:3px}.taxi-system .taxi-progress{height:3px;border-radius:4px;margin-top:6px;background:#5f7774;overflow:hidden}.taxi-system .taxi-progress i{display:block;background:var(--gold);height:100%;width:0}
+  .taxi-system .taxi-backdrop{position:absolute;inset:0;background:#031419b8;z-index:70;display:grid;place-items:center;padding:10px;box-sizing:border-box}
+  .taxi-system [hidden]{display:none!important}.taxi-system .taxi-phone{box-sizing:border-box;width:min(480px,94vw);max-height:94dvh;overflow:auto;border:1px solid #82968b;background:#102329;border-radius:18px;padding:18px;box-shadow:0 18px 50px #0008}
+  .taxi-system .taxi-top{display:flex;align-items:center;justify-content:space-between;gap:10px}.taxi-system h2{font-size:20px;margin:0}.taxi-system .taxi-label{font-size:10px;letter-spacing:2px;color:#b8c5bc;margin-bottom:6px}.taxi-system .taxi-card{background:#1a353b;padding:14px;border:1px solid #49635f;border-radius:12px;margin:14px 0}.taxi-system h3{margin:0 0 8px;font-size:17px}.taxi-system p{font-size:13px;line-height:1.5;margin:7px 0}.taxi-system .taxi-buttons{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.taxi-system .taxi-accept{background:var(--gold);color:#102329;border-color:var(--gold)}.taxi-system .taxi-muted{color:#b8c5bc}.taxi-system .taxi-route{font-size:16px;font-weight:700}.taxi-system .taxi-live{font-size:13px;min-height:20px}
+  @media(max-height:440px){.taxi-system .taxi-phone{width:min(650px,94vw);padding:12px 16px}.taxi-system .taxi-card{margin:10px 0;padding:10px 14px}.taxi-system .taxi-top h2{font-size:18px}.taxi-system .taxi-hud{padding:7px 12px}.taxi-system .taxi-buttons{margin-top:8px}.taxi-system .taxi-phone p{margin:4px 0}}
+  </style><div class="taxi-hud"><div class="taxi-money"></div><div class="taxi-goal"></div><div class="taxi-guidance" style="font-size:12px;color:#c7d8cb;margin-top:3px"></div><div class="taxi-progress"><i></i></div></div>
+  <button class="taxi-phone-open" aria-label="Open in-game phone">Phone</button>
+  <div class="taxi-backdrop" hidden><section class="taxi-phone" role="dialog" aria-modal="true" aria-label="In-game phone"><div class="taxi-top"><div><div class="taxi-label">CITY / PHONE</div><h2>Your city. Your next job.</h2></div><button class="taxi-close" aria-label="Close phone">Close</button></div><div class="taxi-card"><h3>Taxi work</h3><div class="taxi-route"></div><p class="taxi-reward"></p><p class="taxi-navigation"></p><p class="taxi-instructions">Drive the car into the marker. Slow to a stop for 1.5 seconds to pick up or drop off a passenger.</p><div class="taxi-buttons"><button class="taxi-accept">Accept taxi job</button><button class="taxi-cancel" hidden>Cancel job</button></div></div><div class="taxi-card delivery-card" hidden><h3>Parcel delivery</h3><div class="delivery-route"></div><p class="delivery-reward"></p><p class="delivery-navigation"></p><p class="delivery-instructions">Collect the parcel at the depot marker, then stop inside the delivery marker. Walk up or drive any vehicle.</p><div class="taxi-buttons"><button class="delivery-accept taxi-accept">Accept delivery job</button><button class="delivery-cancel" hidden>Cancel job</button></div></div><div class="taxi-card pizza-card" hidden><h3>Pizza delivery</h3><div class="pizza-route"></div><p class="pizza-reward"></p><p class="pizza-navigation"></p><p class="pizza-instructions">Pick up at the pizzeria, then deliver before the timer runs out for full pay. Late still pays a share. Walk up or drive any vehicle.</p><div class="taxi-buttons"><button class="pizza-accept taxi-accept">Accept pizza job</button><button class="pizza-cancel" hidden>Cancel job</button></div></div><div class="taxi-live" role="status" aria-live="polite"></div><p class="taxi-muted">Game credits only. No real purchases. Side jobs: taxi, parcel and pizza.</p></section></div>`;
+  host.append(root);
+  const $=s=>root.querySelector(s),open=$('.taxi-phone-open'),backdrop=$('.taxi-backdrop'),close=$('.taxi-close'),accept=$('.taxi-accept'),cancel=$('.taxi-cancel');
+  const dCard=$('.delivery-card'),dAccept=$('.delivery-accept'),dCancel=$('.delivery-cancel');
+  const pCard=$('.pizza-card'),pAccept=$('.pizza-accept'),pCancel=$('.pizza-cancel');
+  let isOpen=false,lastMessage='';
+  function show(value){isOpen=value;backdrop.hidden=!value;onPause(value);if(value){render();close.focus();}else open.focus();}
+  open.onclick=()=>show(true);close.onclick=()=>show(false);
+  accept.onclick=()=>{if(job.accept()){onSave(job.serialize());show(false);render();}};
+  cancel.onclick=()=>{job.cancel();onSave(job.serialize());render();};
+  if(delivery){
+    dCard.hidden=false;
+    dAccept.onclick=()=>{if(delivery.accept()){onSave(delivery.serialize());show(false);render();}};
+    dCancel.onclick=()=>{delivery.cancel();onSave(delivery.serialize());render();};
+  }
+  if(pizza){
+    pCard.hidden=false;
+    pAccept.onclick=()=>{if(pizza.accept()){onSave(pizza.serialize());show(false);render();}};
+    pCancel.onclick=()=>{pizza.cancel();onSave(pizza.serialize());render();};
+  }
+  const key=e=>{if(isOpen){if(e.key==='Escape'){e.preventDefault();show(false);}if(e.key==='Tab'){const active=[close,...[accept,cancel,dAccept,dCancel,pAccept,pCancel].filter(b=>b&&!b.hidden)];const n=active.indexOf(document.activeElement),next=(n+(e.shiftKey?-1:1)+active.length)%active.length;e.preventDefault();active[next].focus();}e.stopImmediatePropagation();}};window.addEventListener('keydown',key,true);
+  function render(){
+    const s=job.snapshot(),d=delivery?delivery.snapshot():null,p=pizza?pizza.snapshot():null;
+    const taxiActive=s.phase!=='idle',delActive=d&&d.phase!=='idle',pizzaActive=p&&p.phase!=='idle';
+    const anyActive=taxiActive||delActive||pizzaActive;
+    const active=taxiActive?s:pizzaActive?p:delActive?d:null;
+    const distance=active&&Number.isFinite(active.distance)?(active.distance>=1000?(active.distance/1000).toFixed(1)+' km':Math.round(active.distance)+' m'):'';
+    const timeNote=pizzaActive&&p.phase==='deliver'?' · '+Math.ceil(p.timeLeft)+'s left':'';
+    const guidance=!active?'':active.arrival==='enter-car'?'Enter the car to continue.':active.arrival==='stop'?'Brake and stay stopped in the marker.':active.arrival==='boarding'?(taxiActive?(s.phase==='pickup'?'Picking up passenger':'Dropping off passenger'):pizzaActive?(p.phase==='collect'?'Picking up pizza':'Handing over pizza'):(d.phase==='collect'?'Collecting parcel':'Handing over parcel'))+' · '+Math.round(Math.min(1,active.dwell/1.5)*100)+'%':active.arrival==='unavailable'?'Waiting for position.':distance?'Head to the marker · '+distance+timeNote:(timeNote?'Timer'+timeNote:'');
+    $('.taxi-money').textContent=s.balance.toLocaleString()+' credits';
+    $('.taxi-goal').textContent=!active?'Free roam. Open Phone to find work.':(taxiActive?(s.phase==='pickup'?'PICK UP / ':'DROP OFF / '):pizzaActive?(p.phase==='collect'?'PICK UP / ':'DELIVER / '):(d.phase==='collect'?'COLLECT / ':'DELIVER / '))+active.target.name+(distance?' · '+distance:'')+timeNote;
+    $('.taxi-progress').hidden=!active;$('.taxi-progress i').style.width=active?(pizzaActive&&p.phase==='deliver'&&p.limit?(p.timeLeft/p.limit*100):(active.dwell/1.5*100))+'%':'0';
+    $('.taxi-guidance').textContent=guidance;
+    $('.taxi-route').textContent=s.route.pickup.name+' → '+s.route.dropoff.name;
+    $('.taxi-reward').textContent='Fare: '+s.fare+' credits · Completed rides: '+s.completed;
+    $('.taxi-navigation').textContent=taxiActive?guidance:'Accept a ride. No time limit.';
+    accept.hidden=anyActive;cancel.hidden=!taxiActive;
+    if(d){
+      $('.delivery-route').textContent=d.depot.name+' → '+d.drop.name;
+      $('.delivery-reward').textContent='Payout: '+d.payout+' credits · Delivered: '+d.completed+' · Earned: '+d.earned;
+      $('.delivery-navigation').textContent=delActive?guidance:'Collect at the depot. On foot or any vehicle.';
+      dAccept.hidden=anyActive;dCancel.hidden=!delActive;
+    }
+    if(p){
+      $('.pizza-route').textContent=p.shop.name+' → '+p.drop.name;
+      $('.pizza-reward').textContent='Pay: '+p.fullPay+' hot / '+p.latePay+' late · Delivered: '+p.completed+' · On time: '+p.onTime;
+      $('.pizza-navigation').textContent=pizzaActive?guidance:'Timed job. Full pay only if you beat the timer.';
+      pAccept.hidden=anyActive;pCancel.hidden=!pizzaActive;
+    }
+    const msg=taxiActive?s.message:pizzaActive?p.message:delActive?d.message:(s.message||'');
+    if(msg!==lastMessage){$('.taxi-live').textContent=msg;lastMessage=msg;}
+  }
+  render();return{root,render,get open(){return isOpen;},setOpen:show,destroy(){window.removeEventListener('keydown',key,true);root.remove();onPause(false);}};
+}
+
+
+// ===== save.js =====
+// save.js — save/load/autosave. Coordinator-owned. Contract v1.1.
+// Schema v1: { version:1, savedAt, actors: actors.snapshot(), jobs: taxiJob.serialize() }
+// actors.snapshot() = { version:1, player:{x,z,yaw}, car:{x,z,yaw}, driving }
+// jobs serialize()  = { version:1, balance, completed, routeIndex }
+// Reload intentionally cancels any active fare (builder 5's rule, avoids fake passengers).
+const KEY = 'coastalcity_save_v1';
+
+function createSave({ getActors, getJobs }) {
+  let lastLoaded = null;
+
+  function load() {
+    try {
+      const raw = localStorage.getItem(KEY);
+      if (!raw) return null;
+      const data = JSON.parse(raw);
+      if (!data || data.version !== 1) return null;
+      lastLoaded = data;
+      return data;
+    } catch (e) { return null; }
+  }
+
+  function collect() {
+    const actors = getActors();
+    const jobs = getJobs();
+    return {
+      version: 1,
+      savedAt: Date.now(),
+      actors: actors.snapshot(),
+      jobs: jobs ? jobs.serialize() : null,
+    };
+  }
+
+  function persist() {
+    try { localStorage.setItem(KEY, JSON.stringify(collect())); }
+    catch (e) { /* storage full/blocked: game keeps running */ }
+  }
+
+  function restore() {
+    if (!lastLoaded) return;
+    try {
+      if (lastLoaded.actors) getActors().restore(lastLoaded.actors);
+      // jobs state is restored through createTaxiJob initialState in main.js
+    } catch (e) { /* a bad save never blocks a fresh game */ }
+  }
+
+  let timer = 0;
+  function startAutosave() {
+    stopAutosave();
+    timer = setInterval(persist, 1000); // 1 s autosave, standing rule
+  }
+  function stopAutosave() { if (timer) clearInterval(timer); timer = 0; }
+
+  return { load, collect, persist, restore, startAutosave, stopAutosave };
+}
+
+
+// ===== main.js =====
+// main.js — game loop, camera, HUD glue, module wiring. Coordinator-owned. Contract v1.1.
+// Only this file imports THREE; every module receives it (or DOM hosts) via arguments.
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+const canvas = document.getElementById('game');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
+renderer.setPixelRatio(1); // Galaxy M02s guardrail: render at CSS pixels
+renderer.setSize(window.innerWidth, window.innerHeight);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87b5e0);
+scene.fog = new THREE.Fog(0x87b5e0, 80, 260);
+
+const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 600);
+
+const hemi = new THREE.HemisphereLight(0xcfe8ff, 0x4a5d3a, 1.05);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xfff2d8, 1.4);
+sun.position.set(60, 100, 40);
+scene.add(sun);
+
+// ---- toast + fps -----------------------------------------------------------
+const elFps = document.getElementById('hud-fps');
+const elToast = document.getElementById('toast');
+let toastTimer = 0;
+function notify(msg) {
+  elToast.textContent = msg;
+  elToast.style.opacity = '1';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { elToast.style.opacity = '0'; }, 2200);
+}
+
+// ---- module wiring (order matters: map -> controls -> actors -> jobs) ------
+// map v3 Kenney assets ride as ONE pack of .b64 chunks (GitHub's web UI rejects binary
+// uploads, and 46 separate chunk-sets would mean 50 editor commits; the pack is 20).
+async function loadAssetPack(prefix) {
+  const parts = [];
+  for (let i = 0; ; i++) {
+    const part = await fetch(prefix + '.' + String(i).padStart(2, '0'));
+    if (!part.ok) break;
+    parts.push(await part.text());
+  }
+  if (!parts.length) return {};
+  const bin = atob(parts.join('').replace(/\s+/g, ''));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const mlen = new DataView(bytes.buffer).getUint32(0, true);
+  const manifest = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + mlen)));
+  const start = 4 + mlen, blobs = {};
+  for (const [path, [off, len]] of Object.entries(manifest)) {
+    blobs[path] = URL.createObjectURL(new Blob([bytes.subarray(start + off, start + off + len)],
+      { type: path.endsWith('.png') ? 'image/png' : 'model/gltf-binary' }));
+  }
+  return blobs;
+}
+// two packs: the big Kenney set (20 chunks) and Mohamed's props (1 chunk), kept
+// separate so adding props did not mean re-uploading the whole 4.8 MB Kenney pack
+const assetBlobs = Object.assign({},
+  await loadAssetPack('assets/models-pack.b64'),
+  await loadAssetPack('assets/props-pack.b64'));
+const assetManager = new THREE.LoadingManager();
+assetManager.setURLModifier((u) => assetBlobs[u] || u);
+class RepoMapGLTFLoader extends GLTFLoader {
+  constructor(manager) { super(manager || assetManager); } // map v3 does `new GL()` with no args
+  load(url, onLoad, onProgress, onError) {
+    const l = new GLTFLoader(this.manager); // per-load instance: resourcePath differs per kit folder
+    l.setResourcePath(url.slice(0, url.lastIndexOf('/') + 1));
+    l.load(url, onLoad, onProgress, onError);
+  }
+}
+const map = createMap({ THREE, scene, GLTFLoader: RepoMapGLTFLoader }); // class, not instance: swapToModels news it up
+
+let paused = false;
+
+const controls = createControls({
+  container: document.getElementById('controls-root'),
+  onInteract: () => { if (!paused) actors.interact(); },
+});
+
+const actors = createActors({
+  THREE, scene, map,
+  spawn: { x: map.spawnPoints.player.x, z: map.spawnPoints.player.z },
+  notify,
+  onModeChange: (d) => controls.setMode(d),
+});
+
+// taxi routes: coordinator pairs map-provided road-safe stops into routes
+const stops = map.taxiStops;
+const routes = [];
+for (let i = 0; i < stops.length; i++) {
+  const a = stops[i], b = stops[(i + 2) % stops.length];
+  routes.push({
+    id: 'route-' + i,
+    pickup: { x: a.x, z: a.z, name: a.name },
+    dropoff: { x: b.x, z: b.z, name: b.name },
+  });
+}
+
+let taxiJob = null, deliveryJob = null, pizzaJob = null;
+// one saved balance: taxi owns the wallet, side jobs pay into it via deposit()
+const jobsFacade = {
+  serialize() {
+    const t = taxiJob.serialize();
+    return { version: 3, balance: t.balance, completed: t.completed, routeIndex: t.routeIndex,
+      delivery: deliveryJob ? deliveryJob.serialize() : null,
+      pizza: pizzaJob ? pizzaJob.serialize() : null };
+  },
+};
+const save = createSave({ getActors: () => actors, getJobs: () => jobsFacade });
+const loaded = save.load();
+const loadedJobs = loaded && loaded.jobs ? loaded.jobs : null;
+// v1 saves stored the taxi blob directly; v2 added delivery; v3 adds pizza
+const taxiInit = !loadedJobs ? null
+  : loadedJobs.version === 1 ? loadedJobs
+  : { version: 1, balance: loadedJobs.balance, completed: loadedJobs.completed, routeIndex: loadedJobs.routeIndex };
+const deliveryInit = loadedJobs && loadedJobs.version >= 2 && loadedJobs.delivery ? loadedJobs.delivery : null;
+const pizzaInit = loadedJobs && loadedJobs.version >= 3 && loadedJobs.pizza ? loadedJobs.pizza : null;
+
+// world marker: coordinator renders it from job snapshots (builder 5 contract)
+let marker = null, deliveryMarker = null, pizzaMarker = null;
+function syncPizzaMarker(snap) {
+  const target = snap.target;
+  if (!target) {
+    if (pizzaMarker) pizzaMarker.visible = false;
+    return;
+  }
+  if (!pizzaMarker) {
+    pizzaMarker = new THREE.Mesh(
+      new THREE.CylinderGeometry(2.2, 2.2, 0.25, 24),
+      new THREE.MeshBasicMaterial({ color: 0xd05ce3, transparent: true, opacity: 0.7 })
+    );
+    scene.add(pizzaMarker);
+  }
+  pizzaMarker.visible = true;
+  pizzaMarker.material.color.set(snap.phase === 'collect' ? 0xd05ce3 : 0xffe08a);
+  pizzaMarker.position.set(target.x, 0.15, target.z);
+}
+function syncDeliveryMarker(snap) {
+  const target = snap.target;
+  if (!target) {
+    if (deliveryMarker) deliveryMarker.visible = false;
+    return;
+  }
+  if (!deliveryMarker) {
+    deliveryMarker = new THREE.Mesh(
+      new THREE.CylinderGeometry(2.2, 2.2, 0.25, 24),
+      new THREE.MeshBasicMaterial({ color: 0xff9f2e, transparent: true, opacity: 0.7 })
+    );
+    scene.add(deliveryMarker);
+  }
+  deliveryMarker.visible = true;
+  deliveryMarker.material.color.set(snap.phase === 'collect' ? 0xff9f2e : 0x4ec3e6);
+  deliveryMarker.position.set(target.x, 0.15, target.z);
+}
+function syncMarker(snap) {
+  const target = snap.target;
+  if (!target) {
+    if (marker) marker.visible = false;
+    return;
+  }
+  if (!marker) {
+    marker = new THREE.Mesh(
+      new THREE.CylinderGeometry(2.2, 2.2, 0.25, 24),
+      new THREE.MeshBasicMaterial({ color: 0xffd23e, transparent: true, opacity: 0.7 })
+    );
+    scene.add(marker);
+  }
+  marker.visible = true;
+  marker.material.color.set(snap.phase === 'pickup' ? 0xffd23e : 0x59d67a);
+  marker.position.set(target.x, 0.15, target.z);
+}
+
+taxiJob = createTaxiJob({
+  routes,
+  getVehicle: () => ({
+    x: actors.car.x, z: actors.car.z,
+    speed: actors.car.speed || 0,
+    driving: actors.driving === true,
+  }),
+  onChange: (snap) => { syncMarker(snap); save.persist(); },
+  initialState: taxiInit,
+});
+
+// parcel delivery: depot at the downtown stop, drops at the other road-safe stops.
+// on foot or any vehicle; pays into the shared taxi wallet
+const depotStop = stops[1]; // Downtown Solana
+const deliveryJobRef = createDeliveryJob({
+  depot: { x: depotStop.x, z: depotStop.z, name: 'Solana Depot' },
+  drops: stops.filter((s) => s !== depotStop).map((s) => ({ x: s.x, z: s.z, name: s.name })),
+  getCourier: () => actors.driving
+    ? { x: actors.current.x, z: actors.current.z, speed: actors.current.speed || 0 }
+    : { x: actors.player.x, z: actors.player.z, speed: 0 },
+  onChange: (snap) => { syncDeliveryMarker(snap); save.persist(); },
+  onPayout: (n) => { taxiJob.deposit(n); },
+  initialState: deliveryInit,
+});
+deliveryJob = deliveryJobRef;
+
+// pizza delivery: the Palm Court stop doubles as the pizzeria; timed runs to the
+// other stops, full pay only before the timer. Same courier rules as parcel delivery
+const pizzaJobRef = createPizzaJob({
+  shop: { x: stops[2].x, z: stops[2].z, name: 'Palm Court Pizzeria' },
+  drops: stops.filter((s) => s !== stops[2]).map((s) => ({ x: s.x, z: s.z, name: s.name })),
+  getCourier: () => actors.driving
+    ? { x: actors.current.x, z: actors.current.z, speed: actors.current.speed || 0 }
+    : { x: actors.player.x, z: actors.player.z, speed: 0 },
+  onChange: (snap) => { syncPizzaMarker(snap); save.persist(); },
+  onPayout: (n) => { taxiJob.deposit(n); },
+  initialState: pizzaInit,
+});
+pizzaJob = pizzaJobRef;
+
+const phone = mountTaxiPhone({
+  host: document.getElementById('phone-root'),
+  job: taxiJob,
+  delivery: deliveryJob,
+  pizza: pizzaJob,
+  onPause: (p) => { paused = !!p; if (paused) controls.reset(); },
+  onSave: () => { save.persist(); notify('Game saved'); },
+});
+
+save.restore();          // actors snapshot back in; jobs state went in via initialState
+save.startAutosave();    // every 1 s, his standing rule
+syncMarker(taxiJob.snapshot());
+syncDeliveryMarker(deliveryJob.snapshot());
+syncPizzaMarker(pizzaJob.snapshot());
+phone.render();
+
+// ---- benchmark mode (diagnostic derivative, not part of the game) -----------
+// Runs automatically in this build unless ?bench=0. Measures the boardwalk spawn
+// view, teleports to the downtown hot spot (60,-60 yaw 0.5) via the save slot,
+// reloads, measures again, then shows a results card. Sample count override for
+// testing: ?bench_frames=N (default 240).
+const BENCH_KEY = 'coastalcity_bench_v1';
+const SAVE_BAK = 'coastalcity_save_v1_benchbak';
+const benchParams = new URLSearchParams(location.search);
+const BENCH_ON = benchParams.get('bench') !== '0';
+const BENCH_FRAMES = Math.max(60, parseInt(benchParams.get('bench_frames') || '240', 10) || 240);
+const benchEl = document.getElementById('bench');
+const benchBody = document.getElementById('bench-body');
+const BENCH_VIEWS = [
+  // step 0 always teleports first: an existing save could have the player anywhere
+  { key: 'boardwalk', label: 'boardwalk (spawn)', teleport: [-155, 20, Math.PI / 2] },
+  { key: 'downtown', label: 'downtown (documented hot spot, yaw 0.5)', teleport: [60, -60, 0.5] },
+  // same downtown coordinates, facing the tower cluster: a static yaw sweep of the
+  // shipped scene found this bearing issues the most draw calls at this spot
+  { key: 'downtown-west', label: 'downtown-west (same spot, facing the towers)', teleport: [60, -60, 4.0] },
+];
+const bench = { phase: 'warmup', warmMs: 0, samples: [], calls: [], tris: [], state: { step: -1 } };
+function benchLoad() {
+  try { bench.state = JSON.parse(localStorage.getItem(BENCH_KEY)) || { step: -1 }; }
+  catch (e) { bench.state = { step: -1 }; }
+  if (!Number.isSafeInteger(bench.state.step) || bench.state.step < -1 || bench.state.step > BENCH_VIEWS.length) bench.state = { step: -1 };
+}
+function benchSaveState() { try { localStorage.setItem(BENCH_KEY, JSON.stringify(bench.state)); } catch (e) {} }
+function benchMedian(arr) {
+  const s = arr.slice().sort((a, b) => a - b);
+  return s[Math.floor(s.length / 2)];
+}
+function benchStats(d, c, t) {
+  const a = d.slice().sort((x, y) => x - y);
+  const q = (p) => a[Math.min(a.length - 1, Math.floor(a.length * p))];
+  const avg = a.reduce((s, v) => s + v, 0) / a.length;
+  return { frames: a.length, fps: +(1000 / avg).toFixed(1), avgMs: +avg.toFixed(1),
+    p50ms: +q(0.5).toFixed(1), p95ms: +q(0.95).toFixed(1), maxMs: +q(1).toFixed(1),
+    drawCalls: benchMedian(c), triangles: benchMedian(t) };
+}
+function benchDevice() {
+  let gpu = 'unavailable';
+  try {
+    const gl = renderer.getContext();
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    if (ext) gpu = String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL));
+  } catch (e) {}
+  return { userAgent: navigator.userAgent, gpuReportedByBrowser: gpu,
+    screenCssPx: window.innerWidth + 'x' + window.innerHeight,
+    devicePixelRatio: window.devicePixelRatio, renderPixelRatio: 1,
+    gameModelsLoaded: actors.modelsLoaded === true,
+    assetsNote: 'if gameModelsLoaded is false, the page was not served over http(s) with its assets folder, and these numbers do NOT reflect the real game' };
+}
+function benchTeleport(x, z, yaw) {
+  save.stopAutosave(); // keep the 1 s autosave from overwriting the teleport
+  try { // preserve any existing game save; restored when the benchmark finishes
+    if (localStorage.getItem(SAVE_BAK) === null) {
+      const cur = localStorage.getItem('coastalcity_save_v1');
+      localStorage.setItem(SAVE_BAK, cur === null ? '__none__' : cur);
+    }
+  } catch (e) {}
+  let s = null;
+  try { s = JSON.parse(localStorage.getItem('coastalcity_save_v1')); } catch (e) {}
+  if (!s || typeof s !== 'object') s = {};
+  s.version = 1; s.savedAt = Date.now();
+  s.actors = { version: 2, player: { x, z, yaw }, vehicles: {}, driving: false, vehicle: null };
+  s.jobs = null;
+  try { localStorage.setItem('coastalcity_save_v1', JSON.stringify(s)); } catch (e) {}
+  location.reload();
+}
+function benchLine(label, r) {
+  if (!r) return label + ': pending';
+  return label + ': ' + r.fps + ' FPS  avg ' + r.avgMs + ' ms  p50 ' + r.p50ms +
+    '  p95 ' + r.p95ms + '  max ' + r.maxMs + '  draws ' + r.drawCalls + '  tris ' + r.triangles;
+}
+function benchResultsText() {
+  const d = bench.state.device || {};
+  return [
+    'COASTAL CITY BENCHMARK (diagnostic build on commit 1fe883c)',
+    benchLine('boardwalk    ', bench.state.boardwalk),
+    benchLine('downtown     ', bench.state.downtown),
+    benchLine('downtown-west', bench.state['downtown-west']),
+    '(downtown-west = same coordinates as downtown, facing the tower cluster)',
+    '',
+    'frames per view: ' + BENCH_FRAMES,
+    'screen: ' + (d.screenCssPx || '?') + ' (dpr ' + (d.devicePixelRatio || '?') + ', render pixelRatio 1)',
+    'gpu (browser-reported): ' + (d.gpuReportedByBrowser || '?'),
+    'gameModelsLoaded: ' + d.gameModelsLoaded,
+    'ua: ' + (d.userAgent || '?'),
+  ].join('\n');
+}
+function benchRenderOverlay() {
+  if (!BENCH_ON) return;
+  benchEl.hidden = false;
+  if (bench.state.step >= BENCH_VIEWS.length) {
+    benchBody.textContent = benchResultsText() +
+      '\n\nDONE. Screenshot this screen and send it back.';
+  } else {
+    const view = bench.state.step < 0 ? 'starting point' : BENCH_VIEWS[bench.state.step].label;
+    benchBody.textContent = 'Measuring ' + view + '...\n' +
+      (bench.phase === 'warmup'
+        ? 'warming up ' + Math.min(3, bench.warmMs / 1000).toFixed(1) + ' / 3 s'
+        : 'frame ' + bench.samples.length + ' / ' + BENCH_FRAMES) +
+      '\n\nHands off, keep the screen on.\nDo not open the phone menu.';
+  }
+}
+function benchRestoreSave() {
+  try {
+    const b = localStorage.getItem(SAVE_BAK);
+    if (b === null) return;
+    if (b === '__none__') localStorage.removeItem('coastalcity_save_v1');
+    else localStorage.setItem('coastalcity_save_v1', b);
+    localStorage.removeItem(SAVE_BAK);
+  } catch (e) {}
+}
+if (BENCH_ON) {
+  benchLoad();
+  if (bench.state.step >= BENCH_VIEWS.length) { // re-opened after finishing: show results, put the save back
+    save.stopAutosave();
+    benchRestoreSave();
+    benchRenderOverlay();
+  }
+  document.getElementById('bench-again').addEventListener('click', () => {
+    save.stopAutosave();
+    benchRestoreSave();
+    try { localStorage.removeItem(BENCH_KEY); } catch (e) {}
+    location.reload();
+  });
+  document.getElementById('bench-copy').addEventListener('click', () => {
+    const text = benchResultsText();
+    const done = () => notify('Results copied');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, () => { benchBody.textContent = text; });
+    } else benchBody.textContent = text; // visible fallback: long-press to copy
+  });
+}
+function benchTick(rawMs) {
+  if (!BENCH_ON || paused || bench.state.step >= BENCH_VIEWS.length) return;
+  if (bench.state.step < 0) { // first run: move to the spawn view, then start measuring
+    bench.state.step = 0; benchSaveState();
+    const tp = BENCH_VIEWS[0].teleport;
+    benchTeleport(tp[0], tp[1], tp[2]);
+    return;
+  }
+  if (bench.phase === 'warmup') {
+    bench.warmMs += rawMs;
+    if (bench.warmMs >= 3000) { bench.phase = 'sampling'; bench.samples.length = 0; bench.calls.length = 0; bench.tris.length = 0; }
+  } else {
+    bench.samples.push(rawMs);
+    bench.calls.push(renderer.info.render.calls);
+    bench.tris.push(renderer.info.render.triangles);
+  }
+  if ((bench.samples.length & 15) === 0 || bench.phase === 'warmup') benchRenderOverlay();
+  if (bench.phase === 'sampling' && bench.samples.length >= BENCH_FRAMES) {
+    const view = BENCH_VIEWS[bench.state.step];
+    bench.state[view.key] = benchStats(bench.samples, bench.calls, bench.tris);
+    const next = bench.state.step + 1;
+    if (next < BENCH_VIEWS.length) {
+      bench.state.step = next; benchSaveState();
+      const tp = BENCH_VIEWS[next].teleport;
+      benchTeleport(tp[0], tp[1], tp[2]);
+    } else {
+      bench.state.step = BENCH_VIEWS.length; bench.state.device = benchDevice();
+      save.stopAutosave(); benchRestoreSave(); // leave the owner's game save untouched
+      benchSaveState();
+      bench.phase = 'done'; benchRenderOverlay();
+    }
+  }
+}
+
+// ---- camera follow ----------------------------------------------------------
+const camPos = new THREE.Vector3();
+const camTarget = new THREE.Vector3();
+function followCamera(dt) {
+  const t = actors.cameraTarget; // {x, y, z, yaw}
+  const driving = actors.driving === true;
+  const dist = driving ? 11 : 7, height = driving ? 4.5 : 3.2;
+  const fx = Math.sin(t.yaw), fz = -Math.cos(t.yaw); // actors v002 heading convention
+  camPos.set(t.x - fx * dist, (t.y || 0) + height, t.z - fz * dist);
+  camera.position.lerp(camPos, Math.min(1, dt * 6));
+  camTarget.set(t.x + fx * 6, (t.y || 0) + 1.5, t.z + fz * 6);
+  camera.lookAt(camTarget);
+}
+
+// ---- loop -------------------------------------------------------------------
+let last = performance.now();
+let fpsAcc = 0, fpsN = 0, fpsShown = 0;
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  const rawMs = now - last; // unclamped, for benchmark sampling
+  let dt = rawMs / 1000;
+  last = now;
+  if (dt > 0.1) dt = 0.1; // clamp hitches
+  fpsAcc += dt; fpsN++;
+  if (fpsAcc >= 0.5) { fpsShown = Math.round(fpsN / fpsAcc); fpsAcc = 0; fpsN = 0; }
+  if (!paused) {
+    map.update(dt);
+    actors.update(dt, controls.state);
+    taxiJob.update(dt);
+    deliveryJob.update(dt);
+    pizzaJob.update(dt);
+    if (marker && marker.visible) marker.rotation.y += dt; // spin marker lightly
+    if (deliveryMarker && deliveryMarker.visible) deliveryMarker.rotation.y += dt;
+    if (pizzaMarker && pizzaMarker.visible) pizzaMarker.rotation.y += dt;
+    followCamera(dt);
+  }
+  if (taxiJob.consumeDirty() | deliveryJob.consumeDirty() | pizzaJob.consumeDirty()) phone.render();
+  const kmh = Math.round(Math.abs(actors.current.speed || 0) * 3.6); // v009: speed of the vehicle being driven (taxi/sedan/bike)
+  elFps.textContent = fpsShown + ' FPS' + (actors.driving ? ' · ' + kmh + ' km/h' : '');
+  renderer.render(scene, camera);
+  benchTick(rawMs);
+}
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// GitHub's web UI can't process these binaries, so the GLBs are committed as .b64 text;
+// decode to blob URLs and hand builder 7's loader a subclass that maps the plain paths.
+async function glbURL(path) {
+  let r = await fetch(path + '.b64');
+  let b64 = '';
+  if (r.ok) {
+    b64 = await r.text();
+  } else {
+    // big files are committed as numbered parts (240 KB each, GitHub editor limit)
+    for (let i = 0; ; i++) {
+      const part = await fetch(path + '.b64.0' + i);
+      if (!part.ok) { if (i === 0) return path; break; } // a real GLB committed later wins automatically
+      b64 += await part.text();
+    }
+  }
+  b64 = b64.replace(/\s+/g, '');
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return URL.createObjectURL(new Blob([bytes], { type: 'model/gltf-binary' }));
+}
+const modelBlobs = {};
+for (const p of ['./models/player-vest-cc0.glb', './models/taxi.glb']) modelBlobs[p] = await glbURL(p);
+class RepoGLTFLoader extends GLTFLoader {
+  loadAsync(url, onProgress) {
+    return super.loadAsync(modelBlobs[url] || url, onProgress);
+  }
+}
+
+// load the CC0 models before hiding the loader (builder 7 v007); report failures, don't fall back silently
+try {
+  await actors.loadModels({ GLTFLoader: RepoGLTFLoader, baseURL: './models/' });
+} catch (err) {
+  const el = document.querySelector('#loading .sub');
+  if (el) el.textContent = '3D models failed to load (' + (err && err.message ? err.message : 'network') + ') - showing simple shapes';
+  await new Promise((r) => setTimeout(r, 2500));
+}
+
+document.getElementById('loading').style.display = 'none';
+notify('Open the Phone (top right) to find work');
+requestAnimationFrame(frame);
+
+</script>
+</body>
+</html>
