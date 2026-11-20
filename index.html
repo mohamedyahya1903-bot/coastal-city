@@ -4202,7 +4202,7 @@ function createAdaptiveDrawDistance({scene, adaptive}) {
     get state() { return { reduced, fogFar: scene.fog.far, cullFar: reduced ? 210 : 260 }; },
   };
 }
-const CLOUD_FIELD = false, CLOUD_N = 24;
+const CLOUD_FIELD = true, CLOUD_N = 24;
 function buildCloudField(THREE, camera) {
   const cv = document.createElement('canvas'); cv.width = 128; cv.height = 64;
   const cx = cv.getContext('2d');
@@ -4224,7 +4224,7 @@ function buildCloudField(THREE, camera) {
   const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; }; // deterministic layout
   for (let c = 0; c < CLOUD_N; c++) {
     const cxp = (rnd() * 2 - 1) * R, czp = (rnd() * 2 - 1) * R;
-    const cyp = 105 + rnd() * 60, w = 34 + rnd() * 40, h = 12 + rnd() * 14, p = rnd() * 6.283;
+    const cyp = 35 + rnd() * 35, w = 34 + rnd() * 40, h = 12 + rnd() * 14, p = rnd() * 6.283; // gfxfps round 18: band lowered into the gameplay frame (35-70 m)
     const base = c * 4;
     const corners = [[-0.5, -0.5], [0.5, -0.5], [-0.5, 0.5], [0.5, 0.5]];
     const uvs = [[0, 0], [1, 0], [0, 1], [1, 1]];
@@ -4257,7 +4257,7 @@ function buildCloudField(THREE, camera) {
         'float R = ' + R + '.0;',
         'float lx = mod(aCenter.x + uTime * 3.2, R * 2.0) - R;', // wind: steady +x drift, wraps
         'float lz = aCenter.z + sin(uTime * 0.05 + aPhase) * 12.0;', // slight lateral wander
-        'vFade = 1.0 - smoothstep(0.75, 0.98, abs(lx) / R);', // fade at wrap edges, no pop
+        'vFade = (1.0 - smoothstep(0.75, 0.98, abs(lx) / R)) * (1.0 - smoothstep(0.75, 0.98, abs(lz) / R));', // fade at wrap edges, no pop
         'vec3 bc = vec3(lx, aCenter.y, lz);',
         'vec3 bbRight = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);',
         'vec3 bbUp = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);',
