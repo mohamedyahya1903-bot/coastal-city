@@ -656,7 +656,7 @@ export function createHouses({ THREE, scene, map, GLTFLoader }) { // eslint-disa
   // at build time - the tint multiplies into the same cr/cg/cb the per-house jitter uses,
   // so it rides the HOUSE-MERGE single-material fold for free. +0 tris, +0 draws, +0
   // per-frame cost. Thresholds mirror zoneAt (layout C=300). false = v30 colours exactly.
-  const DISTRICT_TINT = false;
+  const DISTRICT_TINT = true;
   const DT_HUE = { hills: [1.06, 1.00, 0.94], south: [1.04, 0.97, 0.96], beach: [1.02, 1.02, 0.92], grid: [0.97, 1.00, 1.05] };
   function districtTint(x, z) {
     if (!DISTRICT_TINT) return null;
