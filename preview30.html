@@ -3349,6 +3349,8 @@ function createProps({ THREE, scene, map }) {
     return true;
   }
   const world = Acc(), glow = Acc();
+  const beachBatches = [];
+  let separateBeach = false;
   const placements = [];
   let meterTradeIndex = 0;
   const tradeRemoved = [];
@@ -3359,8 +3361,15 @@ function createProps({ THREE, scene, map }) {
       placed.push({x,z,r}); tradeRemoved.push({type:'meter',x,z,yaw}); return;
     }
     const y = ground(x, z);
-    stamp(world, TYPES[typeKey].m, x, y, z, yaw);
-    if (TYPES[typeKey].g.pos.length) stamp(glow, TYPES[typeKey].g, x, y, z, yaw);
+    if (separateBeach) {
+      const matte = Acc(), lit = Acc();
+      stamp(matte, TYPES[typeKey].m, 0, 0, 0, yaw);
+      if (TYPES[typeKey].g.pos.length) stamp(lit, TYPES[typeKey].g, 0, 0, 0, yaw);
+      beachBatches.push({matte, lit, x, y, z, type: recordKey || typeKey});
+    } else {
+      stamp(world, TYPES[typeKey].m, x, y, z, yaw);
+      if (TYPES[typeKey].g.pos.length) stamp(glow, TYPES[typeKey].g, x, y, z, yaw);
+    }
     placed.push({ x, z, r });
     placements.push({ type: recordKey || typeKey, x, z, yaw }); // v6: towels stamp towel geometry, record as 'bench'
   }
@@ -3890,10 +3899,13 @@ function createProps({ THREE, scene, map }) {
       put(type,x,z,yaw,Math.max(hx,hz),1,record); n++;
     }
   };
+  separateBeach = true;
   addBeach('lifeguardTower',1,2.2,3.0,[-35,-48,-62,-76,35,48]);
   addBeach('volleyballNet',2,4.5,8.5,[45,68,92,-92,-118]);
   addBeach('umbrellaB',2,2.5,2.5,[-20,-55,22,115,-140],0,'umbrella');
   addBeach('towelB',2,1.0,1.0,[-24,-59,26,119,-144],0,'bench');
+
+  separateBeach = false;
   const matMatte = new THREE.MeshLambertMaterial({ vertexColors: true });
   const matGlow = new THREE.MeshBasicMaterial({ vertexColors: true });
   function toMesh(acc, mat, name) {
@@ -3903,13 +3915,25 @@ function createProps({ THREE, scene, map }) {
     g.setAttribute('color', new THREE.Float32BufferAttribute(acc.col, 3));
     const mesh = new THREE.Mesh(g, mat);
     mesh.name = name;
+    g.computeBoundingBox();
+    g.computeBoundingSphere();
     scene.add(mesh);
     return mesh;
   }
   const meshMatte = toMesh(world, matMatte, 'props:matte');
-  const triCount =
+  let triCount =
     meshMatte.geometry.attributes.position.count / 3 +
     (glow.pos.length ? (() => { const mm = toMesh(glow, matGlow, 'props:glow'); return mm.geometry.attributes.position.count / 3; })() : 0);
+
+  beachBatches.forEach((b,i) => {
+    const m = toMesh(b.matte, matMatte, 'props:beach:' + i + ':' + b.type);
+    m.position.set(b.x,b.y,b.z);
+    triCount += b.matte.pos.length / 9;
+    if (b.lit.pos.length) {
+      const g = toMesh(b.lit, matGlow, 'props:beach-glow:' + i);
+      g.position.set(b.x,b.y,b.z); triCount += b.lit.pos.length / 9;
+    }
+  });
 
   return {
     update(dt) {}, // fully static; API kept for the brief
