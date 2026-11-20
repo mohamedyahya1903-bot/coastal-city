@@ -1293,7 +1293,7 @@ function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onMode
   if(on){if(!seated){seated=true;legs.forEach(l=>l.rotation.x=1.05);arms.forEach(a=>a.rotation.x=.7);}}
   else if(seated){seated=false;legs.forEach(l=>l.rotation.x=0);arms.forEach(a=>a.rotation.x=0);}}
  function sync(){player.y=ground(player.x,player.z);
-  for(const v of vehicles){v.y=ground(v.x,v.z);v.mesh.position.set(v.x,v.y,v.z);v.mesh.rotation.y=-v.yaw;if(v.leanGroup)v.leanGroup.rotation.z=v.lean||0;v.mesh.visible=(v===driveV)||Math.hypot(v.x-player.x,v.z-player.z)<220; // AUDIT-2 ACTORS-CULL: past-fog vehicles skip rendering}
+  for(const v of vehicles){v.y=ground(v.x,v.z);v.mesh.position.set(v.x,v.y,v.z);v.mesh.rotation.y=-v.yaw;if(v.leanGroup)v.leanGroup.rotation.z=v.lean||0;v.mesh.visible=(v===driveV)||Math.hypot(v.x-player.x,v.z-player.z)<220;} // AUDIT-2 ACTORS-CULL: past-fog vehicles skip rendering
   if(driving&&driveV){const v=driveV,back=twoW(v)?.22:0;pm.position.set(v.x-Math.sin(v.yaw)*back,v.y+v.seatY-hipY,v.z+Math.cos(v.yaw)*back);pm.rotation.set(0,-v.yaw,0);if(twoW(v))pm.rotateZ(v.lean);poseSeat(true,twoW(v));}
   else{pm.position.set(player.x,player.y,player.z);pm.rotation.set(0,-player.yaw,0);poseSeat(false);}}
  function clearPath(x1,z1,x2,z2,r=.3){const n=Math.max(1,Math.ceil(Math.hypot(x2-x1,z2-z1)/.2));for(let i=1;i<=n;i++)if(blocked(x1+(x2-x1)*i/n,z1+(z2-z1)*i/n,r))return false;return true;}
