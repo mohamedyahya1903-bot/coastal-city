@@ -835,6 +835,7 @@ const VEHICLE_PAINTS = {
   blue:   '#2f5d8a', // pickup body
   cream:  '#e7dbc0', // van body
   teal:   '#2e8a7a', // scooter body
+  orange: '#c9711e', // coupe body
   dark:   '#243247', // bumpers, trim, grille
   glass:  '#2b3a47', // windows
   rubber: '#202733', // tires
@@ -916,8 +917,8 @@ function batchStatic(T, group) {
 function wheel(T, parent, x, z, R, tube, m, rimMat) {
   const outer = R + tube;
   const pivot = new T.Group(); pivot.name = 'wheel'; pivot.position.set(x, outer, z); parent.add(pivot);
-  const tire = mesh(T, pivot, new T.TorusGeometry(R, tube, 6, 12), m.rubber); tire.rotation.y = Math.PI / 2;
-  const rim = mesh(T, pivot, new T.CylinderGeometry(R * .85, R * .85, tube * 1.15, 10), rimMat || m.rim);
+  const tire = mesh(T, pivot, new T.TorusGeometry(R, tube, 5, 10), m.rubber); tire.rotation.y = Math.PI / 2;
+  const rim = mesh(T, pivot, new T.CylinderGeometry(R * .85, R * .85, tube * 1.15, 8), rimMat || m.rim);
   rim.rotation.z = Math.PI / 2;
   return pivot;
 }
@@ -1001,6 +1002,27 @@ function makeScooter(T) {
   return g;
 }
 
+// --- orange coupe: rounded 2-door sports coupe, ~4.5 m long (own design, front = -Z) ---
+function makeCoupe(T) {
+  const m = paints(T), g = new T.Group(); g.name = 'Original orange sports coupe';
+  hull(T, g, [[-2.25, .52, .52, .09], [-2.08, .76, .58, .17], [-1.45, .86, .62, .21], [1.45, .86, .62, .21], [2.0, .78, .58, .16], [2.25, .54, .52, .09]], m.orange);
+  hull(T, g, [[-1.0, .52, .82, .05], [-.45, .6, 1.0, .2], [.65, .58, .98, .19], [1.3, .46, .6, .06]], m.glass); // long fastback glass
+  hull(T, g, [[-.48, .5, 1.18, .04], [-.3, .55, 1.22, .045], [.5, .54, 1.2, .045], [.68, .48, 1.12, .035]], m.orange); // roof cap
+  for (const x of [-.8, .8]) rounded(T, g, .05, .3, .07, m.orange, x, 1.0, -.4, .02); // A-pillar hints
+  for (const x of [-.81, .81]) for (const z of [-1.38, 1.42]) wheel(T, g, x, z, .3, .11, m);
+  for (const x of [-.56, .56]) sphere(T, g, x, .66, -2.16, .2, .07, .09, m.lamp); // slim headlamps
+  rounded(T, g, 1.05, .09, .05, m.tail, 0, .68, 2.2, .03);   // full-width tail light bar
+  rounded(T, g, 1.15, .1, .08, m.dark, 0, .45, -2.22, .03);  // front splitter
+  rounded(T, g, 1.3, .09, .08, m.dark, 0, .45, 2.22, .03);   // rear diffuser
+  rounded(T, g, .5, .1, .05, m.dark, 0, .6, -2.25, .02);     // grille
+  rounded(T, g, 1.15, .045, .28, m.orange, 0, .82, 2.0, .02); // spoiler lip
+  for (const x of [-.42, .42]) rounded(T, g, .05, .14, .06, m.dark, x, .72, 2.0, .015); // spoiler mounts
+  for (const x of [-.3, .3]) { const e = mesh(T, g, new T.CylinderGeometry(.05, .06, .3, 8), m.chrome, x, .32, 2.2); e.rotation.x = Math.PI / 2; } // dual exhausts
+  for (const x of [-.87, .87]) rounded(T, g, .06, .06, 2.6, m.dark, x, .42, 0, .02); // side skirts
+  batchStatic(T, g);
+  return g;
+}
+
 const VEHICLE_TYPES = [
   { key: 'hatch', label: 'red hatch', foot: [-1.25, 0, 1.25], circleR: 1.0, exitR: 1.7, seatY: .55,
     tune: { accel: 12, maxF: 22, maxR: 6, turn: 1.8, leanMax: 0 }, twoWheeler: false, make: makeHatch },
@@ -1010,7 +1032,184 @@ const VEHICLE_TYPES = [
     tune: { accel: 9, maxF: 19, maxR: 6, turn: 1.45, leanMax: 0 }, twoWheeler: false, make: makeVan },
   { key: 'scooter', label: 'teal scooter', foot: [-.62, 0, .62], circleR: .45, exitR: 1.1, seatY: .62,
     tune: { accel: 13, maxF: 20, maxR: 5, turn: 2.5, leanMax: .45 }, twoWheeler: true, make: makeScooter },
+  { key: 'coupe', label: 'orange coupe', foot: [-1.5, 0, 1.5], circleR: 1.05, exitR: 1.75, seatY: .52,
+    tune: { accel: 13, maxF: 26, maxR: 6, turn: 1.9, leanMax: 0 }, twoWheeler: false, make: makeCoupe },
 ];
+
+// ============================================================================
+// v002 — PARKED CARS (round 2): static, non-drivable kerbside/driveway set-dressing.
+// Placed from map.roadPaths at build time (never hardcoded coordinates, so roads
+// round-2 changes flow through automatically). One merged vertex-colored mesh:
+// 1 draw call, zero per-frame cost. Each car registers map.addBlock collision.
+// Coordinator wiring (main.js, AFTER createMap, before or after actors — any time):
+//   import { buildParkedCars } from './vehicles.js';
+//   const parked = buildParkedCars({ THREE, scene, map }); // parked.count cars placed
+// Parked cars are set-dressing: NOT in actors.vehicles, NOT in any save blob.
+// ============================================================================
+
+// 8 muted street colors (baked as vertex colors; no new materials per car).
+const PARKED_PAINTS = ['#b9bcbe', '#8a9094', '#33506e', '#6e3333', '#b3a586', '#3c5546', '#2a2e33', '#d8d6cf'];
+
+// Deterministic PRNG so the street looks identical on every load (seeded, no Math.random).
+function _mulberry32(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// One low-poly rounded parked-car archetype (~520 tris). kind scales it:
+// 'sedan' (street car), 'hatch' (shorter), 'van' (taller/longer). Parts are colored
+// via userData.c hex and baked into the shared vertex-colored merge by buildParkedCars.
+function _parkedBase(T, kind) {
+  const g = new T.Group();
+  const C = { glass: 0x2b3a47, rubber: 0x202733, lamp: 0xfff0b2, tail: 0xce594e, dark: 0x243247 };
+  const tag = (o, c) => { o.userData.c = c; return o; };
+  const m = (geo, c, x = 0, y = 0, z = 0) => { const o = new T.Mesh(geo, null); o.position.set(x, y, z); tag(o, c); g.add(o); return o; };
+  // hull body (N=10 keeps tris low)
+  const rings = [[-2.1, .5, .55, .1], [-1.95, .72, .6, .17], [-1.3, .84, .66, .21], [1.35, .84, .66, .21], [1.95, .74, .6, .15], [2.1, .54, .55, .09]];
+  const vs = [], ix = [], N = 10;
+  for (const [z, w, cy, h] of rings) for (let i = 0; i < N; i++) { const a = i / N * Math.PI * 2; vs.push(Math.cos(a) * w, cy + Math.sin(a) * h, z); }
+  for (let j = 0; j < rings.length - 1; j++) for (let i = 0; i < N; i++) { const a = j * N + i, b = j * N + (i + 1) % N, c = a + N, d = b + N; ix.push(a, b, c, b, d, c); }
+  for (let i = 1; i < N - 1; i++) { ix.push(0, i + 1, i); const o = (rings.length - 1) * N; ix.push(o, o + i, o + i + 1); }
+  const hg = new T.BufferGeometry(); hg.setAttribute('position', new T.Float32BufferAttribute(vs, 3)); hg.setIndex(ix); hg.computeVertexNormals();
+  m(hg, 'BODY');
+  // glass canopy (N=8)
+  const r2 = [[-.85, .5, .85, .05], [-.4, .58, 1.05, .18], [.6, .56, 1.05, .18], [1.0, .46, .85, .05]];
+  const v2 = [], i2 = [], M = 8;
+  for (const [z, w, cy, h] of r2) for (let i = 0; i < M; i++) { const a = i / M * Math.PI * 2; v2.push(Math.cos(a) * w, cy + Math.sin(a) * h, z); }
+  for (let j = 0; j < r2.length - 1; j++) for (let i = 0; i < M; i++) { const a = j * M + i, b = j * M + (i + 1) % M, c = a + M, d = b + M; i2.push(a, b, c, b, d, c); }
+  for (let i = 1; i < M - 1; i++) { i2.push(0, i + 1, i); const o = (r2.length - 1) * M; i2.push(o, o + i, o + i + 1); }
+  const cg = new T.BufferGeometry(); cg.setAttribute('position', new T.Float32BufferAttribute(v2, 3)); cg.setIndex(i2); cg.computeVertexNormals();
+  m(cg, C.glass);
+  for (const x of [-.78, .78]) for (const z of [-1.32, 1.35]) { // wheels: capped low-seg cylinders
+    const wgeo = new T.CylinderGeometry(.31, .31, .2, 10);
+    const o = m(wgeo, C.rubber, x, .31, z); o.rotation.z = Math.PI / 2;
+  }
+  for (const x of [-.55, .55]) { // lamps + tails: low-seg scaled spheres
+    const l = m(new T.SphereGeometry(1, 6, 4), C.lamp, x, .72, -2.02); l.scale.set(.19, .09, .08);
+    const t = m(new T.SphereGeometry(1, 6, 4), C.tail, x, .7, 2.03); t.scale.set(.17, .08, .07);
+  }
+  for (const z of [-2.08, 2.1]) { const b = m(new T.SphereGeometry(1, 6, 4), C.dark, 0, .48, z); b.scale.set(.55, .1, .09); } // bumper bars
+  if (kind === 'hatch') g.scale.set(.94, .95, .82);
+  else if (kind === 'van') g.scale.set(1.02, 1.3, 1.12);
+  return g;
+}
+
+// Placement validity probe, exported for the coordinator's own tests.
+// Car = rectangle 4.3 x 1.9 m (scaled kinds stay inside it), center (x,z), heading yaw.
+// Rules: fully off every drive surface (corners + edge midpoints fail map.isRoadAt),
+// nothing blocking (map.isBlocked), clear of job anchors/taxi stops/spawns.
+function parkedCarFits(map, x, z, yaw, extraClear = []) {
+  const HL = 2.15, HW = .95; // half length/width incl. margin
+  const ca = Math.cos(yaw), sa = Math.sin(yaw); // local +Z forward maps to (sa,-ca) ... probe corners directly
+  const pts = [];
+  for (const [lx, lz] of [[-HW, -HL], [HW, -HL], [-HW, HL], [HW, HL], [0, -HL], [0, HL], [-HW, 0], [HW, 0]])
+    pts.push([x + lx * ca - lz * sa, z + lx * sa + lz * ca]); // local (lx,lz) under mesh rotation.y=-yaw
+  for (const [px, pz] of pts) { if (map.isRoadAt(px, pz)) return false; if (map.isBlocked(px, pz, .25)) return false; }
+  if (map.isBlocked(x, z, 1.1)) return false;
+  for (const c of extraClear) { const d = Math.hypot(x - c.x, z - c.z); if (d < (c.r || 9)) return false; }
+  return true;
+}
+
+function buildParkedCars({ THREE: T, scene, map, count = 32, seed = 20261120, avoidPoints = [] } = {}) {
+  const CC = 300, rnd = _mulberry32(seed);
+  const keepClear = [...avoidPoints]; // optional [{x,z,r}] e.g. props.placements so kerb props stay visible
+  for (const s of map.taxiStops || []) keepClear.push({ x: s.x, z: s.z, r: 10 });
+  const sp = map.spawnPoints || {};
+  if (sp.player) keepClear.push({ x: sp.player.x, z: sp.player.z, r: 10 });
+  if (sp.car) keepClear.push({ x: sp.car.x, z: sp.car.z, r: 11 });      // starter car on its driveway
+  if (map.starterHome) keepClear.push({ x: map.starterHome.x, z: map.starterHome.z, r: 15 }); // bungalow + garage + drive mouth
+
+  // Candidate kerb slots along every road path (roadPaths are LAYOUT coords: world = layout - 300).
+  // Arc-length resampling across whole paths (curved/winding/diagonal roads included), then
+  // round-robin across roads so no street eats the whole budget.
+  const perRoad = [];
+  for (const road of map.roadPaths || []) {
+    const pts = road.pts.map(p => [p[0] - CC, p[1] - CC]); // world
+    const w = road.w;
+    // cumulative arc length
+    const cum = [0];
+    for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+    const L = cum[cum.length - 1];
+    const list = [];
+    const segAt = (s) => {
+      let i = 1; while (i < cum.length - 1 && cum[i] < s) i++;
+      const t = (s - cum[i - 1]) / (cum[i] - cum[i - 1] || 1);
+      const ax = pts[i - 1][0], az = pts[i - 1][1], bx = pts[i][0], bz = pts[i][1];
+      const dx = bx - ax, dz = bz - az, len = Math.hypot(dx, dz) || 1;
+      return { x: ax + dx * t, z: az + dz * t, ux: dx / len, uz: dz / len };
+    };
+    for (let s = 8; s < L - 8; s += 11 + rnd() * 5) {
+      const { x: sx, z: sz, ux, uz } = segAt(s);
+      const nx = -uz, nz = ux;
+      for (const side of rnd() < .5 ? [1, -1] : [-1, 1]) {
+        let placedHere = false;
+        for (const extra of [0, .6]) { // kerb first, then one pace further out (front-yard edge)
+          const off = w / 2 + 1.4 + extra;
+          const x = sx + nx * off * side, z = sz + nz * off * side;
+          const yaw = Math.atan2(ux, -uz) + (side < 0 ? Math.PI : 0); // face along traffic side
+          if (parkedCarFits(map, x, z, yaw, keepClear)) { list.push({ x, z, yaw }); placedHere = true; break; }
+        }
+        if (placedHere) break;
+      }
+    }
+    perRoad.push(list);
+  }
+  // Round-robin one candidate per road per round, min spacing 9 m, up to count.
+  const placed = [];
+  let progressed = true;
+  while (placed.length < count && progressed) {
+    progressed = false;
+    for (const list of perRoad) {
+      if (placed.length >= count) break;
+      const s = list.shift();
+      if (!s) continue;
+      progressed = true;
+      if (placed.some(p => Math.hypot(p.x - s.x, p.z - s.z) < 9)) continue; // too close: drop candidate
+      placed.push(s);
+    }
+  }
+
+  // Bake every placed car into ONE vertex-colored geometry (1 draw call).
+  const positions = [], normals = [], colors = [];
+  const col = new T.Color(), M4 = new T.Matrix4(), NM = new T.Matrix3();
+  const KINDS = ['sedan', 'sedan', 'sedan', 'hatch', 'sedan', 'van', 'hatch', 'sedan']; // weighted mix
+  placed.forEach((s, idx) => {
+    const kind = KINDS[Math.floor(rnd() * KINDS.length)];
+    const paint = PARKED_PAINTS[Math.floor(rnd() * PARKED_PAINTS.length)];
+    const car = _parkedBase(T, kind);
+    car.position.set(s.x, (map.groundAt ? map.groundAt(s.x, s.z) : 0), s.z);
+    car.rotation.y = -s.yaw; // actors.js convention
+    car.updateMatrixWorld(true);
+    car.traverse(o => {
+      if (!o.isMesh) return;
+      const geo = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone();
+      geo.applyMatrix4(o.matrixWorld);
+      const p = geo.attributes.position.array, n = geo.attributes.normal.array;
+      col.set(o.userData.c === 'BODY' ? paint : o.userData.c);
+      for (let i = 0; i < p.length; i += 3) { positions.push(p[i], p[i + 1], p[i + 2]); normals.push(n[i], n[i + 1], n[i + 2]); colors.push(col.r, col.g, col.b); }
+      geo.dispose();
+    });
+    // collision: world AABB of the rotated 4.3 x 1.9 footprint
+    const ca = Math.abs(Math.cos(s.yaw)), sa = Math.abs(Math.sin(s.yaw));
+    const hx = ca * .95 + sa * 2.15, hz = sa * .95 + ca * 2.15;
+    if (map.addBlock) map.addBlock(s.x - hx, s.z - hz, s.x + hx, s.z + hz);
+  });
+  const geo = new T.BufferGeometry();
+  geo.setAttribute('position', new T.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('normal', new T.Float32BufferAttribute(normals, 3));
+  geo.setAttribute('color', new T.Float32BufferAttribute(colors, 3));
+  const meshObj = new T.Mesh(geo, new T.MeshLambertMaterial({ vertexColors: true }));
+  meshObj.name = 'parkedCars';
+  scene.add(meshObj);
+  meshObj.updateMatrixWorld(true);
+  meshObj.matrixAutoUpdate = false; // static like the frozen map statics
+  return { count: placed.length, mesh: meshObj, spots: placed.map(s => ({ x: +s.x.toFixed(1), z: +s.z.toFixed(1), yaw: +s.yaw.toFixed(2) })) };
+}
 
 
 // ===== actors.js =====
@@ -1039,7 +1238,7 @@ function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onMode
  hull(cm,[[-1.12,.65,1.18,.1],[-.56,.77,1.4,.34],[.67,.74,1.4,.34],[1.11,.63,1.16,.09]],mats.glass);
  hull(cm,[[-.57,.63,1.68,.06],[-.35,.69,1.73,.075],[.55,.65,1.73,.075],[.73,.57,1.65,.045]],mats.body);
  for(const x of[-.77,.77]){rounded(cm,.055,.58,.095,mats.body,x,1.38,.12,.02);rounded(cm,.08,.09,1.65,mats.body,x,1.12,.07,.025);for(const z of[-.39,.55])rounded(cm,.06,.055,.24,mats.dark,x*1.17,1.03,z,.02);sphere(cm,x*1.25,1.24,-.65,.14,.07,.1,mats.body);}
- for(const x of[-.92,.92])for(const z of[-1.22,1.2]){const pivot=new T.Group();pivot.position.set(x,.4,z);cm.add(pivot);const tire=mesh(pivot,new T.TorusGeometry(.285,.105,6,12),mats.rubber);tire.rotation.y=Math.PI/2;const rim=mesh(pivot,new T.CylinderGeometry(.245,.245,.12,10),mats.rim);rim.rotation.z=Math.PI/2;sphere(pivot,Math.sign(x)*.09,0,0,.04,.11,.11,mats.dark);}
+ for(const x of[-.92,.92])for(const z of[-1.22,1.2]){const pivot=new T.Group();pivot.position.set(x,.4,z);cm.add(pivot);const tire=mesh(pivot,new T.TorusGeometry(.285,.105,5,10),mats.rubber);tire.rotation.y=Math.PI/2;const rim=mesh(pivot,new T.CylinderGeometry(.245,.245,.12,8),mats.rim);rim.rotation.z=Math.PI/2;sphere(pivot,Math.sign(x)*.09,0,0,.04,.11,.11,mats.dark);}
  for(const x of[-.61,.61]){sphere(cm,x,.85,-1.82,.22,.12,.095,mats.lamp);sphere(cm,x,.85,1.78,.21,.1,.09,mats.tail);}
  rounded(cm,1.15,.16,.12,mats.dark,0,.59,-1.92,.055);rounded(cm,1.42,.11,.12,mats.dark,0,.54,1.85,.045);rounded(cm,.52,.22,.37,mats.lamp,0,1.91,.03,.07);rounded(cm,.31,.1,.015,mats.dark,0,1.93,-.174,.02);
  batchStatic(cm);
@@ -1049,14 +1248,14 @@ function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onMode
  hull(sm,[[-1.02,.54,.92,.06],[-.5,.64,1.14,.24],[.7,.63,1.14,.24],[1.2,.53,.95,.05]],mats.glass2);
  hull(sm,[[-.5,.52,1.4,.045],[-.28,.57,1.45,.05],[.56,.56,1.45,.05],[.74,.5,1.38,.04]],mats.white);
  for(const x of[-.82,.82]){rounded(sm,.06,.34,.08,mats.white,x,1.18,.5,.02);rounded(sm,.14,.06,.08,mats.white,x*1.12,1.06,-.35,.02);}
- for(const x of[-.85,.85])for(const z of[-1.42,1.45]){const pivot=new T.Group();pivot.position.set(x,.42,z);sm.add(pivot);const tire=mesh(pivot,new T.TorusGeometry(.3,.11,6,12),mats.rubber);tire.rotation.y=Math.PI/2;const rim=mesh(pivot,new T.CylinderGeometry(.25,.25,.12,10),mats.rim);rim.rotation.z=Math.PI/2;}
+ for(const x of[-.85,.85])for(const z of[-1.42,1.45]){const pivot=new T.Group();pivot.position.set(x,.42,z);sm.add(pivot);const tire=mesh(pivot,new T.TorusGeometry(.3,.11,5,10),mats.rubber);tire.rotation.y=Math.PI/2;const rim=mesh(pivot,new T.CylinderGeometry(.25,.25,.12,8),mats.rim);rim.rotation.z=Math.PI/2;}
  for(const x of[-.58,.58]){sphere(sm,x,.7,-2.22,.18,.09,.07,mats.lamp);sphere(sm,x,.68,2.24,.17,.08,.06,mats.red);}
  rounded(sm,1,.12,.06,mats.black,0,.62,-2.27,.03);rounded(sm,1.5,.1,.06,mats.black,0,.56,2.28,.03);
  rounded(sm,1.1,.045,.26,mats.white,0,1.04,2.16,.02);for(const x of[-.4,.4])rounded(sm,.04,.1,.05,mats.black,x,.97,2.16,.015);
  batchStatic(sm);normalize(sm,4.6);scene.add(sm);
  // Original green cruiser bike (own design, ~2.2 m long). Whole visual sits in a lean group.
  const bm=new T.Group();bm.name='Original green cruiser bike';const lean=new T.Group();bm.add(lean);
- for(const z of[-.78,.74]){const pivot=new T.Group();pivot.position.set(0,.45,z);lean.add(pivot);const tire=mesh(pivot,new T.TorusGeometry(.33,.12,6,14),mats.rubber);tire.rotation.y=Math.PI/2;const rim=mesh(pivot,new T.CylinderGeometry(.26,.26,.1,10),mats.black);rim.rotation.z=Math.PI/2;for(const a of[0,1,2]){const spoke=mesh(pivot,new T.BoxGeometry(.03,.5,.05),mats.chrome);spoke.rotation.x=a*Math.PI/3;}}
+ for(const z of[-.78,.74]){const pivot=new T.Group();pivot.position.set(0,.45,z);lean.add(pivot);const tire=mesh(pivot,new T.TorusGeometry(.33,.12,5,10),mats.rubber);tire.rotation.y=Math.PI/2;const rim=mesh(pivot,new T.CylinderGeometry(.26,.26,.1,8),mats.black);rim.rotation.z=Math.PI/2;for(const a of[0,1,2]){const spoke=mesh(pivot,new T.BoxGeometry(.03,.5,.05),mats.chrome);spoke.rotation.x=a*Math.PI/3;}}
  for(const x of[-.07,.07]){const f=mesh(lean,new T.CylinderGeometry(.035,.035,.78,8),mats.chrome,x,.82,-.88);f.rotation.x=.42;}
  const bar=mesh(lean,new T.CylinderGeometry(.03,.03,.62,8),mats.chrome,0,1.05,-.98);bar.rotation.z=Math.PI/2;
  for(const x of[-.29,.29])sphere(lean,x,1.05,-.98,.05,.05,.09,mats.black);
@@ -1094,7 +1293,7 @@ function createActors({THREE:T,scene,map={},spawn={x:0,z:8},notify=()=>{},onMode
   if(on){if(!seated){seated=true;legs.forEach(l=>l.rotation.x=1.05);arms.forEach(a=>a.rotation.x=.7);}}
   else if(seated){seated=false;legs.forEach(l=>l.rotation.x=0);arms.forEach(a=>a.rotation.x=0);}}
  function sync(){player.y=ground(player.x,player.z);
-  for(const v of vehicles){v.y=ground(v.x,v.z);v.mesh.position.set(v.x,v.y,v.z);v.mesh.rotation.y=-v.yaw;if(v.leanGroup)v.leanGroup.rotation.z=v.lean||0;}
+  for(const v of vehicles){v.y=ground(v.x,v.z);v.mesh.position.set(v.x,v.y,v.z);v.mesh.rotation.y=-v.yaw;if(v.leanGroup)v.leanGroup.rotation.z=v.lean||0;v.mesh.visible=(v===driveV)||Math.hypot(v.x-player.x,v.z-player.z)<220; // AUDIT-2 ACTORS-CULL: past-fog vehicles skip rendering}
   if(driving&&driveV){const v=driveV,back=twoW(v)?.22:0;pm.position.set(v.x-Math.sin(v.yaw)*back,v.y+v.seatY-hipY,v.z+Math.cos(v.yaw)*back);pm.rotation.set(0,-v.yaw,0);if(twoW(v))pm.rotateZ(v.lean);poseSeat(true,twoW(v));}
   else{pm.position.set(player.x,player.y,player.z);pm.rotation.set(0,-player.yaw,0);poseSeat(false);}}
  function clearPath(x1,z1,x2,z2,r=.3){const n=Math.max(1,Math.ceil(Math.hypot(x2-x1,z2-z1)/.2));for(let i=1;i<=n;i++)if(blocked(x1+(x2-x1)*i/n,z1+(z2-z1)*i/n,r))return false;return true;}
@@ -2064,37 +2263,37 @@ function createProps({ THREE, scene, map }) {
   // ---- prop types, built once in local space (base at y=0, front faces -Z) ----
   function tLamppost() { // ~5.9 m tall, curved-head street light
     const m = Acc(), g = Acc();
-    addTo(m, new THREE.CylinderGeometry(0.16, 0.2, 0.5, 7), P.concrete, 0, 0.25, 0);
-    addTo(m, new THREE.CylinderGeometry(0.07, 0.1, 5.2, 7, 1, true), P.pole, 0, 3.0, 0);
-    addTo(m, new THREE.CylinderGeometry(0.045, 0.045, 1.05, 5, 1, true), P.pole, 0, 5.78, -0.4, Math.PI / 2 - 0.32);
-    addTo(m, new THREE.CapsuleGeometry(0.11, 0.3, 2, 6), P.metal, 0, 5.95, -0.82, Math.PI / 2);
-    addTo(g, new THREE.SphereGeometry(0.085, 6, 5), G.lampAmber, 0, 5.86, -0.82);
+    addTo(m, new THREE.CylinderGeometry(0.16, 0.2, 0.5, 5), P.concrete, 0, 0.25, 0);
+    addTo(m, new THREE.CylinderGeometry(0.07, 0.1, 5.2, 5, 1, true), P.pole, 0, 3.0, 0);
+    addTo(m, new THREE.CylinderGeometry(0.045, 0.045, 1.05, 4, 1, true), P.pole, 0, 5.78, -0.4, Math.PI / 2 - 0.32);
+    addTo(m, new THREE.CapsuleGeometry(0.11, 0.3, 1, 5), P.metal, 0, 5.95, -0.82, Math.PI / 2);
+    addTo(g, new THREE.SphereGeometry(0.085, 5, 4), G.lampAmber, 0, 5.86, -0.82);
     return { m, g };
   }
   function tBench() { // 1.8 m park bench
     const m = Acc(), g = Acc();
     addTo(m, new THREE.BoxGeometry(1.8, 0.09, 0.55), P.wood, 0, 0.45, 0);
     addTo(m, new THREE.BoxGeometry(1.8, 0.5, 0.07), P.wood, 0, 0.78, 0.26, -0.16);
-    addTo(m, new THREE.CylinderGeometry(0.05, 0.05, 0.45, 6), P.dark, -0.75, 0.22, 0);
-    addTo(m, new THREE.CylinderGeometry(0.05, 0.05, 0.45, 6), P.dark, 0.75, 0.22, 0);
-    addTo(m, new THREE.CapsuleGeometry(0.04, 0.4, 2, 6), P.metal, -0.9, 0.62, 0.05, Math.PI / 2, 0, 0.35);
-    addTo(m, new THREE.CapsuleGeometry(0.04, 0.4, 2, 6), P.metal, 0.9, 0.62, 0.05, Math.PI / 2, 0, -0.35);
+    addTo(m, new THREE.CylinderGeometry(0.05, 0.05, 0.45, 5), P.dark, -0.75, 0.22, 0);
+    addTo(m, new THREE.CylinderGeometry(0.05, 0.05, 0.45, 5), P.dark, 0.75, 0.22, 0);
+    addTo(m, new THREE.CapsuleGeometry(0.04, 0.4, 1, 5), P.metal, -0.9, 0.62, 0.05, Math.PI / 2, 0, 0.35);
+    addTo(m, new THREE.CapsuleGeometry(0.04, 0.4, 1, 5), P.metal, 0.9, 0.62, 0.05, Math.PI / 2, 0, -0.35);
     return { m, g };
   }
   function tBin() { // street litter bin ~0.95 m
     const m = Acc(), g = Acc();
-    addTo(m, new THREE.CylinderGeometry(0.32, 0.27, 0.8, 8), P.bin, 0, 0.42, 0);
-    addTo(m, new THREE.TorusGeometry(0.32, 0.035, 5, 8), P.dark, 0, 0.83, 0, Math.PI / 2);
-    addTo(m, new THREE.SphereGeometry(0.3, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2), P.dark, 0, 0.86, 0);
+    addTo(m, new THREE.CylinderGeometry(0.32, 0.27, 0.8, 6), P.bin, 0, 0.42, 0);
+    addTo(m, new THREE.TorusGeometry(0.32, 0.035, 4, 6), P.dark, 0, 0.83, 0, Math.PI / 2);
+    addTo(m, new THREE.SphereGeometry(0.3, 6, 3, 0, Math.PI * 2, 0, Math.PI / 2), P.dark, 0, 0.86, 0);
     return { m, g };
   }
   function tHydrant() { // ~0.75 m fire hydrant
     const m = Acc(), g = Acc();
-    addTo(m, new THREE.CylinderGeometry(0.15, 0.18, 0.12, 7), P.hydrant, 0, 0.06, 0);
-    addTo(m, new THREE.CapsuleGeometry(0.14, 0.34, 2, 7), P.hydrant, 0, 0.42, 0);
-    addTo(m, new THREE.SphereGeometry(0.1, 6, 5), P.metal, 0, 0.66, 0);
-    addTo(m, new THREE.CylinderGeometry(0.06, 0.06, 0.14, 6), P.metal, -0.16, 0.42, 0, 0, 0, Math.PI / 2);
-    addTo(m, new THREE.CylinderGeometry(0.06, 0.06, 0.14, 6), P.metal, 0.16, 0.42, 0, 0, 0, Math.PI / 2);
+    addTo(m, new THREE.CylinderGeometry(0.15, 0.18, 0.12, 5), P.hydrant, 0, 0.06, 0);
+    addTo(m, new THREE.CapsuleGeometry(0.14, 0.34, 1, 5), P.hydrant, 0, 0.42, 0);
+    addTo(m, new THREE.SphereGeometry(0.1, 5, 4), P.metal, 0, 0.66, 0);
+    addTo(m, new THREE.CylinderGeometry(0.06, 0.06, 0.14, 4), P.metal, -0.16, 0.42, 0, 0, 0, Math.PI / 2);
+    addTo(m, new THREE.CylinderGeometry(0.06, 0.06, 0.14, 4), P.metal, 0.16, 0.42, 0, 0, 0, Math.PI / 2);
     return { m, g };
   }
   function tShelter() { // 3.4 m bus-stop shelter (registers collision)
@@ -2143,8 +2342,8 @@ function createProps({ THREE, scene, map }) {
   }
   function tTrafficLight(greenFirst) { // 4.4 m signal, head faces -Z; one bulb lit
     const m = Acc(), g = Acc();
-    addTo(m, new THREE.CylinderGeometry(0.14, 0.18, 0.35, 7), P.concrete, 0, 0.17, 0);
-    addTo(m, new THREE.CylinderGeometry(0.06, 0.08, 3.9, 7, 1, true), P.pole, 0, 2.1, 0);
+    addTo(m, new THREE.CylinderGeometry(0.14, 0.18, 0.35, 5), P.concrete, 0, 0.17, 0);
+    addTo(m, new THREE.CylinderGeometry(0.06, 0.08, 3.9, 5, 1, true), P.pole, 0, 2.1, 0);
     addTo(m, new THREE.BoxGeometry(0.36, 1.0, 0.3), P.dark, 0, 4.05, 0);
     const ys = [4.38, 4.05, 3.72];
     const cols = [G.bulbRed, '#c99030', G.bulbGreen];
@@ -2152,16 +2351,16 @@ function createProps({ THREE, scene, map }) {
       addTo(m, new THREE.BoxGeometry(0.22, 0.05, 0.16), P.dark, 0, ys[i] + 0.1, -0.14); // visor
       const lit = (greenFirst ? i === 2 : i === 0);
       const acc = lit ? g : m;
-      addTo(acc, new THREE.CylinderGeometry(0.085, 0.085, 0.05, 8), lit ? cols[i] : '#4a4a4a', 0, ys[i], -0.16, Math.PI / 2);
+      addTo(acc, new THREE.CylinderGeometry(0.085, 0.085, 0.05, 6), lit ? cols[i] : '#4a4a4a', 0, ys[i], -0.16, Math.PI / 2);
     }
     return { m, g };
   }
   function tSign(color) { // 2.6 m octagon road sign, plate faces -Z
     const m = Acc(), g = Acc();
-    addTo(m, new THREE.CylinderGeometry(0.035, 0.045, 2.5, 6, 1, true), P.metal, 0, 1.25, 0);
-    addTo(m, new THREE.CylinderGeometry(0.34, 0.34, 0.04, 8), color, 0, 2.35, -0.02, Math.PI / 2);
-    addTo(m, new THREE.CylinderGeometry(0.26, 0.26, 0.045, 8), '#e8e4d0', 0, 2.35, -0.015, Math.PI / 2);
-    addTo(m, new THREE.CylinderGeometry(0.2, 0.2, 0.05, 8), color, 0, 2.35, -0.01, Math.PI / 2);
+    addTo(m, new THREE.CylinderGeometry(0.035, 0.045, 2.5, 5, 1, true), P.metal, 0, 1.25, 0);
+    addTo(m, new THREE.CylinderGeometry(0.34, 0.34, 0.04, 6), color, 0, 2.35, -0.02, Math.PI / 2);
+    addTo(m, new THREE.CylinderGeometry(0.26, 0.26, 0.045, 6), '#e8e4d0', 0, 2.35, -0.015, Math.PI / 2);
+    addTo(m, new THREE.CylinderGeometry(0.2, 0.2, 0.05, 6), color, 0, 2.35, -0.01, Math.PI / 2);
     return { m, g };
   }
 
@@ -2905,7 +3104,7 @@ scene.background = new THREE.Color(0xa9c6e2);
 scene.fog = new THREE.Fog(0xa9c6e2, 70, 260); // F5: warmer haze, slightly nearer start
 
 const skyDome = (() => { // F2: gradient sky dome; follows the camera so the horizon never slides
-  const skyGeo = new THREE.SphereGeometry(200, 24, 12);
+  const skyGeo = new THREE.SphereGeometry(200, 16, 8); // AUDIT-2 MAIN-DOME: 528 -> 224 tris
   const posA = skyGeo.attributes.position;
   const cols = new Float32Array(posA.count * 3);
   const top = new THREE.Color(0x5f97d6), hor = new THREE.Color(0xa9c6e2); // horizon = fog colour
@@ -2986,6 +3185,7 @@ const map = createMap({ THREE, scene, GLTFLoader: RepoMapGLTFLoader }); // class
 const houses = createHouses({ THREE, scene, map, GLTFLoader: RepoMapGLTFLoader }); // houses v2: 200 homes, 8 archetypes, 14 draw calls
 skyDome.matrixAutoUpdate = true; // map's P2 freeze covers the whole scene; the dome must follow the camera
 const props = createProps({ THREE, scene, map }); // v2: 402 street props on map v7c in 2 draw calls
+const parked = buildParkedCars({ THREE, scene, map }); // v002: 32 static parked cars (after houses+props so their collision is live)
 const pedestrians = createPedestrians({ THREE, scene, map, getPlayerPos: () => ({ x: actors.cameraTarget.x, z: actors.cameraTarget.z }), idleSpots: props.placements.filter(p => p.type === 'bench' || p.type === 'shelter').map(p => ({ x: p.x, z: p.z, pose: p.type === 'bench' ? 'sit' : 'stand' })) }); // v2: 20 walkers, bench/shelter idles
 
 let paused = false;
@@ -3001,6 +3201,7 @@ const VEHICLE_SPAWNS = {
   pickup:  { x: -51,  z: 166, heading: 0 },  // Southside street shoulder
   hatch:   { x: 146,  z: 16,  heading: 0 },  // Palm Court street
   scooter: { x: -152, z: 26,  heading: 0 },  // near the boardwalk
+  coupe:   { x: -147.4, z: 7.9, heading: 0.43 }, // v002: orange coupe near the pier approach (coordinator nudge 2 m onto the road, v7c-verified)
 };
 const actors = createActors({
   THREE, scene, map,
